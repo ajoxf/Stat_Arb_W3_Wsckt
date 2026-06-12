@@ -324,6 +324,14 @@ def on_signal_callback(signal: Signal):
         signal_data['hedge_ratio'] = sg_state.get('hedge_ratio', 1.0)
         signal_data['beta_x_spot'] = sg_state.get('beta_x_spot')
         signal_data['fut_div_beta'] = sg_state.get('fut_div_beta')
+        # Sizing fields needed by the dashboard's per-leg notional / leverage /
+        # margin readout. Cheap to ship every tick, keeps the dashboard in sync
+        # the instant the user saves a new size or leverage.
+        signal_data['position_size_usd'] = config.position_size_usd
+        signal_data['leg_a_leverage'] = config.spot_leverage
+        signal_data['leg_b_leverage'] = config.futures_leverage
+        signal_data['leg_a_symbol'] = config.spot_symbol
+        signal_data['leg_b_symbol'] = config.futures_symbol
         socketio.emit('signal', signal_data, namespace='/')
     except Exception as e:
         logger.error("Error emitting signal: %s", e)

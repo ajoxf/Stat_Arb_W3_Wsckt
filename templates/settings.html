@@ -60,11 +60,11 @@
                             <input type="number" class="form-control" id="hedge_ratio" name="hedge_ratio"
                                    value="{{ config.hedge_ratio }}" step="0.0001" min="0.0001">
                             <small class="text-secondary">
-                                spread = futures &minus; &beta; &times; spot. Use <strong>1</strong> for the
-                                same underlying (e.g. BTC vs BTC-SWAP). For a cross pair (e.g. BTC vs ETH)
-                                set &beta; so the legs are comparable &mdash; the spot leg is scaled by &beta;
-                                to stay dollar-hedged. The suggestion above is mid(Leg B) &divide; mid(Leg A)
-                                from live OKX prices &mdash; the dollar-neutral &beta;.
+                                spread = price(Leg B) &minus; &beta; &times; price(Leg A). Use <strong>1</strong>
+                                for the same underlying (e.g. BTC vs BTC-SWAP). For a cross pair (e.g. BTC vs ETH)
+                                set &beta; so the legs are comparable &mdash; Leg A is scaled by &beta; to stay
+                                dollar-hedged. The suggestion above is mid(Leg B) &divide; mid(Leg A) from live
+                                OKX prices &mdash; the dollar-neutral &beta;.
                             </small>
                         </div>
                         <div class="col-12 mt-2">
@@ -240,18 +240,18 @@
                             <small class="text-secondary d-block mb-3">Leverage multiplies both potential gains and losses. Use with caution.</small>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Spot Leverage</label>
+                            <label class="form-label">Leg A Leverage</label>
                             <select class="form-select" id="spot_leverage" name="spot_leverage">
-                                <option value="1" {% if config.spot_leverage == 1 %}selected{% endif %}>1x (No Margin)</option>
+                                <option value="1" {% if config.spot_leverage == 1 %}selected{% endif %}>1x (Cash / No Margin)</option>
                                 <option value="2" {% if config.spot_leverage == 2 %}selected{% endif %}>2x</option>
                                 <option value="3" {% if config.spot_leverage == 3 %}selected{% endif %}>3x</option>
                                 <option value="5" {% if config.spot_leverage == 5 %}selected{% endif %}>5x</option>
                                 <option value="10" {% if config.spot_leverage == 10 %}selected{% endif %}>10x</option>
                             </select>
-                            <small class="text-secondary">Margin trading for spot positions</small>
+                            <small class="text-secondary">Applies when Leg A is a perpetual or dated future. Spot legs trade as cash regardless.</small>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Futures Leverage</label>
+                            <label class="form-label">Leg B Leverage</label>
                             <select class="form-select" id="futures_leverage" name="futures_leverage">
                                 <option value="1" {% if config.futures_leverage == 1 %}selected{% endif %}>1x</option>
                                 <option value="2" {% if config.futures_leverage == 2 %}selected{% endif %}>2x</option>
@@ -262,7 +262,7 @@
                                 <option value="20" {% if config.futures_leverage == 20 %}selected{% endif %}>20x</option>
                                 <option value="25" {% if config.futures_leverage == 25 %}selected{% endif %}>25x (max allowed)</option>
                             </select>
-                            <small class="text-secondary">Futures leverage — engine hard-caps at 25x for safety</small>
+                            <small class="text-secondary">Applies when Leg B is a derivative. Engine hard-caps at 25x for safety.</small>
                         </div>
                     </div>
 
@@ -280,36 +280,36 @@
                             </div>
                         </div>
 
-                        <!-- Spot Fees -->
+                        <!-- Leg A Fees (spot tier) -->
                         <div class="col-12 mb-2">
-                            <span class="badge bg-primary me-1">SPOT</span>
-                            <small class="text-secondary">OKX non-VIP: Maker 8 bps · Taker 10 bps &nbsp;|&nbsp; VIP1: Maker 4.5 bps · Taker 5 bps</small>
+                            <span class="badge bg-primary me-1">LEG A · spot tier</span>
+                            <small class="text-secondary">Applied when Leg A is a spot pair. OKX non-VIP: Maker 8 bps · Taker 10 bps &nbsp;|&nbsp; VIP1: Maker 4.5 bps · Taker 5 bps</small>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label">Spot Maker (bps)</label>
+                            <label class="form-label">Leg A Maker (bps)</label>
                             <input type="number" class="form-control fee-input" id="spot_maker_fee_bps" name="spot_maker_fee_bps" value="{{ config.spot_maker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Limit orders on Spot</small>
+                            <small class="text-secondary">Limit orders on the spot leg</small>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label">Spot Taker (bps)</label>
+                            <label class="form-label">Leg A Taker (bps)</label>
                             <input type="number" class="form-control fee-input" id="spot_taker_fee_bps" name="spot_taker_fee_bps" value="{{ config.spot_taker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Market orders on Spot</small>
+                            <small class="text-secondary">Market orders on the spot leg</small>
                         </div>
 
-                        <!-- Futures Fees -->
+                        <!-- Leg B Fees (derivative tier) -->
                         <div class="col-12 mb-2 mt-3">
-                            <span class="badge bg-warning text-dark me-1">FUTURES</span>
-                            <small class="text-secondary">OKX non-VIP: Maker 2 bps · Taker 5 bps &nbsp;|&nbsp; VIP1: Maker 1 bps · Taker 3 bps</small>
+                            <span class="badge bg-warning text-dark me-1">LEG B · derivative tier</span>
+                            <small class="text-secondary">Applied when Leg B is a perp or dated future. OKX non-VIP: Maker 2 bps · Taker 5 bps &nbsp;|&nbsp; VIP1: Maker 1 bps · Taker 3 bps</small>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label">Futures Maker (bps)</label>
+                            <label class="form-label">Leg B Maker (bps)</label>
                             <input type="number" class="form-control fee-input" id="futures_maker_fee_bps" name="futures_maker_fee_bps" value="{{ config.futures_maker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Limit orders on Futures</small>
+                            <small class="text-secondary">Limit orders on the derivative leg</small>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label">Futures Taker (bps)</label>
+                            <label class="form-label">Leg B Taker (bps)</label>
                             <input type="number" class="form-control fee-input" id="futures_taker_fee_bps" name="futures_taker_fee_bps" value="{{ config.futures_taker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Market orders on Futures</small>
+                            <small class="text-secondary">Market orders on the derivative leg</small>
                         </div>
 
                         <!-- Slippage -->

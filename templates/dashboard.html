@@ -81,13 +81,13 @@
 </div>
 {% endif %}
 
-<!-- Orphaned Spot Warning Banner -->
+<!-- Orphaned Leg A Position Warning Banner -->
 <div class="alert alert-warning mb-3 d-none" id="orphan-warning">
     <div class="d-flex align-items-center justify-content-between">
         <div>
             <i class="bi bi-exclamation-triangle-fill me-2"></i>
-            <strong>Orphaned Spot Position Detected!</strong>
-            <span id="orphan-details">You have BTC in your spot wallet without an active position.</span>
+            <strong>Orphaned Leg A Position Detected!</strong>
+            <span id="orphan-details">You have a stale balance on the Leg A instrument without an active position.</span>
             <small class="text-muted ms-2" id="orphan-detected-at" style="font-size:0.75rem;"></small>
         </div>
         <div>
@@ -166,7 +166,7 @@
             <div class="col-6">
                 <div class="card h-100">
                     <div class="card-header py-1 d-flex justify-content-between align-items-center">
-                        <small><i class="bi bi-currency-exchange me-1"></i>Spot</small>
+                        <small><i class="bi bi-currency-exchange me-1"></i>Leg A</small>
                         <span class="badge bg-primary" style="font-size: 0.65rem;" id="spot-symbol">{{ config.spot_symbol }}</span>
                     </div>
                     <div class="card-body py-2 text-center">
@@ -181,16 +181,24 @@
                                 <div class="text-danger" style="font-size: 0.85rem;" id="spot-ask">-</div>
                             </div>
                         </div>
+                        <div class="mt-1" style="font-size: 0.65rem;" id="leg-a-sizing"
+                             title="Notional dollar exposure on Leg A, leverage, and locked margin">
+                            <span class="text-secondary">Notional:</span> <span id="leg-a-notional" class="fw-bold">&mdash;</span>
+                            <span class="text-secondary ms-1">·</span>
+                            <span class="text-secondary ms-1">Lev:</span> <span id="leg-a-leverage-disp">&mdash;</span>
+                            <span class="text-secondary ms-1">·</span>
+                            <span class="text-secondary ms-1">Margin:</span> <span id="leg-a-margin">&mdash;</span>
+                        </div>
                         <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
                              id="spot-converted"
-                             title="Spot price scaled by hedge ratio — shown in the futures leg's price units"></div>
+                             title="Leg A price scaled by hedge ratio — shown in Leg B's price units"></div>
                     </div>
                 </div>
             </div>
             <div class="col-6">
                 <div class="card h-100">
                     <div class="card-header py-1 d-flex justify-content-between align-items-center">
-                        <small><i class="bi bi-bar-chart me-1"></i>Futures</small>
+                        <small><i class="bi bi-bar-chart me-1"></i>Leg B</small>
                         <span class="badge bg-warning text-dark" style="font-size: 0.65rem;" id="futures-symbol">{{ config.futures_symbol }}</span>
                     </div>
                     <div class="card-body py-2 text-center">
@@ -205,9 +213,17 @@
                                 <div class="text-danger" style="font-size: 0.85rem;" id="futures-ask">-</div>
                             </div>
                         </div>
+                        <div class="mt-1" style="font-size: 0.65rem;" id="leg-b-sizing"
+                             title="Notional dollar exposure on Leg B, leverage, and locked margin">
+                            <span class="text-secondary">Notional:</span> <span id="leg-b-notional" class="fw-bold">&mdash;</span>
+                            <span class="text-secondary ms-1">·</span>
+                            <span class="text-secondary ms-1">Lev:</span> <span id="leg-b-leverage-disp">&mdash;</span>
+                            <span class="text-secondary ms-1">·</span>
+                            <span class="text-secondary ms-1">Margin:</span> <span id="leg-b-margin">&mdash;</span>
+                        </div>
                         <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
                              id="futures-converted"
-                             title="Futures price divided by hedge ratio — shown in the spot leg's price units"></div>
+                             title="Leg B price divided by hedge ratio — shown in Leg A's price units"></div>
                     </div>
                 </div>
             </div>
@@ -289,11 +305,11 @@
                     </div>
                     <div class="row mb-1">
                         <div class="col-6">
-                            <span class="text-secondary">Spot Entry:</span>
+                            <span class="text-secondary">Leg A Entry:</span>
                             <span id="position-entry-spot">-</span>
                         </div>
                         <div class="col-6">
-                            <span class="text-secondary">Fut Entry:</span>
+                            <span class="text-secondary">Leg B Entry:</span>
                             <span id="position-entry-futures">-</span>
                         </div>
                     </div>
@@ -481,7 +497,7 @@
                         <div class="col-6">
                             <div class="p-1" style="background: var(--bg-tertiary); border-radius: 4px;">
                                 <div class="d-flex justify-content-between">
-                                    <span class="fw-bold">Spot</span>
+                                    <span class="fw-bold">Leg A</span>
                                     <span id="spot-leg-status" class="badge bg-secondary" style="font-size: 0.6rem;">-</span>
                                 </div>
                                 <div id="spot-leg-side" class="text-secondary">-</div>
@@ -491,7 +507,7 @@
                         <div class="col-6">
                             <div class="p-1" style="background: var(--bg-tertiary); border-radius: 4px;">
                                 <div class="d-flex justify-content-between">
-                                    <span class="fw-bold">Futures</span>
+                                    <span class="fw-bold">Leg B</span>
                                     <span id="futures-leg-status" class="badge bg-secondary" style="font-size: 0.6rem;">-</span>
                                 </div>
                                 <div id="futures-leg-side" class="text-secondary">-</div>
@@ -553,8 +569,8 @@
                                 <th>Time</th>
                                 <th>Type</th>
                                 <th>Z</th>
-                                <th>Spot</th>
-                                <th>Futures</th>
+                                <th>Leg A</th>
+                                <th>Leg B</th>
                                 <th>P&L</th>
                             </tr>
                         </thead>
@@ -631,13 +647,13 @@
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 2px;">Spot</td>
+                            <td style="padding: 2px;">Leg A</td>
                             <td style="padding: 2px;" class="text-end" id="spot-position-value">-</td>
                             <td style="padding: 2px;" class="text-center" id="pos-spot-leverage">1x</td>
                             <td style="padding: 2px;" class="text-end" id="spot-margin-used">-</td>
                         </tr>
                         <tr>
-                            <td style="padding: 2px;">Futures</td>
+                            <td style="padding: 2px;">Leg B</td>
                             <td style="padding: 2px;" class="text-end" id="futures-position-value">-</td>
                             <td style="padding: 2px;" class="text-center" id="pos-futures-leverage">1x</td>
                             <td style="padding: 2px;" class="text-end" id="futures-margin-used">-</td>
@@ -687,11 +703,11 @@
                     <span>&plusmn;{{ config.stop_loss_threshold }}</span>
                 </div>
                 <div class="d-flex justify-content-between mb-1">
-                    <span class="text-secondary">Spot Lev:</span>
+                    <span class="text-secondary">Leg A Lev:</span>
                     <span id="spot-leverage">{{ config.spot_leverage }}x</span>
                 </div>
                 <div class="d-flex justify-content-between">
-                    <span class="text-secondary">Fut Lev:</span>
+                    <span class="text-secondary">Leg B Lev:</span>
                     <span id="futures-leverage">{{ config.futures_leverage }}x</span>
                 </div>
             </div>
@@ -1224,6 +1240,23 @@
     // new configured β) can re-render the drift without waiting for the next tick.
     let _lastSpotTick = null;
     let _lastFuturesTick = null;
+    // Sizing inputs — seeded server-side, updated on each signal event
+    let _positionSizeUsd = {{ config.position_size_usd if config.position_size_usd else 0 }};
+    let _legALeverage = {{ config.spot_leverage if config.spot_leverage else 1 }};
+    let _legBLeverage = {{ config.futures_leverage if config.futures_leverage else 1 }};
+    let _legASymbol = {{ (config.spot_symbol or '') | tojson }};
+    let _legBSymbol = {{ (config.futures_symbol or '') | tojson }};
+
+    // Mirrors adapters/base.is_derivative — OKX instId shape heuristic
+    function _isDerivative(symbol) {
+        if (!symbol) return false;
+        if (symbol.endsWith('-SWAP')) return true;
+        return (symbol.match(/-/g) || []).length >= 2;
+    }
+    function _fmtMoney(n) {
+        if (n === null || n === undefined || !isFinite(n) || n <= 0) return '—';
+        return '$' + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
 
     function _fmtBeta(b) {
         if (b === null || b === undefined || !isFinite(b)) return '—';
@@ -1263,6 +1296,47 @@
         );
     }
 
+    function updateLegSizing() {
+        // Notional, leverage, margin per leg — recomputed from live mids + β.
+        // Leg A notional = position_size_usd exactly (that's the sizing anchor).
+        // Leg B notional = position_size × (mid_B / (β · mid_A)) — equals
+        // position_size when β is dollar-neutral, diverges otherwise.
+        const s = _lastSpotTick, f = _lastFuturesTick;
+        const spotMid = (s && s.bid > 0 && s.ask > 0) ? (s.bid + s.ask) / 2 : null;
+        const futMid  = (f && f.bid > 0 && f.ask > 0) ? (f.bid + f.ask) / 2 : null;
+        const beta = _configuredBeta || 1;
+        const ps   = _positionSizeUsd || 0;
+
+        // Leg A
+        const aIsDeriv = _isDerivative(_legASymbol);
+        const aLev = aIsDeriv ? _legALeverage : 1;
+        const aNotional = ps;   // sizing anchor
+        const aMargin = aLev > 0 ? aNotional / aLev : aNotional;
+        const aLevText = aIsDeriv ? (aLev + 'x') : 'Cash';
+        const aNoEl = document.getElementById('leg-a-notional');
+        const aLvEl = document.getElementById('leg-a-leverage-disp');
+        const aMgEl = document.getElementById('leg-a-margin');
+        if (aNoEl) aNoEl.textContent = _fmtMoney(aNotional);
+        if (aLvEl) aLvEl.textContent = aLevText;
+        if (aMgEl) aMgEl.textContent = (aIsDeriv ? _fmtMoney(aMargin) : _fmtMoney(aNotional) + ' (cash)');
+
+        // Leg B
+        const bIsDeriv = _isDerivative(_legBSymbol);
+        const bLev = bIsDeriv ? _legBLeverage : 1;
+        let bNotional = ps;
+        if (spotMid && futMid && spotMid > 0 && beta > 0) {
+            bNotional = ps * (futMid / (beta * spotMid));
+        }
+        const bMargin = bLev > 0 ? bNotional / bLev : bNotional;
+        const bLevText = bIsDeriv ? (bLev + 'x') : 'Cash';
+        const bNoEl = document.getElementById('leg-b-notional');
+        const bLvEl = document.getElementById('leg-b-leverage-disp');
+        const bMgEl = document.getElementById('leg-b-margin');
+        if (bNoEl) bNoEl.textContent = _fmtMoney(bNotional);
+        if (bLvEl) bLvEl.textContent = bLevText;
+        if (bMgEl) bMgEl.textContent = (bIsDeriv ? _fmtMoney(bMargin) : _fmtMoney(bNotional) + ' (cash)');
+    }
+
     function updatePrices(spot, futures) {
         if (spot) {
             updatePriceWithColor('spot-bid', spot.bid, 'neutral');
@@ -1291,10 +1365,11 @@
             }
         }
 
-        // Stash the latest ticks and refresh the live β card on every tick
+        // Stash the latest ticks and refresh the live β + per-leg sizing on every tick
         if (spot) _lastSpotTick = spot;
         if (futures) _lastFuturesTick = futures;
         updateLiveBeta();
+        updateLegSizing();
     }
 
     function updateMarginDisplay(spotPrice, futuresPrice) {
@@ -1340,27 +1415,27 @@
         // Add warning if actual differs from configured
         // For spot: Show warning if from exchange (margin position) and differs
         if (actualSpotLeverage !== configuredSpotLeverage && spotSource === 'exchange') {
-            messages.push(`Spot: ${actualSpotLeverage}x (exchange) vs ${configuredSpotLeverage}x (configured)`);
+            messages.push(`Leg A: ${actualSpotLeverage}x (exchange) vs ${configuredSpotLeverage}x (configured)`);
         }
-        // For futures: Show warning if from exchange and differs from configured
+        // For Leg B: warn if exchange leverage differs from configured
         if (actualFuturesLeverage !== configuredFuturesLeverage && futSource === 'exchange') {
-            messages.push(`Futures: ${actualFuturesLeverage}x (exchange) vs ${configuredFuturesLeverage}x (configured)`);
+            messages.push(`Leg B: ${actualFuturesLeverage}x (exchange) vs ${configuredFuturesLeverage}x (configured)`);
         }
 
         // Show info about leverage source
         if (messages.length === 0) {
             const sourceInfo = [];
-            // Spot: 'cash' = no leverage (1x), 'configured' = from settings, 'exchange' = from position
+            // Leg A: 'cash' = no leverage (1x), 'configured' = from settings, 'exchange' = from position
             if (spotSource === 'cash') {
-                sourceInfo.push(`Spot: 1x (cash)`);
+                sourceInfo.push(`Leg A: 1x (cash)`);
             } else if (spotSource === 'configured') {
-                sourceInfo.push(`Spot: ${actualSpotLeverage}x (settings)`);
+                sourceInfo.push(`Leg A: ${actualSpotLeverage}x (settings)`);
             }
-            // Futures: show source
+            // Leg B: show source
             if (futSource === 'configured') {
-                sourceInfo.push(`Futures: ${actualFuturesLeverage}x (settings)`);
+                sourceInfo.push(`Leg B: ${actualFuturesLeverage}x (settings)`);
             } else if (futSource === 'exchange') {
-                sourceInfo.push(`Futures: ${actualFuturesLeverage}x (exchange)`);
+                sourceInfo.push(`Leg B: ${actualFuturesLeverage}x (exchange)`);
             }
             if (sourceInfo.length > 0) {
                 warningText.innerHTML = '<i class="bi bi-info-circle"></i> ' + sourceInfo.join(', ');
@@ -1425,12 +1500,17 @@
 
         // Converted prices + spread breakdown (only meaningful when hedge_ratio != 1)
         const beta = data.hedge_ratio;
-        // Capture the configured β so the live-β card can render the drift,
-        // and refresh immediately (don't wait for the next tick to roll in)
-        if (beta && beta > 0) {
-            _configuredBeta = beta;
-            updateLiveBeta();
-        }
+        // Capture the configured β + sizing inputs and refresh immediately
+        // so the live-β card and per-leg sizing readouts reflect a fresh save
+        // without waiting for the next tick.
+        let needsRefresh = false;
+        if (beta && beta > 0) { _configuredBeta = beta; needsRefresh = true; }
+        if (data.position_size_usd !== undefined) { _positionSizeUsd = data.position_size_usd; needsRefresh = true; }
+        if (data.leg_a_leverage !== undefined) { _legALeverage = data.leg_a_leverage; needsRefresh = true; }
+        if (data.leg_b_leverage !== undefined) { _legBLeverage = data.leg_b_leverage; needsRefresh = true; }
+        if (data.leg_a_symbol !== undefined) { _legASymbol = data.leg_a_symbol; needsRefresh = true; }
+        if (data.leg_b_symbol !== undefined) { _legBSymbol = data.leg_b_symbol; needsRefresh = true; }
+        if (needsRefresh) { updateLiveBeta(); updateLegSizing(); }
         const bxs = data.beta_x_spot;
         const fdb = data.fut_div_beta;
         const fmt = function(n) {
@@ -2101,7 +2181,7 @@ function updateFilterStatus(elementId, passed, value) {
                         } else {
                             actionsHtml = `
                                 <button class="btn btn-danger btn-sm me-2" onclick="closeExchangePosition('${pos.symbol}')">
-                                    <i class="bi bi-x-circle me-1"></i>Close Spot Margin
+                                    <i class="bi bi-x-circle me-1"></i>Close Leg A Margin
                                 </button>
                                 <button class="btn btn-warning btn-sm me-2" onclick="closeAllSpotOrphans('${pos.symbol}')">
                                     <i class="bi bi-shield-x me-1"></i>Close All + Sell Orphan
