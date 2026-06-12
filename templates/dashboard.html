@@ -1767,6 +1767,9 @@
         updateBlockedSignal(data.last_blocked_signal, {
             entryThreshold: data.entry_threshold,
             currentPosition: data.current_position,
+            dataReady:  data.data_ready,
+            dataPoints: data.data_points,
+            lookback:   data.lookback,
         });
     }
 
@@ -1777,6 +1780,9 @@
     let _cachedBlockedSignal = null;
     let _cachedEntryThreshold = {{ config.entry_threshold if config.entry_threshold else 2.0 }};
     let _cachedCurrentPosition = 'NONE';
+    let _cachedDataReady = false;
+    let _cachedDataPoints = 0;
+    let _cachedLookback = {{ config.lookback_period if config.lookback_period else 100 }};
 
     function _relAge(ms) {
         if (ms < 5_000)      return 'just now';
@@ -1797,6 +1803,9 @@
             _cachedEntryThreshold = opts.entryThreshold;
         if (opts.currentPosition !== undefined)
             _cachedCurrentPosition = opts.currentPosition;
+        if (opts.dataReady !== undefined)   _cachedDataReady = !!opts.dataReady;
+        if (opts.dataPoints !== undefined)  _cachedDataPoints = opts.dataPoints || 0;
+        if (opts.lookback !== undefined && opts.lookback > 0) _cachedLookback = opts.lookback;
 
         const typeEl   = document.getElementById('blocked-signal-type');
         const zEl      = document.getElementById('blocked-signal-zscore');
@@ -1832,16 +1841,28 @@
         typeEl.className = 'fw-bold text-secondary';
         zEl.textContent = '—';
         timeEl.textContent = '—';
+
+        if (!_cachedDataReady && _cachedLookback > 0) {
+            // STATE 2a — engine hasn't filled lookback yet, so it short-circuits
+            // and returns NONE without ever evaluating filters. Common confusion:
+            // user sees z past threshold but no block recorded. Make it explicit.
+            const pct = Math.min(100, Math.round((_cachedDataPoints / _cachedLookback) * 100));
+            reasonEl.innerHTML =
+                'Collecting data &mdash; ' + _cachedDataPoints + ' / ' + _cachedLookback +
+                ' ticks (' + pct + '%). Engine evaluates filters once lookback is full.';
+            reasonEl.className = 'text-warning';
+            return;
+        }
         if (inPosition) {
-            // STATE 2 — engine pauses signal generation while in position
+            // STATE 2b — engine pauses signal generation while in position
             reasonEl.textContent = 'In position — block tracking paused';
             reasonEl.className = 'text-info';
-        } else {
-            // STATE 3 — quiet engine, no signal has hit threshold yet
-            const t = _cachedEntryThreshold.toFixed(1);
-            reasonEl.textContent = 'Waiting for z to cross ±' + t + ' (entry threshold)';
-            reasonEl.className = 'text-secondary';
+            return;
         }
+        // STATE 3 — engine ready, no signal has hit threshold yet
+        const t = _cachedEntryThreshold.toFixed(1);
+        reasonEl.textContent = 'Waiting for z to cross ±' + t + ' (entry threshold)';
+        reasonEl.className = 'text-secondary';
     }
 
 function updateFilterStatus(elementId, passed, value) {

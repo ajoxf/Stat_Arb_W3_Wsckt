@@ -6,7 +6,7 @@ Manages the main trading loop, position management, and order execution.
 import asyncio
 import logging
 from datetime import datetime, timedelta, date
-from typing import Optional, Callable, Dict, Any, List
+from typing import Optional, Callable, Dict, Any, List, Tuple
 from dataclasses import dataclass
 
 from models import (
@@ -89,6 +89,13 @@ class TradingEngine:
 
         # General entry cooldown: prevent rapid re-entry after any trade
         self._entry_cooldown_until: Optional[datetime] = None
+
+        # Small cache for the live balance check so a stream of fast signals
+        # doesn't hammer the exchange's account endpoint. 3s is short enough
+        # that withdrawals / external trades won't go undetected for long.
+        self._balance_cache: Optional[Tuple[datetime, float]] = None
+        self._BALANCE_CACHE_TTL_SEC = 3.0
+        self._BALANCE_SAFETY_BUFFER = 1.10   # 10% headroom for fees, slippage, drift
 
         # Daily loss tracking
         self._daily_loss_usd: float = 0.0
@@ -679,6 +686,26 @@ class TradingEngine:
             }
             return
 
+        # Guard: live balance must cover both legs' margin (skipped in paper mode).
+        # Catches insufficient-balance BEFORE the round-trip to the exchange, so
+        # we don't burn doomed orders during a balance shortage and trigger the
+        # spot-failure-pattern auto-disable.
+        balance_block = await self._check_sufficient_balance(
+            signal.signal_type, spot_price, futures_price,
+        )
+        if balance_block:
+            logger.warning("Entry blocked: %s", balance_block)
+            self._entry_cooldown_until = datetime.utcnow() + timedelta(
+                seconds=max(30, self.config.entry_cooldown_seconds),
+            )
+            self.signal_generator.last_blocked_signal = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'would_be_signal': signal.signal_type,
+                'zscore': round(signal.zscore, 4),
+                'reason': balance_block,
+            }
+            return
+
         # Calculate quantity
         # Leg sizing with hedge ratio (beta). The spot leg is anchored to
         # position_size_usd; the futures leg is scaled by 1/beta so the legs
@@ -840,6 +867,74 @@ class TradingEngine:
 
         if self.on_trade:
             self.on_trade(trade)
+
+    async def _check_sufficient_balance(self, signal_type: str,
+                                         spot_price: float,
+                                         futures_price: float) -> Optional[str]:
+        """Return ``None`` if the account has enough balance to fund both legs,
+        or a human-readable reason string if the trade should be blocked.
+
+        Compares the live ``available_balance_usd`` from the exchange against the
+        sum of per-leg margin requirements:
+
+          margin = notional / leverage   (derivative legs)
+          margin = notional              (spot legs — full cash)
+
+        Includes a 10% safety buffer for fees, slippage, and brief price drift
+        between this check and order placement. **Fails open** when the adapter
+        doesn't support balance fetch, returns no data, or errors — better to
+        attempt the trade and let the exchange refuse than to refuse all trades
+        because of a transient API blip. Skipped entirely in paper mode.
+
+        Cached for ``_BALANCE_CACHE_TTL_SEC`` so a flurry of signals during
+        balance shortage doesn't burn account-info calls.
+        """
+        if self.state.paper_trading:
+            return None
+        if not self.futures_adapter or not hasattr(self.futures_adapter, 'get_account_info'):
+            return None
+
+        now = datetime.utcnow()
+        cached = self._balance_cache
+        if cached and (now - cached[0]).total_seconds() < self._BALANCE_CACHE_TTL_SEC:
+            available = cached[1]
+        else:
+            try:
+                account = await self.futures_adapter.get_account_info()
+                if not account:
+                    return None  # fail open
+                available = float(getattr(account, 'available_balance_usd', 0.0) or 0.0)
+                self._balance_cache = (now, available)
+            except Exception as e:
+                logger.warning("Balance check failed — failing open: %s", e)
+                return None
+
+        # Per-leg margin: notional / leverage for derivative legs, full notional for cash legs.
+        # Leg B notional reflects the actual β-scaled exposure, so a misconfigured β
+        # (where Leg B notional balloons) gets caught here too.
+        notional_a = self.config.position_size_usd
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        if spot_price > 0 and futures_price > 0:
+            notional_b = self.config.position_size_usd * (futures_price / (beta * spot_price))
+        else:
+            notional_b = self.config.position_size_usd
+
+        leg_a_lev = max(self.config.spot_leverage    if is_derivative(self.config.spot_symbol)    else 1, 1)
+        leg_b_lev = max(self.config.futures_leverage if is_derivative(self.config.futures_symbol) else 1, 1)
+        margin_a = notional_a / leg_a_lev
+        margin_b = notional_b / leg_b_lev
+        required = (margin_a + margin_b) * self._BALANCE_SAFETY_BUFFER
+
+        if available < required:
+            short_by = required - available
+            return (
+                f"Insufficient balance: ${available:,.2f} available, "
+                f"${required:,.2f} needed "
+                f"(Leg A margin ${margin_a:,.0f} + Leg B margin ${margin_b:,.0f} "
+                f"+ {(self._BALANCE_SAFETY_BUFFER - 1) * 100:.0f}% buffer) "
+                f"— short by ${short_by:,.2f}"
+            )
+        return None
 
     async def _check_exchange_position(self) -> Optional[str]:
         """
