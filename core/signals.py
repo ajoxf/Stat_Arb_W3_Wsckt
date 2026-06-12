@@ -76,13 +76,64 @@ class SignalGenerator:
         self.last_blocked_signal: Optional[Dict[str, Any]] = None
 
     def update_config(self, config: TradingConfig) -> None:
-        """Update configuration."""
+        """Update configuration.
+
+        Three cases that invalidate the rolling spread history are handled here:
+
+        - **Leg A or Leg B changed**: the cached ticks are from a different
+          instrument entirely, so we clear everything and start collecting fresh.
+        - **Hedge ratio changed**: the spot/futures price ticks are still good,
+          but every cached spread was computed with the wrong beta. We rebuild
+          ``spread_history`` from ``spot_prices`` / ``futures_prices`` using the
+          new beta — preserves all the collected data and avoids a multi-hour
+          collect-from-scratch.
+        - **Lookback changed**: existing behavior — resize the deques in place.
+        """
+        old_config = self.config
+        old_spot_sym = getattr(old_config, 'spot_symbol', None)
+        old_fut_sym  = getattr(old_config, 'futures_symbol', None)
+        old_beta     = getattr(old_config, 'hedge_ratio', 1.0) or 1.0
+
         self.config = config
         self.stats_update_interval = config.stats_update_interval
 
+        # 1. Pair changed — drop everything; the ticks aren't comparable
+        pair_changed = (
+            old_spot_sym != config.spot_symbol or
+            old_fut_sym  != config.futures_symbol
+        )
+        if pair_changed:
+            self.spread_history.clear()
+            self.spot_prices.clear()
+            self.futures_prices.clear()
+            self.current_spread = 0.0
+            self.current_mean = 0.0
+            self.current_std = 0.0
+            self.current_zscore = 0.0
+            self.current_hurst = 0.5
+            self.current_half_life = float('inf')
+            self.last_stats_update = None
+            self._stats_initialized = False
+            logger.info("Pair changed (%s/%s -> %s/%s) — spread history cleared",
+                        old_spot_sym, old_fut_sym,
+                        config.spot_symbol, config.futures_symbol)
+
+        # 2. Beta changed — recompute every cached spread under the new beta
+        new_beta = getattr(config, 'hedge_ratio', 1.0) or 1.0
+        if not pair_changed and abs(new_beta - old_beta) > 1e-12 and self.spot_prices:
+            recomputed = [F - new_beta * S
+                          for S, F in zip(self.spot_prices, self.futures_prices)]
+            self.spread_history = deque(recomputed, maxlen=self.lookback)
+            self.current_spread = recomputed[-1] if recomputed else 0.0
+            # Stats need to be redrawn from the new series on the next tick
+            self.last_stats_update = None
+            self._stats_initialized = False
+            logger.info("Hedge ratio changed (%.6f -> %.6f) — recomputed %d cached spreads",
+                        old_beta, new_beta, len(recomputed))
+
+        # 3. Lookback changed — resize in place (existing behavior, preserved)
         if config.lookback_period != self.lookback:
             self.lookback = config.lookback_period
-            # Resize deques
             old_spreads = list(self.spread_history)
             old_spots = list(self.spot_prices)
             old_futures = list(self.futures_prices)
