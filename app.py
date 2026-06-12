@@ -153,11 +153,18 @@ def start_engine_loop():
     # Start command polling in a background daemon thread
     _telegram.start_polling()
 
-    # Load spread history from database for recovery
+    # Load spread history from database for recovery.
+    # Pass the raw spot/futures prices so the signal generator recomputes every
+    # spread under the CURRENT hedge ratio — the persisted ``spread`` column
+    # was written with whatever β was set at save time and can't be trusted.
     spread_history = db.get_spread_history(config.asset, limit=config.lookback_period)
     if spread_history:
         spreads = [h['spread'] for h in spread_history]
-        engine.signal_generator.load_spread_history(spreads)
+        spot_prices = [h['spot_price'] for h in spread_history]
+        futures_prices = [h['futures_price'] for h in spread_history]
+        engine.signal_generator.load_spread_history(
+            spreads, spot_prices=spot_prices, futures_prices=futures_prices,
+        )
         logger.info("Loaded %d spread values from database", len(spreads))
 
     # Cleanup old spread history to prevent database bloat
@@ -311,6 +318,12 @@ def on_signal_callback(signal: Signal):
         signal_data['std_ratio'] = sg_state.get('std_ratio')
         signal_data['std_ratio_required'] = sg_state.get('std_ratio_required')
         signal_data['last_blocked_signal'] = sg_state.get('last_blocked_signal')
+        # β + converted prices ship on EVERY tick so the dashboard doesn't
+        # flicker between the periodic status fetch (has these) and the tick
+        # emit (used to be missing them)
+        signal_data['hedge_ratio'] = sg_state.get('hedge_ratio', 1.0)
+        signal_data['beta_x_spot'] = sg_state.get('beta_x_spot')
+        signal_data['fut_div_beta'] = sg_state.get('fut_div_beta')
         socketio.emit('signal', signal_data, namespace='/')
     except Exception as e:
         logger.error("Error emitting signal: %s", e)

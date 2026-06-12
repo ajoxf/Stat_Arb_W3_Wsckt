@@ -695,19 +695,56 @@ class SignalGenerator:
             'last_blocked_signal': self.last_blocked_signal,
         }
 
-    def load_spread_history(self, spreads: List[float]) -> None:
+    def load_spread_history(
+        self,
+        spreads: List[float],
+        spot_prices: Optional[List[float]] = None,
+        futures_prices: Optional[List[float]] = None,
+    ) -> None:
         """
-        Load spread history from external source (e.g., database).
-        Used for recovery after reconnection.
+        Load spread history from external source (e.g., database) on engine
+        restart.
+
+        When ``spot_prices`` and ``futures_prices`` are provided (the normal
+        recovery path), we **ignore the stored ``spreads`` list and recompute
+        every spread under the CURRENT hedge ratio**. This is the only correct
+        behavior: a spread persisted under an old hedge ratio is a number with
+        the wrong formula attached. Recomputing from the raw prices guarantees
+        the entire history is consistent with the running config.
+
+        Without the price components, falls back to using the stored spreads
+        verbatim — kept for backward compatibility with callers that don't
+        have access to the inputs.
         """
         self.spread_history.clear()
-        for spread in spreads[-self.lookback:]:
-            self.spread_history.append(spread)
+        self.spot_prices.clear()
+        self.futures_prices.clear()
 
+        if spot_prices is not None and futures_prices is not None:
+            beta = getattr(self.config, 'hedge_ratio', 1.0) or 1.0
+            paired = list(zip(spot_prices, futures_prices))[-self.lookback:]
+            for S, F in paired:
+                self.spot_prices.append(S)
+                self.futures_prices.append(F)
+                self.spread_history.append(F - beta * S)
+            logger.info(
+                "Loaded %d ticks; recomputed spreads under current β=%.6f",
+                len(paired), beta,
+            )
+        else:
+            for spread in spreads[-self.lookback:]:
+                self.spread_history.append(spread)
+            logger.info(
+                "Loaded %d spread values from history (no price components — "
+                "using stored values as-is)", len(self.spread_history),
+            )
+
+        if self.spread_history:
+            self.current_spread = self.spread_history[-1]
         if len(self.spread_history) >= 2:
+            self.last_stats_update = None      # force recompute on this call
+            self._stats_initialized = False
             self._update_statistics()
-
-        logger.info("Loaded %d spread values from history", len(self.spread_history))
 
     def optimize_parameters(
         self,
