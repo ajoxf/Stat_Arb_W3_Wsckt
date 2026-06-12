@@ -181,17 +181,7 @@
                                 <div class="text-danger" style="font-size: 0.85rem;" id="spot-ask">-</div>
                             </div>
                         </div>
-                        <div class="mt-1" style="font-size: 0.65rem;" id="leg-a-sizing"
-                             title="Notional dollar exposure on Leg A, leverage, and locked margin">
-                            <span class="text-secondary">Notional:</span> <span id="leg-a-notional" class="fw-bold">&mdash;</span>
-                            <span class="text-secondary ms-1">·</span>
-                            <span class="text-secondary ms-1">Lev:</span> <span id="leg-a-leverage-disp">&mdash;</span>
-                            <span class="text-secondary ms-1">·</span>
-                            <span class="text-secondary ms-1">Margin:</span> <span id="leg-a-margin">&mdash;</span>
-                        </div>
-                        <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
-                             id="spot-converted"
-                             title="Leg A price scaled by hedge ratio — shown in Leg B's price units"></div>
+                        <!-- sizing + β-converted price moved to the Position Sizing card below -->
                     </div>
                 </div>
             </div>
@@ -213,18 +203,76 @@
                                 <div class="text-danger" style="font-size: 0.85rem;" id="futures-ask">-</div>
                             </div>
                         </div>
-                        <div class="mt-1" style="font-size: 0.65rem;" id="leg-b-sizing"
-                             title="Notional dollar exposure on Leg B, leverage, and locked margin">
-                            <span class="text-secondary">Notional:</span> <span id="leg-b-notional" class="fw-bold">&mdash;</span>
-                            <span class="text-secondary ms-1">·</span>
-                            <span class="text-secondary ms-1">Lev:</span> <span id="leg-b-leverage-disp">&mdash;</span>
-                            <span class="text-secondary ms-1">·</span>
-                            <span class="text-secondary ms-1">Margin:</span> <span id="leg-b-margin">&mdash;</span>
-                        </div>
-                        <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
-                             id="futures-converted"
-                             title="Leg B price divided by hedge ratio — shown in Leg A's price units"></div>
+                        <!-- sizing + β-converted price moved to the Position Sizing card below -->
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Position Sizing — per-leg notional, leverage, margin, β-converted price.
+             Same element IDs as before so updateLegSizing() / converted-price JS works unchanged. -->
+        <div class="card mb-3">
+            <div class="card-header py-1">
+                <small><i class="bi bi-calculator me-2"></i>Position Sizing</small>
+            </div>
+            <div class="card-body p-2">
+                <div class="row g-2" style="font-size: 0.75rem;">
+                    <div class="col-6">
+                        <div class="p-2" style="background: var(--bg-tertiary); border-radius: 4px;">
+                            <div class="text-secondary mb-1" style="font-size: 0.7rem;">
+                                <strong>Leg A</strong>
+                                <span class="ms-1" id="leg-a-sym-echo"></span>
+                            </div>
+                            <div id="leg-a-sizing"
+                                 title="Notional dollar exposure on Leg A, leverage, and locked margin">
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-secondary">Notional:</span>
+                                    <span id="leg-a-notional" class="fw-bold">&mdash;</span>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-secondary">Lev:</span>
+                                    <span id="leg-a-leverage-disp">&mdash;</span>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-secondary">Margin:</span>
+                                    <span id="leg-a-margin">&mdash;</span>
+                                </div>
+                            </div>
+                            <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
+                                 id="spot-converted"
+                                 title="Leg A price scaled by hedge ratio — shown in Leg B's price units"></div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2" style="background: var(--bg-tertiary); border-radius: 4px;">
+                            <div class="text-secondary mb-1" style="font-size: 0.7rem;">
+                                <strong>Leg B</strong>
+                                <span class="ms-1" id="leg-b-sym-echo"></span>
+                            </div>
+                            <div id="leg-b-sizing"
+                                 title="Notional dollar exposure on Leg B, leverage, and locked margin">
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-secondary">Notional:</span>
+                                    <span id="leg-b-notional" class="fw-bold">&mdash;</span>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-secondary">Lev:</span>
+                                    <span id="leg-b-leverage-disp">&mdash;</span>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-secondary">Margin:</span>
+                                    <span id="leg-b-margin">&mdash;</span>
+                                </div>
+                            </div>
+                            <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
+                                 id="futures-converted"
+                                 title="Leg B price divided by hedge ratio — shown in Leg A's price units"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="text-secondary mt-2" style="font-size: 0.65rem;">
+                    Leg A notional is the sizing anchor (= Position Size). Leg B notional =
+                    Position Size × mid(B) ÷ (β × mid(A)) — matches Leg A when β is dollar-neutral.
                 </div>
             </div>
         </div>
@@ -1297,6 +1345,12 @@
     }
 
     function updateLegSizing() {
+        // Echo the current symbol next to each leg label
+        const aSymEl = document.getElementById('leg-a-sym-echo');
+        const bSymEl = document.getElementById('leg-b-sym-echo');
+        if (aSymEl) aSymEl.textContent = _legASymbol || '';
+        if (bSymEl) bSymEl.textContent = _legBSymbol || '';
+
         // Notional, leverage, margin per leg — recomputed from live mids + β.
         // Leg A notional = position_size_usd exactly (that's the sizing anchor).
         // Leg B notional = position_size × (mid_B / (β · mid_A)) — equals
