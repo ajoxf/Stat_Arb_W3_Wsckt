@@ -7,6 +7,23 @@ from typing import Optional, Dict, Any, List
 from models import MarketTick, OrderResult, Position, AccountInfo
 
 
+def is_derivative(symbol: str) -> bool:
+    """True for perpetual swaps and dated futures, False for spot.
+
+    Recognizes OKX-style instIds:
+      - "BTC-USDT"            -> spot
+      - "BTC-USDT-SWAP" /
+        "BTC-USD-SWAP"        -> derivative (perp)
+      - "BTC-USDT-250628" /
+        "BTC-USD-250628"      -> derivative (dated future)
+    """
+    if not symbol:
+        return False
+    if symbol.endswith("-SWAP"):
+        return True
+    return symbol.count("-") >= 2
+
+
 class ExchangeAdapter(ABC):
     """
     Abstract base class for cryptocurrency exchange adapters.

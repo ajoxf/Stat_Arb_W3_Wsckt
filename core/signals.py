@@ -11,6 +11,7 @@ from typing import Optional, Tuple, List, Dict, Any, Callable
 import logging
 
 from models import Signal, TradingConfig, MarketTick, SDTouchEvent
+from adapters.base import is_derivative
 
 logger = logging.getLogger(__name__)
 
@@ -280,8 +281,14 @@ class SignalGenerator:
         """
         Compute the full round-trip cost breakdown in bps.
 
-        Round-trip = entry (spot + futures) + exit (spot + futures) + slippage × 4 legs.
-        Returns a dict with per-leg components so the UI can show the breakdown.
+        Round-trip = entry (Leg A + Leg B) + exit (Leg A + Leg B) + slippage × 4.
+        Fees are picked per-leg from the instrument shape (spot rates for spot,
+        futures rates for any perp/dated future) so the cost estimate is correct
+        regardless of which leg-slot holds which instrument type — futures/futures,
+        calendar spreads, and the classic basis trade are all handled.
+
+        The breakdown keys keep their legacy names (entry_spot_bps / entry_fut_bps)
+        for dashboard backward-compatibility; semantically they're Leg A / Leg B.
         """
         spot_maker = getattr(self.config, 'spot_maker_fee_bps', self.config.maker_fee_bps)
         spot_taker = getattr(self.config, 'spot_taker_fee_bps', self.config.taker_fee_bps)
@@ -291,10 +298,18 @@ class SignalGenerator:
         entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
         exit_mode  = getattr(self.config, 'exit_execution_mode',  self.config.order_execution_mode)
 
-        entry_spot_bps = spot_maker if entry_mode == "LIMIT" else spot_taker
-        entry_fut_bps  = fut_maker  if entry_mode == "LIMIT" else fut_taker
-        exit_spot_bps  = spot_maker if exit_mode  == "LIMIT" else spot_taker
-        exit_fut_bps   = fut_maker  if exit_mode  == "LIMIT" else fut_taker
+        # Pick the per-leg fee schedule based on what each leg actually is
+        leg_a_is_deriv = is_derivative(getattr(self.config, 'spot_symbol', ''))
+        leg_b_is_deriv = is_derivative(getattr(self.config, 'futures_symbol', ''))
+        leg_a_maker = fut_maker if leg_a_is_deriv else spot_maker
+        leg_a_taker = fut_taker if leg_a_is_deriv else spot_taker
+        leg_b_maker = fut_maker if leg_b_is_deriv else spot_maker
+        leg_b_taker = fut_taker if leg_b_is_deriv else spot_taker
+
+        entry_spot_bps = leg_a_maker if entry_mode == "LIMIT" else leg_a_taker
+        entry_fut_bps  = leg_b_maker if entry_mode == "LIMIT" else leg_b_taker
+        exit_spot_bps  = leg_a_maker if exit_mode  == "LIMIT" else leg_a_taker
+        exit_fut_bps   = leg_b_maker if exit_mode  == "LIMIT" else leg_b_taker
 
         entry_cost_bps = entry_spot_bps + entry_fut_bps
         exit_cost_bps  = exit_spot_bps  + exit_fut_bps
@@ -321,13 +336,22 @@ class SignalGenerator:
 
     def _check_std_filter(self) -> Tuple[bool, float]:
         """
-        Check if STD is sufficient to cover trading costs.
+        Check if spread STD is sufficient to cover trading costs.
 
         Uses separate spot and futures fees since they differ significantly:
           Spot (non-VIP):    Maker 8 bps, Taker 10 bps
           Futures (non-VIP): Maker 2 bps, Taker  5 bps
 
         Round-trip cost = entry (spot + futures) + exit (spot + futures) + slippage × 4.
+
+        The comparison must be in *spread units*, not dollar-per-leg units.
+        Spread = futures - beta*spot, so a $1 spread move translates to
+        ``futures_qty`` dollars of PnL, where ``futures_qty = position_size /
+        (beta * spot_price)`` (engine's sizing rule). Breakeven spread move is
+        therefore ``rt_bps/10000 * beta * spot_price`` — note the beta factor.
+        For the classic basis trade (beta = 1) this reduces to the original
+        ``rt_bps/10000 * spot_price``; for cross pairs (beta != 1) it correctly
+        scales cost up to the futures-price magnitude.
 
         Returns (passed, profitability_ratio)
         """
@@ -342,7 +366,8 @@ class SignalGenerator:
             return False, 0.0
 
         total_cost_bps = self._compute_round_trip_cost()['round_trip_bps']
-        costs_price = (total_cost_bps / 10000) * spot_price
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        costs_price = (total_cost_bps / 10000) * beta * spot_price
 
         # Profitability ratio: how many times STD covers the costs
         profitability_ratio = self.current_std / costs_price if costs_price > 0 else float('inf')
@@ -575,11 +600,18 @@ class SignalGenerator:
 
         cost = self._compute_round_trip_cost()
 
+        beta = getattr(self.config, 'hedge_ratio', 1.0) or 1.0
+        last_spot = self.spot_prices[-1] if self.spot_prices else 0.0
+        last_fut  = self.futures_prices[-1] if self.futures_prices else 0.0
+
         return {
             'zscore': round(self.current_zscore, 4),
             'spread': round(self.current_spread, 6),
             'spread_mean': round(self.current_mean, 6),
             'spread_std': round(self.current_std, 6),
+            'hedge_ratio': beta,
+            'beta_x_spot': round(beta * last_spot, 6) if last_spot else 0.0,
+            'fut_div_beta': round(last_fut / beta, 6) if last_fut and beta else 0.0,
             'hurst': round(self.current_hurst, 4),
             'half_life': round(hl, 1) if hl != float('inf') else None,
             'suggested_lookback': suggested_lookback,

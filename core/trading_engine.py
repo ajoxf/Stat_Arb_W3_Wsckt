@@ -18,7 +18,7 @@ from core.order_executor import OrderExecutor
 from core.trade_logger import get_trade_logger
 from core.telegram_bot import get_notifier
 from core.ai_monitor import AIMonitor
-from adapters.base import ExchangeAdapter
+from adapters.base import ExchangeAdapter, is_derivative
 from adapters.okx_websocket import OKXWebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -1101,9 +1101,15 @@ class TradingEngine:
 
     async def _verify_leverage_settings(self) -> bool:
         """
-        Verify that leverage settings on the exchange match our config.
+        Verify exchange leverage matches our config for every derivative leg.
 
-        Returns True if leverage is correct or was successfully corrected.
+        Walks both Leg A (config.spot_symbol) and Leg B (config.futures_symbol)
+        and applies the configured leverage to each one that's a perpetual swap
+        or dated future — covers futures/futures, calendar spreads, and the
+        classic basis trade equally.
+
+        Returns True if every derivative leg's leverage matches config or was
+        successfully corrected.
         """
         if not self.futures_adapter:
             return True
@@ -1116,30 +1122,43 @@ class TradingEngine:
             if self.on_config_corrected:
                 self.on_config_corrected(self.config)
 
+        # Collect derivative legs only; spot legs have no leverage to set
+        legs = []
+        if is_derivative(self.config.spot_symbol):
+            legs.append(("Leg A", self.config.spot_symbol))
+        if is_derivative(self.config.futures_symbol):
+            legs.append(("Leg B", self.config.futures_symbol))
+
+        if not legs:
+            logger.info("No derivative legs configured — leverage check skipped")
+            return True
+
         try:
-            # Check current leverage on futures
-            if hasattr(self.futures_adapter, 'get_leverage'):
-                current_leverage = await self.futures_adapter.get_leverage(self.config.futures_symbol)
-                if current_leverage is not None and current_leverage != self.config.futures_leverage:
-                    logger.warning("Leverage mismatch: exchange=%dx, config=%dx. Attempting to correct...",
-                                 current_leverage, self.config.futures_leverage)
-                    # Try to set correct leverage
+            if not hasattr(self.futures_adapter, 'get_leverage'):
+                return True
+            all_ok = True
+            for label, sym in legs:
+                current = await self.futures_adapter.get_leverage(sym)
+                if current is not None and current != self.config.futures_leverage:
+                    logger.warning("%s (%s) leverage mismatch: exchange=%dx, config=%dx — correcting",
+                                   label, sym, current, self.config.futures_leverage)
                     success = await self.futures_adapter.set_leverage(
-                        self.config.futures_symbol,
-                        self.config.futures_leverage
+                        sym, self.config.futures_leverage,
                     )
                     if success:
-                        logger.info("Leverage corrected to %dx", self.config.futures_leverage)
+                        logger.info("%s (%s) leverage corrected to %dx",
+                                    label, sym, self.config.futures_leverage)
                     else:
-                        # Exchange rejected our configured value - treat the actual exchange value as authoritative
-                        logger.warning("Exchange rejected %dx leverage - adjusting config to actual %dx",
-                                      self.config.futures_leverage, current_leverage)
-                        self.config.futures_leverage = current_leverage
+                        logger.warning("%s (%s): exchange rejected %dx — adopting actual %dx",
+                                       label, sym, self.config.futures_leverage, current)
+                        self.config.futures_leverage = current
                         if self.on_config_corrected:
                             self.on_config_corrected(self.config)
+                        all_ok = False
                 else:
-                    logger.info("✅ Leverage verified on exchange: %dx matches config", self.config.futures_leverage)
-            return True
+                    logger.info("✅ %s (%s) leverage verified: %dx",
+                                label, sym, self.config.futures_leverage)
+            return all_ok
         except Exception as e:
             logger.error("Error verifying leverage: %s", e)
             return True  # Don't block trading on verification error

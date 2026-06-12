@@ -278,7 +278,8 @@ class OKXAdapter(ExchangeAdapter):
         try:
             # Determine instrument type and trade mode
             inst_type = _detect_inst_type(symbol)
-            td_mode = "cross" if inst_type == "SWAP" else self._spot_td_mode
+            # SWAP and dated FUTURES are both cross-margined on OKX's linear book
+            td_mode = "cross" if inst_type in ("SWAP", "FUTURES") else self._spot_td_mode
             if force_td_mode:
                 td_mode = force_td_mode
 

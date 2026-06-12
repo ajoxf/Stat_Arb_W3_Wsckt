@@ -181,6 +181,9 @@
                                 <div class="text-danger" style="font-size: 0.85rem;" id="spot-ask">-</div>
                             </div>
                         </div>
+                        <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
+                             id="spot-converted"
+                             title="Spot price scaled by hedge ratio — shown in the futures leg's price units"></div>
                     </div>
                 </div>
             </div>
@@ -202,6 +205,9 @@
                                 <div class="text-danger" style="font-size: 0.85rem;" id="futures-ask">-</div>
                             </div>
                         </div>
+                        <div class="text-secondary mt-1" style="font-size: 0.65rem; display:none;"
+                             id="futures-converted"
+                             title="Futures price divided by hedge ratio — shown in the spot leg's price units"></div>
                     </div>
                 </div>
             </div>
@@ -224,6 +230,9 @@
                     <div class="col-4 text-center">
                         <div class="price-large" id="spread-value" style="font-size: 1.5rem;">0.00</div>
                         <div class="metric-label">Spread</div>
+                        <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
+                             id="spread-breakdown"
+                             title="Spread = futures price − hedge_ratio × spot price"></div>
                     </div>
                     <div class="col-4 text-center">
                         <div class="d-flex align-items-center justify-content-center gap-2">
@@ -1340,6 +1349,46 @@
         spreadEl.textContent = spread.toFixed(2);
         spreadEl.classList.remove('price-up', 'price-down', 'price-neutral');
         spreadEl.classList.add(spread > 0 ? 'price-up' : spread < 0 ? 'price-down' : 'price-neutral');
+
+        // Converted prices + spread breakdown (only meaningful when hedge_ratio != 1)
+        const beta = data.hedge_ratio;
+        const bxs = data.beta_x_spot;
+        const fdb = data.fut_div_beta;
+        const fmt = function(n) {
+            if (n === null || n === undefined || !isFinite(n)) return '-';
+            return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+        };
+        const showBeta = beta && Math.abs(beta - 1.0) > 1e-9;
+
+        const spotConv = document.getElementById('spot-converted');
+        if (spotConv) {
+            if (showBeta && bxs) {
+                spotConv.textContent = '× β (' + beta + ') = ' + fmt(bxs);
+                spotConv.style.display = '';
+            } else {
+                spotConv.style.display = 'none';
+            }
+        }
+        const futConv = document.getElementById('futures-converted');
+        if (futConv) {
+            if (showBeta && fdb) {
+                futConv.textContent = '÷ β (' + beta + ') = ' + fmt(fdb);
+                futConv.style.display = '';
+            } else {
+                futConv.style.display = 'none';
+            }
+        }
+        const spreadBreak = document.getElementById('spread-breakdown');
+        if (spreadBreak) {
+            if (showBeta && bxs && isFinite(spread)) {
+                // spread = F - β·S  →  show F and β·S so the user can eyeball them
+                const futApprox = spread + bxs;
+                spreadBreak.textContent = fmt(futApprox) + ' − ' + fmt(bxs);
+                spreadBreak.style.display = '';
+            } else {
+                spreadBreak.style.display = 'none';
+            }
+        }
 
         const meanEl = document.getElementById('spread-mean');
         if (meanEl) meanEl.textContent = (data.spread_mean || 0).toFixed(2);

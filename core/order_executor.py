@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from models import TradingConfig, OrderResult, MarketTick
-from adapters.base import ExchangeAdapter
+from adapters.base import ExchangeAdapter, is_derivative
 
 logger = logging.getLogger(__name__)
 
@@ -181,17 +181,19 @@ class OrderExecutor:
 
         fut_quantity = futures_quantity if futures_quantity is not None else quantity
 
-        # Determine leg sides and futures pos_side for OKX long_short_mode
-        # LONG spread: Buy spot, Sell futures (short position)
-        # SHORT spread: Sell spot, Buy futures (long position)
+        # Determine leg sides and per-leg pos_side for OKX long_short_mode.
+        # LONG spread = position is long Leg A, short Leg B (regardless of which
+        # slot holds a derivative). pos_side reflects the POSITION direction;
+        # set None for any leg that's spot — OKX rejects posSide on spot orders.
         if position_type == "LONG":
-            spot_side = "BUY"
-            futures_side = "SELL"
-            futures_pos_side = "short"  # Selling futures = opening short
+            spot_side, futures_side = "BUY", "SELL"
+            leg_a_pos, leg_b_pos = "long", "short"
         else:
-            spot_side = "SELL"
-            futures_side = "BUY"
-            futures_pos_side = "long"  # Buying futures = opening long
+            spot_side, futures_side = "SELL", "BUY"
+            leg_a_pos, leg_b_pos = "short", "long"
+
+        leg_a_pos_side = leg_a_pos if is_derivative(self.config.spot_symbol) else None
+        leg_b_pos_side = leg_b_pos if is_derivative(self.config.futures_symbol) else None
 
         # Create spread order
         spread_order = SpreadOrder(
@@ -199,12 +201,13 @@ class OrderExecutor:
                 symbol=self.config.spot_symbol,
                 side=spot_side,
                 quantity=quantity,
+                pos_side=leg_a_pos_side,  # None for spot, "long"/"short" for derivative
             ),
             futures_leg=LegOrder(
                 symbol=self.config.futures_symbol,
                 side=futures_side,
                 quantity=fut_quantity,
-                pos_side=futures_pos_side,  # For OKX long_short_mode
+                pos_side=leg_b_pos_side,
             ),
             is_entry=True,
             position_type=position_type,
@@ -244,29 +247,30 @@ class OrderExecutor:
 
         fut_quantity = futures_quantity if futures_quantity is not None else quantity
 
-        # Opposite of entry, but SAME pos_side (closing the same position)
-        # Close LONG spread: Sell spot, Buy futures (to close short = pos_side stays "short")
-        # Close SHORT spread: Buy spot, Sell futures (to close long = pos_side stays "long")
+        # Opposite trade direction from entry, but SAME pos_side (we're closing
+        # the same position). pos_side is the position direction, not the trade.
         if position_type == "LONG":
-            spot_side = "SELL"
-            futures_side = "BUY"
-            futures_pos_side = "short"  # Closing the short position
+            spot_side, futures_side = "SELL", "BUY"
+            leg_a_pos, leg_b_pos = "long", "short"
         else:
-            spot_side = "BUY"
-            futures_side = "SELL"
-            futures_pos_side = "long"  # Closing the long position
+            spot_side, futures_side = "BUY", "SELL"
+            leg_a_pos, leg_b_pos = "short", "long"
+
+        leg_a_pos_side = leg_a_pos if is_derivative(self.config.spot_symbol) else None
+        leg_b_pos_side = leg_b_pos if is_derivative(self.config.futures_symbol) else None
 
         spread_order = SpreadOrder(
             spot_leg=LegOrder(
                 symbol=self.config.spot_symbol,
                 side=spot_side,
                 quantity=quantity,
+                pos_side=leg_a_pos_side,
             ),
             futures_leg=LegOrder(
                 symbol=self.config.futures_symbol,
                 side=futures_side,
                 quantity=fut_quantity,
-                pos_side=futures_pos_side,  # CRITICAL: same as entry pos_side!
+                pos_side=leg_b_pos_side,
             ),
             is_entry=False,
             position_type=position_type,
