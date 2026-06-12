@@ -16,15 +16,17 @@
                         <div class="col-12">
                             <h6 class="text-secondary mb-3">Pair Selection</h6>
                             <small class="text-secondary d-block mb-3">
-                                Pair any spot instrument with any futures instrument &mdash; the
-                                <strong>same</strong> underlying (classic basis trade) or
-                                <strong>two different</strong> instruments (cross-instrument spread).
-                                Type to search; the lists are loaded live from the exchange.
+                                Trade the spread between <strong>any two OKX instruments</strong> &mdash; Leg A
+                                and Leg B can each be a spot pair, a perpetual swap, or a dated future. Same
+                                underlying (classic basis trade) or two entirely different instruments
+                                (cross-instrument / fiat-quote / inter-exchange spread). Type to search; the
+                                full live list is loaded from the exchange.
                             </small>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Quick Pick <small class="text-secondary">(same underlying)</small></label>
-                            <select class="form-select" id="asset_quickpick">
+                            <label class="form-label">Quick Pick <small class="text-secondary">(basis trade shortcut)</small></label>
+                            <select class="form-select" id="asset_quickpick"
+                                    title="One-click fills both legs for the classic spot vs perp basis trade. Leave alone and pick legs manually for any other spread.">
                                 <option value="">&mdash; choose &mdash;</option>
                                 {% for key, asset in assets.items() %}
                                 <option value="{{ key }}">{{ key }} - {{ asset.name }}</option>
@@ -32,17 +34,17 @@
                             </select>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Spot Instrument</label>
+                            <label class="form-label">Leg A <small class="text-secondary">(any OKX instrument)</small></label>
                             <input type="text" class="form-control" id="spot_symbol" name="spot_symbol"
                                    list="spot_symbols_list" value="{{ config.spot_symbol }}"
-                                   placeholder="e.g. ETH-USDT" autocomplete="off">
+                                   placeholder="e.g. BTC-USDT  or  BTC-AED  or  BTC-USDT-SWAP" autocomplete="off">
                             <datalist id="spot_symbols_list"></datalist>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Futures Instrument</label>
+                            <label class="form-label">Leg B <small class="text-secondary">(any OKX instrument)</small></label>
                             <input type="text" class="form-control" id="futures_symbol" name="futures_symbol"
                                    list="futures_symbols_list" value="{{ config.futures_symbol }}"
-                                   placeholder="e.g. SOL-USDT-SWAP" autocomplete="off">
+                                   placeholder="e.g. BTC-USDT-SWAP  or  BTC-USDT-250628  or  ETH-USDT" autocomplete="off">
                             <datalist id="futures_symbols_list"></datalist>
                         </div>
                         <div class="col-md-4 mt-3">
@@ -952,10 +954,22 @@
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data && data.success) {
-                    fillDatalist('spot_symbols_list', data.spot || []);
-                    fillDatalist('futures_symbols_list', data.futures || []);
-                    status.textContent = '· ' + (data.spot_count || 0) + ' spot · ' +
-                                         (data.futures_count || 0) + ' futures+dated available';
+                    // Both legs draw from the same universe: every spot + every
+                    // perpetual swap + every dated future OKX lists right now.
+                    // Safe (usdt_linear) entries sort to the top within the merged list.
+                    const universe = (data.spot || []).concat(data.futures || []);
+                    universe.sort(function(a, b) {
+                        const aSafe = a.category === 'usdt_linear' ? 0 : 1;
+                        const bSafe = b.category === 'usdt_linear' ? 0 : 1;
+                        if (aSafe !== bSafe) return aSafe - bSafe;
+                        return a.instId.localeCompare(b.instId);
+                    });
+                    fillDatalist('spot_symbols_list', universe);
+                    fillDatalist('futures_symbols_list', universe);
+                    const spotN = data.spot_count || 0;
+                    const futN = data.futures_count || 0;
+                    status.textContent = '· ' + (spotN + futN) + ' instruments available ('
+                                         + spotN + ' spot · ' + futN + ' perp+dated)';
                     checkPairWarning();
                 } else {
                     status.textContent = '· could not load instrument list (connect the exchange first)';
