@@ -11,30 +11,66 @@
             </div>
             <div class="card-body">
                 <form id="config-form">
-                    <!-- Asset Selection -->
+                    <!-- Pair Selection -->
                     <div class="row mb-4">
                         <div class="col-12">
-                            <h6 class="text-secondary mb-3">Asset Selection</h6>
+                            <h6 class="text-secondary mb-3">Pair Selection</h6>
+                            <small class="text-secondary d-block mb-3">
+                                Pair any spot instrument with any futures instrument &mdash; the
+                                <strong>same</strong> underlying (classic basis trade) or
+                                <strong>two different</strong> instruments (cross-instrument spread).
+                                Type to search; the lists are loaded live from the exchange.
+                            </small>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Asset</label>
-                            <select class="form-select" id="asset" name="asset">
+                            <label class="form-label">Quick Pick <small class="text-secondary">(same underlying)</small></label>
+                            <select class="form-select" id="asset_quickpick">
+                                <option value="">&mdash; choose &mdash;</option>
                                 {% for key, asset in assets.items() %}
-                                <option value="{{ key }}" {% if config.asset == key %}selected{% endif %}>
-                                    {{ key }} - {{ asset.name }}
-                                </option>
+                                <option value="{{ key }}">{{ key }} - {{ asset.name }}</option>
                                 {% endfor %}
                             </select>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Spot Symbol</label>
-                            <input type="text" class="form-control" id="spot_symbol" name="spot_symbol" value="{{ config.spot_symbol }}">
+                            <label class="form-label">Spot Instrument</label>
+                            <input type="text" class="form-control" id="spot_symbol" name="spot_symbol"
+                                   list="spot_symbols_list" value="{{ config.spot_symbol }}"
+                                   placeholder="e.g. ETH-USDT" autocomplete="off">
+                            <datalist id="spot_symbols_list"></datalist>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Futures Symbol</label>
-                            <input type="text" class="form-control" id="futures_symbol" name="futures_symbol" value="{{ config.futures_symbol }}">
+                            <label class="form-label">Futures Instrument</label>
+                            <input type="text" class="form-control" id="futures_symbol" name="futures_symbol"
+                                   list="futures_symbols_list" value="{{ config.futures_symbol }}"
+                                   placeholder="e.g. SOL-USDT-SWAP" autocomplete="off">
+                            <datalist id="futures_symbols_list"></datalist>
+                        </div>
+                        <div class="col-md-4 mt-3">
+                            <label class="form-label">Hedge Ratio (&beta;)</label>
+                            <input type="number" class="form-control" id="hedge_ratio" name="hedge_ratio"
+                                   value="{{ config.hedge_ratio }}" step="0.0001" min="0.0001">
+                            <small class="text-secondary">
+                                spread = futures &minus; &beta; &times; spot. Use <strong>1</strong> for the
+                                same underlying (e.g. BTC vs BTC-SWAP). For a cross pair (e.g. BTC vs ETH)
+                                set &beta; so the legs are comparable &mdash; the spot leg is scaled by &beta;
+                                to stay dollar-hedged.
+                            </small>
+                        </div>
+                        <div class="col-12 mt-2">
+                            <small class="text-secondary">
+                                Pair label: <span id="pair_label_display" class="text-info">&mdash;</span>
+                                <span id="instruments_status" class="ms-2 text-secondary"></span>
+                                <a href="#" id="refresh_instruments_btn" class="ms-2"
+                                   title="Re-fetch the instrument list from OKX (bypasses 1h cache)">&#x21bb; refresh</a>
+                            </small>
+                        </div>
+                        <div class="col-12 mt-2">
+                            <div id="pair_warning" class="alert alert-warning py-2 px-3 small mb-0"
+                                 style="display:none;"></div>
                         </div>
                     </div>
+                    <!-- asset is now derived from the chosen legs (DB/history key) -->
+                    <input type="hidden" id="asset" name="asset" value="{{ config.asset }}">
 
                     <hr class="my-4" style="border-color: var(--border-color);">
 
@@ -783,7 +819,7 @@
 
 {% block scripts %}
 <script>
-    // Asset symbol mapping
+    // Quick-pick asset -> default spot/futures symbols for the same underlying
     const assetSymbols = {
         {% for key, asset in assets.items() %}
         '{{ key }}': {
@@ -793,14 +829,168 @@
         {% endfor %}
     };
 
-    // Update symbols when asset changes
-    document.getElementById('asset').addEventListener('change', function() {
+    // Derive the pair label (DB/history key) from the two chosen legs:
+    // same underlying -> base symbol (e.g. "BTC"); different -> "ETH/SOL".
+    function baseOf(instId) {
+        return (instId || '').split('-')[0].toUpperCase();
+    }
+    function updatePairLabel() {
+        const spotBase = baseOf(document.getElementById('spot_symbol').value);
+        const futBase  = baseOf(document.getElementById('futures_symbol').value);
+        let label = '';
+        if (spotBase && futBase) {
+            label = (spotBase === futBase) ? spotBase : (spotBase + '/' + futBase);
+        } else {
+            label = spotBase || futBase || '';
+        }
+        document.getElementById('asset').value = label;
+        document.getElementById('pair_label_display').textContent = label || '—';
+        return label;
+    }
+
+    // Quick-pick fills both legs with the same underlying, then re-labels
+    document.getElementById('asset_quickpick').addEventListener('change', function() {
         const asset = this.value;
         if (assetSymbols[asset]) {
             document.getElementById('spot_symbol').value = assetSymbols[asset].spot;
             document.getElementById('futures_symbol').value = assetSymbols[asset].futures;
+            updatePairLabel();
         }
     });
+
+    // Re-label and re-check warning whenever either leg is edited directly
+    document.getElementById('spot_symbol').addEventListener('input', function() {
+        updatePairLabel(); checkPairWarning();
+    });
+    document.getElementById('futures_symbol').addEventListener('input', function() {
+        updatePairLabel(); checkPairWarning();
+    });
+
+    // Per-instId category lookup, populated as the datalists fill
+    const instrumentCategories = new Map();
+
+    function formatExpiry(epochMs) {
+        if (!epochMs) return '';
+        const n = parseInt(epochMs, 10);
+        if (!n) return '';
+        const d = new Date(n);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+    }
+
+    function badgeFor(it) {
+        const base = it.base || '';
+        const quote = it.quote || '';
+        const exp = formatExpiry(it.expiry);
+        switch (it.category) {
+            case 'usdt_linear':   return base + ' / ' + quote;
+            case 'usdc_linear':   return base + ' / ' + quote + ' · USDC rail';
+            case 'inverse':       return base + ' · inverse perp';
+            case 'dated_usdt':    return base + ' dated · ' + (exp || 'expiry');
+            case 'dated_usdc':    return base + ' dated · USDC · ' + (exp || 'expiry');
+            case 'inverse_dated': return base + ' dated · inverse · ' + (exp || 'expiry');
+            case 'non_usd_quoted':return base + ' / ' + quote + ' · non-USD quote';
+            default:              return it.instId;
+        }
+    }
+
+    // Populate the spot/futures datalists from the live exchange instrument universe
+    function fillDatalist(id, items) {
+        const dl = document.getElementById(id);
+        dl.innerHTML = '';
+        items.forEach(function(it) {
+            instrumentCategories.set(it.instId, it.category || 'unknown');
+            const opt = document.createElement('option');
+            opt.value = it.instId;
+            opt.label = badgeFor(it);
+            dl.appendChild(opt);
+        });
+    }
+
+    // Warning chip when either leg is anything other than USDT linear
+    const CATEGORY_NOTES = {
+        usdc_linear:    'USDC rail — sizing assumes USDC ≈ 1 USD (small basis vs USDT).',
+        inverse:        'inverse / coin-margined — margin & PnL in the base coin, not USD.',
+        dated_usdt:     'dated future — basis compresses to zero at expiry.',
+        dated_usdc:     'dated future + USDC rail — both caveats apply.',
+        inverse_dated:  'dated inverse — expiry + coin-margined caveats apply.',
+        non_usd_quoted: 'non-USD quote — position_size_usd will size in quote units, not USD.',
+        other:          'non-standard configuration — review manually.',
+        other_dated:    'non-standard configuration — review manually.'
+    };
+
+    function checkPairWarning() {
+        const warnEl = document.getElementById('pair_warning');
+        if (!warnEl) return;
+        const legs = [
+            ['Spot', document.getElementById('spot_symbol').value],
+            ['Futures', document.getElementById('futures_symbol').value]
+        ];
+        const issues = [];
+        legs.forEach(function(pair) {
+            const cat = instrumentCategories.get(pair[1]);
+            if (cat && cat !== 'usdt_linear' && cat !== 'unknown') {
+                issues.push(pair[0] + ' (' + pair[1] + '): ' + (CATEGORY_NOTES[cat] || cat));
+            }
+        });
+        if (issues.length === 0) {
+            warnEl.style.display = 'none';
+            warnEl.innerHTML = '';
+        } else {
+            warnEl.style.display = 'block';
+            warnEl.innerHTML =
+                '<strong>Heads up &mdash; engine math assumes USDT linear:</strong><ul class="mb-0 mt-1">' +
+                issues.map(function(t){ return '<li>' + t + '</li>'; }).join('') +
+                '</ul>';
+        }
+    }
+
+    function loadInstruments(refresh) {
+        const status = document.getElementById('instruments_status');
+        status.textContent = '· loading instruments…';
+        fetch('/api/instruments' + (refresh ? '?refresh=1' : ''))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data && data.success) {
+                    fillDatalist('spot_symbols_list', data.spot || []);
+                    fillDatalist('futures_symbols_list', data.futures || []);
+                    status.textContent = '· ' + (data.spot_count || 0) + ' spot · ' +
+                                         (data.futures_count || 0) + ' futures+dated available';
+                    checkPairWarning();
+                } else {
+                    status.textContent = '· could not load instrument list (connect the exchange first)';
+                }
+            })
+            .catch(function() {
+                status.textContent = '· could not load instrument list';
+            });
+    }
+
+    // Manual refresh: bypass the 1h server-side cache; also clear the in-page
+    // category map so a stale tag can't linger on an instId OKX has changed.
+    (function() {
+        const btn = document.getElementById('refresh_instruments_btn');
+        if (!btn) return;
+        btn.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            if (btn.dataset.busy === '1') return;   // ignore double-clicks
+            btn.dataset.busy = '1';
+            btn.style.pointerEvents = 'none';
+            btn.style.opacity = '0.5';
+            instrumentCategories.clear();
+            loadInstruments(true);
+            // Re-enable after the fetch resolves (handled inline by setTimeout
+            // since loadInstruments doesn't return a promise)
+            setTimeout(function() {
+                btn.dataset.busy = '0';
+                btn.style.pointerEvents = '';
+                btn.style.opacity = '';
+            }, 1500);
+        });
+    })();
+
+    loadInstruments(false);
+    updatePairLabel();
 
     // Show/hide live trading checklist when paper trading toggle changes
     function toggleLiveChecklist(checkbox) {
@@ -865,6 +1055,7 @@
             asset: document.getElementById('asset').value,
             spot_symbol: document.getElementById('spot_symbol').value,
             futures_symbol: document.getElementById('futures_symbol').value,
+            hedge_ratio: parseFloat(document.getElementById('hedge_ratio').value) || 1.0,
             entry_threshold: parseFloat(document.getElementById('entry_threshold').value),
             exit_threshold: parseFloat(document.getElementById('exit_threshold').value),
             stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
@@ -982,6 +1173,8 @@
                 document.getElementById('asset').value = config.asset;
                 document.getElementById('spot_symbol').value = config.spot_symbol;
                 document.getElementById('futures_symbol').value = config.futures_symbol;
+                document.getElementById('hedge_ratio').value = config.hedge_ratio;
+                updatePairLabel();
                 document.getElementById('entry_threshold').value = config.entry_threshold;
                 document.getElementById('exit_threshold').value = config.exit_threshold;
                 document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;

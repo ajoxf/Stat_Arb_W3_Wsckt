@@ -19,7 +19,8 @@ class SignalGenerator:
     """
     Generates trading signals based on spread Z-score with filters.
 
-    The spread is calculated as: Futures Price - Spot Price
+    The spread is calculated as: Futures Price - hedge_ratio * Spot Price
+    (hedge_ratio defaults to 1.0 for same-underlying basis trades)
     Z-score = (spread - rolling_mean) / rolling_std
 
     Entry signals:
@@ -117,7 +118,10 @@ class SignalGenerator:
             )
             return
 
-        spread = futures_price - spot_price
+        # Hedge ratio (beta) makes the two legs comparable for cross-instrument
+        # pairs. Defaults to 1.0 -> spread = futures - spot (classic basis trade).
+        hedge_ratio = getattr(self.config, 'hedge_ratio', 1.0) or 1.0
+        spread = futures_price - hedge_ratio * spot_price
 
         self.spot_prices.append(spot_price)
         self.futures_prices.append(futures_price)

@@ -83,6 +83,12 @@ class TradingConfig:
     spot_leverage: int = 1      # 1 = no margin, 2-10 for spot margin trading
     futures_leverage: int = 1   # 1-125 for futures (depends on exchange limits)
 
+    # Hedge ratio (beta) between the two legs: spread = futures - hedge_ratio * spot.
+    # 1.0 = classic basis trade (same underlying, e.g. BTC spot vs BTC-SWAP).
+    # For cross-instrument pairs (e.g. BTC vs ETH) set the ratio so the legs are
+    # comparable; spot leg size is scaled by this ratio to stay dollar-hedged.
+    hedge_ratio: float = 1.0
+
     # Trading mode
     paper_trading: bool = True
     algo_enabled: bool = False
@@ -155,6 +161,7 @@ class TradingConfig:
             'daily_max_loss_usd': self.daily_max_loss_usd,
             'spot_leverage': self.spot_leverage,
             'futures_leverage': self.futures_leverage,
+            'hedge_ratio': self.hedge_ratio,
             'paper_trading': self.paper_trading,
             'algo_enabled': self.algo_enabled,
             'order_execution_mode': self.order_execution_mode,

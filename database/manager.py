@@ -72,6 +72,7 @@ class DatabaseManager:
                     daily_max_loss_usd REAL DEFAULT 0.0,
                     spot_leverage INTEGER DEFAULT 1,
                     futures_leverage INTEGER DEFAULT 1,
+                    hedge_ratio REAL DEFAULT 1.0,
                     paper_trading INTEGER DEFAULT 1,
                     algo_enabled INTEGER DEFAULT 0,
                     order_execution_mode TEXT DEFAULT 'MARKET',
@@ -314,6 +315,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN telegram_notify_errors INTEGER DEFAULT 1")
             if 'daily_max_loss_usd' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN daily_max_loss_usd REAL DEFAULT 0.0")
+            if 'hedge_ratio' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN hedge_ratio REAL DEFAULT 1.0")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -364,6 +367,7 @@ class DatabaseManager:
                     daily_max_loss_usd=row["daily_max_loss_usd"] if "daily_max_loss_usd" in row.keys() else 0.0,
                     spot_leverage=row["spot_leverage"] if "spot_leverage" in row.keys() else 1,
                     futures_leverage=row["futures_leverage"] if "futures_leverage" in row.keys() else 1,
+                    hedge_ratio=row["hedge_ratio"] if "hedge_ratio" in row.keys() else 1.0,
                     paper_trading=bool(row["paper_trading"]),
                     algo_enabled=bool(row["algo_enabled"]),
                     order_execution_mode=row["order_execution_mode"] if "order_execution_mode" in row.keys() else "MARKET",
@@ -416,6 +420,7 @@ class DatabaseManager:
                     daily_max_loss_usd = ?,
                     spot_leverage = ?,
                     futures_leverage = ?,
+                    hedge_ratio = ?,
                     paper_trading = ?,
                     algo_enabled = ?,
                     order_execution_mode = ?,
@@ -460,6 +465,7 @@ class DatabaseManager:
                 config.daily_max_loss_usd,
                 config.spot_leverage,
                 config.futures_leverage,
+                config.hedge_ratio,
                 int(config.paper_trading),
                 int(config.algo_enabled),
                 config.order_execution_mode,

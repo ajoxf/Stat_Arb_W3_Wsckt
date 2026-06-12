@@ -438,6 +438,17 @@ def save_config():
                 except (TypeError, ValueError):
                     data[lev_key] = 1
 
+        # Derive the pair label (used as the spread-history / trade key) from
+        # the chosen legs if the client didn't supply one. Same underlying ->
+        # base symbol (e.g. "BTC"); different legs -> "ETH/SOL".
+        if not (data.get('asset') or '').strip():
+            spot_base = (data.get('spot_symbol') or '').split('-')[0].upper()
+            fut_base = (data.get('futures_symbol') or '').split('-')[0].upper()
+            if spot_base and fut_base:
+                data['asset'] = spot_base if spot_base == fut_base else f"{spot_base}/{fut_base}"
+            else:
+                data['asset'] = spot_base or fut_base
+
         config = TradingConfig.from_dict(data)
         db.save_config(config)
 
@@ -448,6 +459,66 @@ def save_config():
     except Exception as e:
         logger.error("Error saving config: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# In-process cache for the instrument universe (rarely changes; refresh hourly)
+_instruments_cache: Dict[str, Any] = {"ts": 0.0, "data": None}
+_INSTRUMENTS_TTL = 3600  # seconds
+
+
+@app.route('/api/instruments', methods=['GET'])
+def list_instruments():
+    """List all tradable spot and futures instruments for leg selection.
+
+    Returns {spot: [...], futures: [...]} where each entry is
+    {instId, base, quote, label}. This lets the user pair any spot
+    instrument with any futures instrument — the same underlying (basis
+    trade) or two entirely different instruments (cross-instrument spread).
+
+    Cached for an hour; pass ?refresh=1 to force a re-fetch.
+    """
+    force = request.args.get('refresh') == '1'
+    now = time.time()
+    cached = _instruments_cache["data"]
+    if (not force and cached is not None
+            and now - _instruments_cache["ts"] < _INSTRUMENTS_TTL):
+        return jsonify(cached)
+
+    spot_adapter = engine.spot_adapter or engine.futures_adapter
+    futures_adapter = engine.futures_adapter or engine.spot_adapter
+    if not (spot_adapter or futures_adapter) or not loop:
+        return jsonify({'success': False,
+                        'error': 'No exchange adapter connected',
+                        'spot': [], 'futures': []}), 503
+
+    async def _fetch():
+        spot = await spot_adapter.get_instruments("SPOT") if spot_adapter else []
+        swap = await futures_adapter.get_instruments("SWAP") if futures_adapter else []
+        dated = await futures_adapter.get_instruments("FUTURES") if futures_adapter else []
+        # Swap + dated futures share the "futures" leg in the UI; the
+        # category tag on each entry distinguishes them.
+        fut = swap + dated
+        fut.sort(key=lambda x: (x.get("category") != "usdt_linear", x["instId"]))
+        return spot, fut
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(_fetch(), loop)
+        spot, fut = future.result(timeout=20)
+        payload = {
+            'success': True,
+            'spot': spot,
+            'futures': fut,
+            'spot_count': len(spot),
+            'futures_count': len(fut),
+        }
+        # Only cache a non-empty, successful result
+        if spot or fut:
+            _instruments_cache.update(ts=now, data=payload)
+        return jsonify(payload)
+    except Exception as e:
+        logger.error("Error listing instruments: %s", e)
+        return jsonify({'success': False, 'error': str(e),
+                        'spot': [], 'futures': []}), 500
 
 
 @app.route('/api/engine/set-demo-mode', methods=['POST'])

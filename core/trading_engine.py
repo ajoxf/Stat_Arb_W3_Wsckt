@@ -680,7 +680,16 @@ class TradingEngine:
             return
 
         # Calculate quantity
-        quantity = self.config.position_size_usd / spot_price
+        # Leg sizing with hedge ratio (beta). The spot leg is anchored to
+        # position_size_usd; the futures leg is scaled by 1/beta so the legs
+        # stay dollar-hedged (spot_qty = beta * futures_qty). beta=1 -> both
+        # legs equal, identical to the classic same-underlying basis trade.
+        # trade.quantity holds the FUTURES quantity, because the spread is
+        # expressed in futures-price units (spread = F - beta*S), so P&L is
+        # spread_change * futures_qty.
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        spot_qty = self.config.position_size_usd / spot_price
+        quantity = spot_qty / beta  # futures quantity
 
         # Create trade record
         _leverage = max(getattr(self.config, 'futures_leverage', 1), 1)
@@ -725,8 +734,10 @@ class TradingEngine:
             entry_std=signal.spread_std,
         )
 
-        logger.info("Opened %s position: qty=%.6f, spot=%.2f, futures=%.2f, spread=%.6f, zscore=%.4f",
-                    position_type, quantity, spot_price, futures_price, signal.spread, signal.zscore)
+        logger.info("Opened %s position: futures_qty=%.6f, spot_qty=%.6f (beta=%.4f), "
+                    "spot=%.2f, futures=%.2f, spread=%.6f, zscore=%.4f",
+                    position_type, quantity, spot_qty, beta,
+                    spot_price, futures_price, signal.spread, signal.zscore)
 
         get_notifier().notify_trade_entry(trade, signal)
 
@@ -1151,11 +1162,14 @@ class TradingEngine:
         self._futures_order_attempts += 1
 
         try:
+            # Spot leg is scaled by the hedge ratio; futures leg = trade.quantity.
+            beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
             spread_order = await self.order_executor.execute_entry(
                 position_type=signal.signal_type,
                 spot_tick=self.spot_tick,
                 futures_tick=self.futures_tick,
-                quantity=trade.quantity,
+                quantity=trade.quantity * beta,   # spot leg quantity
+                futures_quantity=trade.quantity,  # futures leg quantity
             )
 
             if spread_order and spread_order.is_complete:
@@ -1349,11 +1363,14 @@ class TradingEngine:
             return False
 
         try:
+            # Mirror the entry sizing: spot leg scaled by the hedge ratio.
+            beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
             spread_order = await self.order_executor.execute_exit(
                 position_type=trade.position_type,
                 spot_tick=self.spot_tick,
                 futures_tick=self.futures_tick,
-                quantity=trade.quantity,
+                quantity=trade.quantity * beta,   # spot leg quantity
+                futures_quantity=trade.quantity,  # futures leg quantity
             )
 
             if spread_order and spread_order.is_complete:

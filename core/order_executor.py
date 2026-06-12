@@ -159,6 +159,7 @@ class OrderExecutor:
         spot_tick: MarketTick,
         futures_tick: MarketTick,
         quantity: float,
+        futures_quantity: Optional[float] = None,
     ) -> Optional[SpreadOrder]:
         """
         Execute entry trade for a spread position.
@@ -166,11 +167,19 @@ class OrderExecutor:
         LONG spread: Buy spot, Sell futures
         SHORT spread: Sell spot, Buy futures
 
+        Args:
+            quantity: Spot leg quantity (base units).
+            futures_quantity: Futures leg quantity. Defaults to ``quantity``
+                when None (same-underlying basis trade); differs when a hedge
+                ratio scales the legs for a cross-instrument pair.
+
         Returns SpreadOrder with execution results.
         """
         if self._executing:
             logger.warning("Already executing an order")
             return None
+
+        fut_quantity = futures_quantity if futures_quantity is not None else quantity
 
         # Determine leg sides and futures pos_side for OKX long_short_mode
         # LONG spread: Buy spot, Sell futures (short position)
@@ -194,7 +203,7 @@ class OrderExecutor:
             futures_leg=LegOrder(
                 symbol=self.config.futures_symbol,
                 side=futures_side,
-                quantity=quantity,
+                quantity=fut_quantity,
                 pos_side=futures_pos_side,  # For OKX long_short_mode
             ),
             is_entry=True,
@@ -216,16 +225,24 @@ class OrderExecutor:
         spot_tick: MarketTick,
         futures_tick: MarketTick,
         quantity: float,
+        futures_quantity: Optional[float] = None,
     ) -> Optional[SpreadOrder]:
         """
         Execute exit trade to close a spread position.
 
         Close LONG spread: Sell spot, Buy futures
         Close SHORT spread: Buy spot, Sell futures
+
+        Args:
+            quantity: Spot leg quantity (base units).
+            futures_quantity: Futures leg quantity; defaults to ``quantity``.
+                Must mirror the entry leg sizing for a clean close.
         """
         if self._executing:
             logger.warning("Already executing an order")
             return None
+
+        fut_quantity = futures_quantity if futures_quantity is not None else quantity
 
         # Opposite of entry, but SAME pos_side (closing the same position)
         # Close LONG spread: Sell spot, Buy futures (to close short = pos_side stays "short")
@@ -248,7 +265,7 @@ class OrderExecutor:
             futures_leg=LegOrder(
                 symbol=self.config.futures_symbol,
                 side=futures_side,
-                quantity=quantity,
+                quantity=fut_quantity,
                 pos_side=futures_pos_side,  # CRITICAL: same as entry pos_side!
             ),
             is_entry=False,

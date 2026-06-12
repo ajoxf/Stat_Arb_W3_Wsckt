@@ -185,6 +185,22 @@ class ExchangeAdapter(ABC):
         """
         pass
 
+    async def get_instruments(self, inst_type: str = "SPOT") -> List[Dict[str, Any]]:
+        """
+        List tradable instruments of a given type (e.g. "SPOT" / "SWAP").
+
+        Not abstract: adapters that don't support instrument discovery
+        inherit this no-op returning an empty list. Each entry should be a
+        dict with at least {instId, base, quote, label}.
+
+        Args:
+            inst_type: Instrument category to list.
+
+        Returns:
+            List of instrument dicts, or [] if unsupported.
+        """
+        return []
+
     def _set_error(self, error: str) -> None:
         """Set last error message."""
         self._last_error = error
