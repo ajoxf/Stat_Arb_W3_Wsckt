@@ -534,6 +534,85 @@ def list_instruments():
                         'spot': [], 'futures': []}), 500
 
 
+# Short cache so rapid Leg A / Leg B edits don't hammer OKX
+_leg_prices_cache: Dict[str, Any] = {}
+_LEG_PRICES_TTL = 5  # seconds
+
+
+@app.route('/api/leg-prices', methods=['GET'])
+def get_leg_prices():
+    """Live mid prices for any two OKX instruments + suggested hedge ratio.
+
+    Used by the Settings page to suggest β. For dollar-neutral hedging the
+    canonical β is mid(Leg B) / mid(Leg A) — same formula the dashboard's
+    × β converted-price hint uses for display. The OLS cointegration slope
+    (the textbook stat-arb β) is similar but not identical.
+
+    Cached 5 seconds to keep rapid debounced calls from rate-limiting OKX.
+    Returns 503 if no exchange adapter is connected, 502 if either symbol
+    has no valid ticker (delisted / typo), 400 on missing params.
+    """
+    leg_a = (request.args.get('leg_a') or '').strip()
+    leg_b = (request.args.get('leg_b') or '').strip()
+    if not leg_a or not leg_b:
+        return jsonify({'success': False,
+                        'error': 'leg_a and leg_b query params required'}), 400
+
+    now = time.time()
+    cache_key = f"{leg_a}|{leg_b}"
+    cached = _leg_prices_cache.get(cache_key)
+    if cached and now - cached['ts'] < _LEG_PRICES_TTL:
+        return jsonify(cached['payload'])
+
+    adapter = engine.spot_adapter or engine.futures_adapter
+    if not adapter or not loop:
+        return jsonify({'success': False,
+                        'error': 'No exchange adapter connected'}), 503
+
+    async def _fetch():
+        # Fetch both tickers in parallel
+        return await asyncio.gather(
+            adapter.get_tick(leg_a),
+            adapter.get_tick(leg_b),
+            return_exceptions=True,
+        )
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(_fetch(), loop)
+        tick_a, tick_b = future.result(timeout=10)
+    except Exception as e:
+        logger.error("leg-prices fetch error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    def safe_mid(tick):
+        if not tick or isinstance(tick, Exception):
+            return None
+        m = getattr(tick, 'mid', 0)
+        return float(m) if m and m > 0 else None
+
+    mid_a = safe_mid(tick_a)
+    mid_b = safe_mid(tick_b)
+    if mid_a is None or mid_b is None:
+        return jsonify({
+            'success': False,
+            'error': f"Could not fetch valid prices (leg_a={leg_a}, leg_b={leg_b})",
+            'leg_a_price': mid_a,
+            'leg_b_price': mid_b,
+        }), 502
+
+    suggested_beta = mid_b / mid_a
+    payload = {
+        'success': True,
+        'leg_a': leg_a,
+        'leg_b': leg_b,
+        'leg_a_price': round(mid_a, 8),
+        'leg_b_price': round(mid_b, 8),
+        'suggested_beta': round(suggested_beta, 6),
+    }
+    _leg_prices_cache[cache_key] = {'ts': now, 'payload': payload}
+    return jsonify(payload)
+
+
 @app.route('/api/engine/set-demo-mode', methods=['POST'])
 def set_demo_mode():
     """Switch between OKX Demo and Live server modes.

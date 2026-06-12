@@ -48,14 +48,23 @@
                             <datalist id="futures_symbols_list"></datalist>
                         </div>
                         <div class="col-md-4 mt-3">
-                            <label class="form-label">Hedge Ratio (&beta;)</label>
+                            <label class="form-label d-flex justify-content-between align-items-center">
+                                <span>Hedge Ratio (&beta;)</span>
+                                <span id="beta_suggestion_wrap" class="text-secondary"
+                                      style="font-size: 0.7rem; display:none;">
+                                    suggestion: <span id="beta_suggestion_value" class="text-info">&mdash;</span>
+                                    <a href="#" id="beta_suggestion_apply" class="ms-1"
+                                       title="Apply the suggested β to the hedge ratio field">apply</a>
+                                </span>
+                            </label>
                             <input type="number" class="form-control" id="hedge_ratio" name="hedge_ratio"
                                    value="{{ config.hedge_ratio }}" step="0.0001" min="0.0001">
                             <small class="text-secondary">
                                 spread = futures &minus; &beta; &times; spot. Use <strong>1</strong> for the
                                 same underlying (e.g. BTC vs BTC-SWAP). For a cross pair (e.g. BTC vs ETH)
                                 set &beta; so the legs are comparable &mdash; the spot leg is scaled by &beta;
-                                to stay dollar-hedged.
+                                to stay dollar-hedged. The suggestion above is mid(Leg B) &divide; mid(Leg A)
+                                from live OKX prices &mdash; the dollar-neutral &beta;.
                             </small>
                         </div>
                         <div class="col-12 mt-2">
@@ -862,11 +871,77 @@
 
     // Re-label and re-check warning whenever either leg is edited directly
     document.getElementById('spot_symbol').addEventListener('input', function() {
-        updatePairLabel(); checkPairWarning();
+        updatePairLabel(); checkPairWarning(); fetchBetaSuggestion();
     });
     document.getElementById('futures_symbol').addEventListener('input', function() {
-        updatePairLabel(); checkPairWarning();
+        updatePairLabel(); checkPairWarning(); fetchBetaSuggestion();
     });
+
+    // Live β suggestion = mid(Leg B) / mid(Leg A) from OKX
+    // Debounced so typing doesn't fire a fetch per keystroke. Cleared whenever
+    // either leg is invalid/empty so a stale suggestion can't mislead the user.
+    let _betaSuggestionTimer = null;
+    let _betaSuggestionSeq = 0;   // ignore late responses if the user typed more
+    function setBetaSuggestion(text, betaValue) {
+        const wrap = document.getElementById('beta_suggestion_wrap');
+        const val  = document.getElementById('beta_suggestion_value');
+        const apply= document.getElementById('beta_suggestion_apply');
+        if (!wrap || !val || !apply) return;
+        if (!text) { wrap.style.display = 'none'; apply.dataset.beta = ''; return; }
+        wrap.style.display = '';
+        val.textContent = text;
+        apply.dataset.beta = (betaValue !== undefined && betaValue !== null) ? String(betaValue) : '';
+        apply.style.display = apply.dataset.beta ? '' : 'none';
+    }
+    function fetchBetaSuggestion() {
+        clearTimeout(_betaSuggestionTimer);
+        const a = (document.getElementById('spot_symbol').value || '').trim();
+        const b = (document.getElementById('futures_symbol').value || '').trim();
+        if (!a || !b) { setBetaSuggestion('', null); return; }
+        if (a === b) { setBetaSuggestion('1.0000  (same instrument)', 1); return; }
+        // Debounce
+        _betaSuggestionTimer = setTimeout(function() {
+            const seq = ++_betaSuggestionSeq;
+            setBetaSuggestion('fetching…', null);
+            fetch('/api/leg-prices?leg_a=' + encodeURIComponent(a) +
+                              '&leg_b=' + encodeURIComponent(b))
+                .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+                .then(function(res) {
+                    if (seq !== _betaSuggestionSeq) return;   // stale response
+                    if (res.ok && res.body.success) {
+                        const beta = res.body.suggested_beta;
+                        // Compact display: keep 4 dp for most ratios, fewer for big numbers
+                        const display = (Math.abs(beta) >= 100)
+                            ? beta.toFixed(2)
+                            : beta.toFixed(4);
+                        setBetaSuggestion(display, beta);
+                    } else {
+                        const msg = (res.body && res.body.error) || 'unavailable';
+                        setBetaSuggestion(msg.length > 30 ? 'unavailable' : msg, null);
+                    }
+                })
+                .catch(function() {
+                    if (seq !== _betaSuggestionSeq) return;
+                    setBetaSuggestion('unavailable', null);
+                });
+        }, 500);
+    }
+
+    // "apply" link copies the suggested β into the hedge ratio input
+    (function() {
+        const apply = document.getElementById('beta_suggestion_apply');
+        if (!apply) return;
+        apply.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            const beta = apply.dataset.beta;
+            if (!beta) return;
+            const input = document.getElementById('hedge_ratio');
+            input.value = beta;
+            // Flash so the user sees the apply landed
+            input.classList.add('border-info');
+            setTimeout(function() { input.classList.remove('border-info'); }, 800);
+        });
+    })();
 
     // Per-instId category lookup, populated as the datalists fill
     const instrumentCategories = new Map();
@@ -1005,6 +1080,7 @@
 
     loadInstruments(false);
     updatePairLabel();
+    fetchBetaSuggestion();
 
     // Show/hide live trading checklist when paper trading toggle changes
     function toggleLiveChecklist(checkbox) {

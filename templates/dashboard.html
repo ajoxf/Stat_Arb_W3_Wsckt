@@ -213,6 +213,27 @@
             </div>
         </div>
 
+        <!-- Live Hedge Ratio (live β = mid(Leg B) / mid(Leg A), recomputed each tick) -->
+        <div class="card mb-3" id="live-beta-card">
+            <div class="card-body py-2 px-3" style="font-size: 0.8rem;">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div title="mid(Leg B) ÷ mid(Leg A) — the β that would make the pair dollar-neutral right now">
+                        <i class="bi bi-arrow-left-right me-1 text-secondary"></i>
+                        <span class="text-secondary">Live β:</span>
+                        <span id="live-beta-value" class="fw-bold ms-1 text-info">&mdash;</span>
+                    </div>
+                    <div>
+                        <span class="text-secondary">configured:</span>
+                        <span id="live-beta-configured" class="ms-1">&mdash;</span>
+                    </div>
+                    <div title="Percent difference between configured β and live β. Green ≤ 0.5% • amber ≤ 2% • red > 2%.">
+                        <span class="text-secondary me-1">drift:</span>
+                        <span id="live-beta-drift" class="badge bg-secondary">&mdash;</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Signal & Position Combined -->
         <div class="card mb-3">
             <div class="card-header py-2 d-flex justify-content-between align-items-center">
@@ -1195,6 +1216,53 @@
     let prevSpotPrice = null;
     let prevFuturesPrice = null;
 
+    // Latest known configured β. Seeded from the server-rendered config so the
+    // live-β card has something to compare against on first paint; updated on
+    // every signal event so it stays in sync after the user saves a new β.
+    let _configuredBeta = {{ config.hedge_ratio if config.hedge_ratio else 1.0 }};
+    // Cache the most recent spot/futures ticks so signal events (which carry the
+    // new configured β) can re-render the drift without waiting for the next tick.
+    let _lastSpotTick = null;
+    let _lastFuturesTick = null;
+
+    function _fmtBeta(b) {
+        if (b === null || b === undefined || !isFinite(b)) return '—';
+        return Math.abs(b) >= 100 ? b.toFixed(2) : b.toFixed(4);
+    }
+    function updateLiveBeta() {
+        const valueEl = document.getElementById('live-beta-value');
+        const cfgEl   = document.getElementById('live-beta-configured');
+        const driftEl = document.getElementById('live-beta-drift');
+        if (!valueEl || !cfgEl || !driftEl) return;
+        const s = _lastSpotTick, f = _lastFuturesTick;
+        const spotMid = (s && s.bid > 0 && s.ask > 0) ? (s.bid + s.ask) / 2 : null;
+        const futMid  = (f && f.bid > 0 && f.ask > 0) ? (f.bid + f.ask) / 2 : null;
+        if (!spotMid || !futMid) {
+            valueEl.textContent = '—';
+            cfgEl.textContent   = _fmtBeta(_configuredBeta);
+            driftEl.textContent = '—';
+            driftEl.className   = 'badge bg-secondary';
+            return;
+        }
+        const liveBeta = futMid / spotMid;
+        valueEl.textContent = _fmtBeta(liveBeta);
+        cfgEl.textContent   = _fmtBeta(_configuredBeta);
+        if (!_configuredBeta || _configuredBeta <= 0) {
+            driftEl.textContent = '—';
+            driftEl.className   = 'badge bg-secondary';
+            return;
+        }
+        const driftPct = ((liveBeta - _configuredBeta) / _configuredBeta) * 100;
+        const sign = driftPct >= 0 ? '+' : '';
+        driftEl.textContent = sign + driftPct.toFixed(2) + '%';
+        const absDrift = Math.abs(driftPct);
+        driftEl.className = 'badge ' + (
+            absDrift < 0.5 ? 'bg-success'
+            : absDrift < 2.0 ? 'bg-warning'
+            : 'bg-danger'
+        );
+    }
+
     function updatePrices(spot, futures) {
         if (spot) {
             updatePriceWithColor('spot-bid', spot.bid, 'neutral');
@@ -1222,6 +1290,11 @@
                 updateMarginDisplay(spot.last, futures.last);
             }
         }
+
+        // Stash the latest ticks and refresh the live β card on every tick
+        if (spot) _lastSpotTick = spot;
+        if (futures) _lastFuturesTick = futures;
+        updateLiveBeta();
     }
 
     function updateMarginDisplay(spotPrice, futuresPrice) {
@@ -1352,6 +1425,12 @@
 
         // Converted prices + spread breakdown (only meaningful when hedge_ratio != 1)
         const beta = data.hedge_ratio;
+        // Capture the configured β so the live-β card can render the drift,
+        // and refresh immediately (don't wait for the next tick to roll in)
+        if (beta && beta > 0) {
+            _configuredBeta = beta;
+            updateLiveBeta();
+        }
         const bxs = data.beta_x_spot;
         const fdb = data.fut_div_beta;
         const fmt = function(n) {
