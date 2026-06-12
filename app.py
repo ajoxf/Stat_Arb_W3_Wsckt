@@ -332,6 +332,11 @@ def on_signal_callback(signal: Signal):
         signal_data['leg_b_leverage'] = config.futures_leverage
         signal_data['leg_a_symbol'] = config.spot_symbol
         signal_data['leg_b_symbol'] = config.futures_symbol
+        # Used by the always-visible 'Last Signal Blocked' card so it can render
+        # the idle-state hint ("Waiting for z to cross ±X") and know when to
+        # pause block tracking (engine doesn't generate signals while in position).
+        signal_data['entry_threshold'] = config.entry_threshold
+        signal_data['current_position'] = engine.state.current_position
         socketio.emit('signal', signal_data, namespace='/')
     except Exception as e:
         logger.error("Error emitting signal: %s", e)

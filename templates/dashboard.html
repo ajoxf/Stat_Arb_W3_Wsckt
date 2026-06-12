@@ -506,26 +506,27 @@
             </div>
         </div>
 
-        <!-- Blocked Signal Indicator -->
-        <div id="blocked-signal-card" class="card mb-3" style="display: none;">
+        <!-- Last Signal Blocked — always visible so layout stays stable; populated
+             with idle hints when there's nothing to block (waiting / in position). -->
+        <div id="blocked-signal-card" class="card mb-3">
             <div class="card-header py-1">
                 <small><i class="bi bi-slash-circle me-2 text-secondary"></i>Last Signal Blocked</small>
             </div>
             <div class="card-body py-2" style="font-size: 0.75rem;">
                 <div class="d-flex justify-content-between mb-1">
                     <span class="text-secondary">Signal:</span>
-                    <span id="blocked-signal-type" class="fw-bold">-</span>
+                    <span id="blocked-signal-type" class="fw-bold text-secondary">&mdash;</span>
                 </div>
                 <div class="d-flex justify-content-between mb-1">
                     <span class="text-secondary">Z-Score:</span>
-                    <span id="blocked-signal-zscore">-</span>
+                    <span id="blocked-signal-zscore">&mdash;</span>
                 </div>
                 <div class="d-flex justify-content-between mb-1">
                     <span class="text-secondary">Time:</span>
-                    <span id="blocked-signal-time" style="font-size: 0.65rem;">-</span>
+                    <span id="blocked-signal-time" style="font-size: 0.65rem;">&mdash;</span>
                 </div>
                 <div class="mt-2 p-2" style="background: rgba(108, 117, 125, 0.1); border-radius: 4px;">
-                    <span class="text-secondary" id="blocked-signal-reason">-</span>
+                    <span class="text-secondary" id="blocked-signal-reason">Waiting for first signal&hellip;</span>
                 </div>
             </div>
         </div>
@@ -1763,44 +1764,84 @@
         updatePosition(data.current_position);
 
         // Update blocked signal indicator
-        updateBlockedSignal(data.last_blocked_signal);
+        updateBlockedSignal(data.last_blocked_signal, {
+            entryThreshold: data.entry_threshold,
+            currentPosition: data.current_position,
+        });
     }
 
     let _lastBlockedKey = null;
 
-    function updateBlockedSignal(blockedSignal) {
-        const card = document.getElementById('blocked-signal-card');
-        if (!blockedSignal) {
-            if (card) card.style.display = 'none';
-            _lastBlockedKey = null;
+    // Cache so the relative-age refresh on every tick can use the last block
+    // without us needing to re-render fields that haven't changed.
+    let _cachedBlockedSignal = null;
+    let _cachedEntryThreshold = {{ config.entry_threshold if config.entry_threshold else 2.0 }};
+    let _cachedCurrentPosition = 'NONE';
+
+    function _relAge(ms) {
+        if (ms < 5_000)      return 'just now';
+        if (ms < 60_000)     return Math.round(ms / 1000) + 's ago';
+        if (ms < 3_600_000)  return Math.round(ms / 60_000) + 'm ago';
+        if (ms < 86_400_000) return Math.round(ms / 3_600_000) + 'h ago';
+        return Math.round(ms / 86_400_000) + 'd ago';
+    }
+
+    // Called on every signal event. Renders one of three states:
+    //   1. Has a block          -> full details with relative age that refreshes
+    //   2. In position          -> 'block tracking paused' (engine skips signal gen)
+    //   3. Idle, no block yet   -> 'Waiting for z to cross ±N'
+    function updateBlockedSignal(blockedSignal, opts) {
+        opts = opts || {};
+        if (blockedSignal !== undefined) _cachedBlockedSignal = blockedSignal;
+        if (opts.entryThreshold !== undefined && opts.entryThreshold > 0)
+            _cachedEntryThreshold = opts.entryThreshold;
+        if (opts.currentPosition !== undefined)
+            _cachedCurrentPosition = opts.currentPosition;
+
+        const typeEl   = document.getElementById('blocked-signal-type');
+        const zEl      = document.getElementById('blocked-signal-zscore');
+        const timeEl   = document.getElementById('blocked-signal-time');
+        const reasonEl = document.getElementById('blocked-signal-reason');
+        if (!typeEl || !zEl || !timeEl || !reasonEl) return;
+
+        const bs = _cachedBlockedSignal;
+        const inPosition = _cachedCurrentPosition && _cachedCurrentPosition !== 'NONE';
+
+        if (bs) {
+            // STATE 1 — show the block
+            typeEl.textContent = bs.would_be_signal || '—';
+            typeEl.className =
+                bs.would_be_signal === 'LONG'  ? 'fw-bold text-success' :
+                bs.would_be_signal === 'SHORT' ? 'fw-bold text-danger'  : 'fw-bold';
+            zEl.textContent = (bs.zscore !== undefined && bs.zscore !== null)
+                ? bs.zscore.toFixed(4) : '—';
+            if (bs.timestamp) {
+                const t = new Date(bs.timestamp);
+                const age = Date.now() - t.getTime();
+                timeEl.textContent = t.toLocaleTimeString() + ' (' + _relAge(age) + ')';
+            } else {
+                timeEl.textContent = '—';
+            }
+            reasonEl.textContent = bs.reason || 'Unknown reason';
+            reasonEl.className = 'text-warning';
             return;
         }
 
-        // Skip DOM update if nothing has changed (prevents flickering on every tick)
-        const key = blockedSignal.timestamp + '|' + blockedSignal.reason;
-        if (key === _lastBlockedKey) return;
-        _lastBlockedKey = key;
-
-        // Show the card
-        card.style.display = 'block';
-
-        // Update the fields
-        document.getElementById('blocked-signal-type').textContent = blockedSignal.would_be_signal || '-';
-        document.getElementById('blocked-signal-type').className =
-            blockedSignal.would_be_signal === 'LONG' ? 'fw-bold text-success' :
-            blockedSignal.would_be_signal === 'SHORT' ? 'fw-bold text-danger' : 'fw-bold';
-
-        document.getElementById('blocked-signal-zscore').textContent =
-            blockedSignal.zscore !== undefined ? blockedSignal.zscore.toFixed(4) : '-';
-
-        if (blockedSignal.timestamp) {
-            const time = new Date(blockedSignal.timestamp);
-            document.getElementById('blocked-signal-time').textContent = time.toLocaleTimeString();
+        // No cached block — render the appropriate idle state
+        typeEl.textContent = '—';
+        typeEl.className = 'fw-bold text-secondary';
+        zEl.textContent = '—';
+        timeEl.textContent = '—';
+        if (inPosition) {
+            // STATE 2 — engine pauses signal generation while in position
+            reasonEl.textContent = 'In position — block tracking paused';
+            reasonEl.className = 'text-info';
         } else {
-            document.getElementById('blocked-signal-time').textContent = '-';
+            // STATE 3 — quiet engine, no signal has hit threshold yet
+            const t = _cachedEntryThreshold.toFixed(1);
+            reasonEl.textContent = 'Waiting for z to cross ±' + t + ' (entry threshold)';
+            reasonEl.className = 'text-secondary';
         }
-
-        document.getElementById('blocked-signal-reason').textContent = blockedSignal.reason || 'Unknown reason';
     }
 
 function updateFilterStatus(elementId, passed, value) {
