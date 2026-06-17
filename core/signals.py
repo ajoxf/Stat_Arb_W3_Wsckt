@@ -555,9 +555,14 @@ class SignalGenerator:
                                     self.current_zscore, blocked_reason)
 
         elif self.current_position == "LONG":
-            # Exit when spread returns to the mean locked in at entry time.
-            # Using entry_mean (not current_mean) ensures we target the same
-            # reference point the trade was opened against.
+            # Both exit and stop-loss are measured against the SAME reference:
+            # the mean/std locked in at entry time. Using entry_mean (not the
+            # rolling current_mean) keeps the two checks on one yardstick and
+            # immune to mean-chase — if the spread grinds wide and stays there,
+            # the rolling mean drifts toward it and would deflate current_zscore,
+            # masking an adverse move from a current_zscore-based stop. The
+            # frozen reference removes that path-dependence so the stop fires
+            # deterministically on the move that actually happened since entry.
             exit_mean = self.entry_mean if self.entry_mean is not None else self.current_mean
             exit_std  = self.entry_std  if self.entry_std  is not None else self.current_std
             exit_zscore = (
@@ -566,10 +571,11 @@ class SignalGenerator:
             )
             if exit_zscore <= self.config.exit_threshold:
                 signal_type = "EXIT"
-            elif self.current_zscore >= self.config.stop_loss_threshold:
+            elif exit_zscore >= self.config.stop_loss_threshold:
                 signal_type = "STOP_LOSS"
 
         elif self.current_position == "SHORT":
+            # Same frozen-reference logic as LONG (see comment above).
             exit_mean = self.entry_mean if self.entry_mean is not None else self.current_mean
             exit_std  = self.entry_std  if self.entry_std  is not None else self.current_std
             exit_zscore = (
@@ -578,7 +584,7 @@ class SignalGenerator:
             )
             if exit_zscore >= -self.config.exit_threshold:
                 signal_type = "EXIT"
-            elif self.current_zscore <= -self.config.stop_loss_threshold:
+            elif exit_zscore <= -self.config.stop_loss_threshold:
                 signal_type = "STOP_LOSS"
 
         return Signal(

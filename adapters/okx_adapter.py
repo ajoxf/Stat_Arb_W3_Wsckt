@@ -411,8 +411,13 @@ class OKXAdapter(ExchangeAdapter):
                                 error="Cross-margin SPOT MARKET BUY missing notional_usdt — order blocked to prevent wrong-size placement",
                             )
 
-            # Handle position side for long/short mode accounts (required for SWAP)
-            if inst_type == "SWAP":
+            # Handle position side for long/short mode accounts. Required for
+            # any OKX derivative — SWAP *and* FUTURES (dated). Previously only
+            # checked SWAP, which is why dated-future entries on a
+            # long_short_mode account failed with sCode 51000 "Parameter
+            # posSide error" — the posSide the executor passed in was being
+            # silently dropped here.
+            if inst_type in ("SWAP", "FUTURES"):
                 if pos_side:
                     # Explicit pos_side provided - use it (important for closing positions!)
                     order_data["posSide"] = pos_side

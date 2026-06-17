@@ -681,6 +681,11 @@
                     <span class="text-secondary">Liq. Price:</span>
                     <span id="liq-price" class="text-danger">-</span>
                 </div>
+                <div class="text-secondary mt-2"
+                     style="font-size: 0.65rem; border-top: 1px solid var(--border-color); padding-top: 4px;">
+                    IMR/MMR/Margin Ratio/Mark/Liq are per-position metrics
+                    &mdash; they populate once a trade is open.
+                </div>
             </div>
         </div>
 
@@ -2490,22 +2495,38 @@ function updateFilterStatus(elementId, passed, value) {
                 updateElement('account-equity', '$' + (data.total_equity || data.balance || 0).toFixed(2));
                 updateElement('account-available', '$' + (data.available || 0).toFixed(2));
 
-                updateElement('margin-imr', '$' + (data.initial_margin || 0).toFixed(2));
-                updateElement('margin-mmr', '$' + (data.maintenance_margin || 0).toFixed(2));
+                // IMR/MMR/Margin Ratio/Mark/Liq are PER-POSITION metrics — they
+                // only have meaningful values when you actually hold a position.
+                // Showing $0.00/N/A/'-' when flat made the card look broken, so
+                // render an honest 'no position' placeholder instead.
+                const _inPos = currentPosition && currentPosition.type
+                               && currentPosition.type !== 'NONE';
+                const _empty = '— (no position)';
+                const _emptyShort = '—';
+
+                updateElement('margin-imr',
+                    _inPos ? '$' + (data.initial_margin || 0).toFixed(2) : _empty);
+                updateElement('margin-mmr',
+                    _inPos ? '$' + (data.maintenance_margin || 0).toFixed(2) : _empty);
 
                 const marginRatio = data.margin_ratio || 0;
                 const marginRatioEl = document.getElementById('margin-ratio');
                 if (marginRatioEl) {
-                    marginRatioEl.textContent = marginRatio > 0 ? marginRatio.toFixed(1) + '%' : 'N/A';
-                    marginRatioEl.classList.remove('price-up', 'price-down', 'text-warning');
-                    if (marginRatio > 500) marginRatioEl.classList.add('price-up');
-                    else if (marginRatio > 150) marginRatioEl.classList.add('text-warning');
-                    else if (marginRatio > 0) marginRatioEl.classList.add('price-down');
+                    if (!_inPos) {
+                        marginRatioEl.textContent = _empty;
+                        marginRatioEl.classList.remove('price-up', 'price-down', 'text-warning');
+                    } else {
+                        marginRatioEl.textContent = marginRatio > 0 ? marginRatio.toFixed(1) + '%' : 'N/A';
+                        marginRatioEl.classList.remove('price-up', 'price-down', 'text-warning');
+                        if (marginRatio > 500) marginRatioEl.classList.add('price-up');
+                        else if (marginRatio > 150) marginRatioEl.classList.add('text-warning');
+                        else if (marginRatio > 0) marginRatioEl.classList.add('price-down');
+                    }
                 }
 
                 const healthBadge = document.getElementById('margin-health-badge');
                 if (healthBadge) {
-                    const health = data.margin_health || 'N/A';
+                    const health = _inPos ? (data.margin_health || 'N/A') : 'N/A';
                     healthBadge.textContent = health;
                     healthBadge.classList.remove('bg-success', 'bg-warning', 'bg-danger', 'bg-secondary');
                     if (health === 'SAFE') healthBadge.classList.add('bg-success');
@@ -2514,8 +2535,10 @@ function updateFilterStatus(elementId, passed, value) {
                     else healthBadge.classList.add('bg-secondary');
                 }
 
-                updateElement('mark-price', data.mark_price ? '$' + data.mark_price.toFixed(2) : '-');
-                updateElement('liq-price', data.liquidation_price ? '$' + data.liquidation_price.toFixed(2) : '-');
+                updateElement('mark-price',
+                    _inPos && data.mark_price ? '$' + data.mark_price.toFixed(2) : _emptyShort);
+                updateElement('liq-price',
+                    _inPos && data.liquidation_price ? '$' + data.liquidation_price.toFixed(2) : _emptyShort);
 
                 // Update actual leverage from exchange (for accurate margin calculations)
                 if (data.actual_spot_leverage !== undefined) {
