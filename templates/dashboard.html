@@ -361,6 +361,22 @@
                             <span id="position-entry-futures">-</span>
                         </div>
                     </div>
+                    <div class="row mb-1">
+                        <div class="col-6">
+                            <span class="text-secondary"
+                                  title="Spread at entry (futures − β × spot, from actual fills). The exit target is when this drifts toward zero.">
+                                Entry Spread:
+                            </span>
+                            <span id="position-entry-spread">-</span>
+                        </div>
+                        <div class="col-6">
+                            <span class="text-secondary"
+                                  title="Spread now − Entry Spread. For a LONG, profit when this is NEGATIVE (spread fell). For a SHORT, profit when POSITIVE.">
+                                Δ Spread:
+                            </span>
+                            <span id="position-spread-delta">-</span>
+                        </div>
+                    </div>
                     <div class="row">
                         <div class="col-6">
                             <span class="text-secondary">Age:</span>
@@ -1018,7 +1034,7 @@
             updateMarginDisplay(currentPosition.entrySpotPrice, currentPosition.entryFuturesPrice);
         } else {
             // Position closed
-            currentPosition = { type: 'NONE', quantity: 0, entrySpotPrice: 0, entryFuturesPrice: 0, notionalUsd: 0 };
+            currentPosition = { type: 'NONE', quantity: 0, entrySpotPrice: 0, entryFuturesPrice: 0, notionalUsd: 0, entrySpread: null };
             currentOpenTrade = null;
             updateMarginDisplay(0, 0);
         }
@@ -1583,6 +1599,27 @@
         spreadEl.classList.remove('price-up', 'price-down', 'price-neutral');
         spreadEl.classList.add(spread > 0 ? 'price-up' : spread < 0 ? 'price-down' : 'price-neutral');
 
+        // Position Δ Spread — how far the spread has moved since entry, colored
+        // by whether that move is favorable for the current direction.
+        //   LONG  profits when spread falls → favorable when Δ < 0
+        //   SHORT profits when spread rises → favorable when Δ > 0
+        // Live-updates every tick (data.spread) without needing a new payload.
+        const deltaEl = document.getElementById('position-spread-delta');
+        if (deltaEl) {
+            const es = currentPosition.entrySpread;
+            if (currentPosition.type && currentPosition.type !== 'NONE' && es != null && isFinite(es)) {
+                const delta = spread - es;
+                const sign = delta >= 0 ? '+' : '';
+                deltaEl.textContent = sign + delta.toFixed(2);
+                const favorable = (currentPosition.type === 'LONG' && delta < 0)
+                               || (currentPosition.type === 'SHORT' && delta > 0);
+                deltaEl.className = (delta === 0) ? '' : (favorable ? 'price-up' : 'price-down');
+            } else {
+                deltaEl.textContent = '-';
+                deltaEl.className = '';
+            }
+        }
+
         // Converted prices + spread breakdown (only meaningful when hedge_ratio != 1)
         const beta = data.hedge_ratio;
         // Capture the configured β + sizing inputs and refresh immediately
@@ -1950,6 +1987,19 @@ function updateFilterStatus(elementId, passed, value) {
 
                 const futEntryEl = document.getElementById('position-entry-futures');
                 if (futEntryEl) futEntryEl.textContent = t.entry_futures_price ? '$' + parseFloat(t.entry_futures_price).toFixed(2) : '-';
+
+                // Entry spread = the spread value locked in when the trade opened.
+                // The exit target is when the live spread drifts back toward zero
+                // from this point (LONG opened when spread was wide and positive
+                // would profit as the spread falls). Stash on currentPosition so the
+                // delta gets refreshed on every tick by updatePositionSpreadDelta,
+                // not just on signal events.
+                const entrySpreadEl = document.getElementById('position-entry-spread');
+                if (entrySpreadEl) {
+                    const es = (t.entry_spread != null) ? parseFloat(t.entry_spread) : null;
+                    entrySpreadEl.textContent = es != null ? es.toFixed(2) : '-';
+                    currentPosition.entrySpread = es;
+                }
 
                 const notionalEl = document.getElementById('position-notional');
                 if (notionalEl) notionalEl.textContent = t.notional_usd ? '$' + parseFloat(t.notional_usd).toFixed(0) : '-';

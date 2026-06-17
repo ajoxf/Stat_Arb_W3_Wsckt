@@ -621,9 +621,12 @@ class OrderExecutor:
         offset = 1-2 bps: slightly better price, still maker if spread is wider
         """
         offset_bps = self.config.limit_order_price_offset_bps / 10000
-        # Safety buffer: keep price 0.5 bps away from the opposite side
-        # This prevents POST_ONLY rejection when spread is very tight
-        SAFETY_BUFFER_BPS = 0.5 / 10000
+        # Safety buffer: keep price 1.0 bp away from the opposite side. Widened
+        # from 0.5 bp when the executor switched to POST_ONLY — a tighter cap
+        # let the price land too close to the touch on fast books, causing OKX
+        # to reject ~5-10% of orders for would-have-crossed. The reprice loop
+        # handles those, but a 1.0 bp buffer cuts rejections back to noise.
+        SAFETY_BUFFER_BPS = 1.0 / 10000
 
         if spread_order.spot_leg.side == "BUY":
             target = spot_tick.bid * (1 + offset_bps)
@@ -673,7 +676,14 @@ class OrderExecutor:
         """
         # Use regular LIMIT orders - prices are already calculated to be passive
         # (at best bid for BUY, best ask for SELL) which should achieve maker fills
-        order_type = "LIMIT"
+        # POST_ONLY = limit order that OKX cancels if it would fill immediately,
+        # guaranteeing the maker fee (3.4× cheaper at VIP4 dated futures: 0.8
+        # bps maker vs 2.7 bps taker). Plain "limit" at the bid/ask races the
+        # order book — by the time OKX receives the order the book has often
+        # moved and the order matches as a taker. POST_ONLY trades a small risk
+        # of rejection (the reprice loop handles it on the next interval) for
+        # guaranteed maker fills on every order that does land.
+        order_type = "POST_ONLY"
 
         # Skip legs already marked FILLED by the pre-flight reconcile — those
         # are positions the exchange says we no longer hold, so placing a fresh
@@ -789,7 +799,7 @@ class OrderExecutor:
                             result = await self.spot_adapter.place_order(
                                 symbol=spread_order.spot_leg.symbol,
                                 side=spread_order.spot_leg.side,
-                                order_type="LIMIT",  # Regular LIMIT - passive price achieves maker
+                                order_type="POST_ONLY",  # guaranteed maker (reprice on rejection)
                                 quantity=remaining_qty,
                                 price=spread_order.spot_leg.target_price,
                                 pos_side=spread_order.spot_leg.pos_side,
@@ -831,7 +841,7 @@ class OrderExecutor:
                             result = await self.futures_adapter.place_order(
                                 symbol=spread_order.futures_leg.symbol,
                                 side=spread_order.futures_leg.side,
-                                order_type="LIMIT",  # Regular LIMIT - passive price achieves maker
+                                order_type="POST_ONLY",  # guaranteed maker (reprice on rejection)
                                 quantity=remaining_qty,
                                 price=spread_order.futures_leg.target_price,
                                 pos_side=spread_order.futures_leg.pos_side,
