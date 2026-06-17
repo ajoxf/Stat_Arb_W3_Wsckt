@@ -273,6 +273,8 @@ class Trade:
     # P&L
     pnl_usd: float = 0.0
     pnl_percent: float = 0.0
+    fees_usd: float = 0.0      # realized round-trip fees from OKX (4 leg-fills)
+    pnl_gross_usd: float = 0.0 # P&L before fees (audit trail: pnl_gross - fees = pnl_usd)
 
     # Order IDs
     spot_order_id: str = ""
@@ -315,6 +317,8 @@ class Trade:
             'notional_usd': self.notional_usd,
             'pnl_usd': self.pnl_usd,
             'pnl_percent': self.pnl_percent,
+            'pnl_gross_usd': self.pnl_gross_usd,
+            'fees_usd': self.fees_usd,
             'spot_order_id': self.spot_order_id,
             'futures_order_id': self.futures_order_id,
             'entry_placed_at': self.entry_placed_at.isoformat() if self.entry_placed_at else None,

@@ -128,6 +128,8 @@ class DatabaseManager:
                     notional_usd REAL,
                     pnl_usd REAL DEFAULT 0,
                     pnl_percent REAL DEFAULT 0,
+                    pnl_gross_usd REAL DEFAULT 0,
+                    fees_usd REAL DEFAULT 0,
                     spot_order_id TEXT,
                     futures_order_id TEXT,
                     is_open INTEGER DEFAULT 1,
@@ -339,6 +341,14 @@ class DatabaseManager:
                     min_std_multiple = CASE WHEN min_std_multiple >= 1.5 THEN 1.2 ELSE min_std_multiple END
                 WHERE id = 1 AND std_filter_enabled = 0
             """)
+
+            # Migrate trades table for the realized-P&L breakdown (pnl_gross + fees)
+            cursor.execute("PRAGMA table_info(trades)")
+            trade_cols = {row[1] for row in cursor.fetchall()}
+            if 'pnl_gross_usd' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN pnl_gross_usd REAL DEFAULT 0")
+            if 'fees_usd' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN fees_usd REAL DEFAULT 0")
 
             logger.info("Database initialized: %s", self.db_path)
 
@@ -659,6 +669,8 @@ class DatabaseManager:
                         exit_reason = ?,
                         pnl_usd = ?,
                         pnl_percent = ?,
+                        pnl_gross_usd = ?,
+                        fees_usd = ?,
                         is_open = ?
                     WHERE id = ?
                 """, (
@@ -670,6 +682,8 @@ class DatabaseManager:
                     trade.exit_reason,
                     trade.pnl_usd,
                     trade.pnl_percent,
+                    trade.pnl_gross_usd,
+                    trade.fees_usd,
                     int(trade.is_open),
                     trade.id,
                 ))

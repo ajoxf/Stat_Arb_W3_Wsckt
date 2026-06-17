@@ -1218,6 +1218,16 @@ class OKXAdapter(ExchangeAdapter):
 
         # Include dated FUTURES, not just SPOT + perpetual SWAP — otherwise
         # dated-future trades (e.g. ETH-USDT-260626) never show in the order log.
+        # OKX returns sz/fillSz in CONTRACTS for SWAP and FUTURES. Convert to
+        # base-currency amounts via ctVal so the dashboard shows '0.7 ETH'
+        # instead of '7 contracts' — matching what humans see on OKX itself.
+        ctval_cache: Dict[str, float] = {}
+        async def _ctval(sym: str) -> float:
+            if sym not in ctval_cache:
+                info = await self.get_symbol_info(sym)
+                ctval_cache[sym] = float((info or {}).get("contract_val") or 1.0) or 1.0
+            return ctval_cache[sym]
+
         inst_types = ["SPOT", "SWAP", "FUTURES"]
         for inst_type in inst_types:
             params: Dict[str, Any] = {"instType": inst_type, "limit": str(limit)}
@@ -1236,17 +1246,26 @@ class OKXAdapter(ExchangeAdapter):
                         # sell appear as 0.0005 BTC instead of the full 0.286 BTC.
                         fill_px = o.get("avgPx", "") or o.get("fillPx", "") or "0"
                         fill_sz = o.get("accFillSz", "") or o.get("fillSz", "") or "0"
+                        inst_id = o.get("instId", "")
+                        raw_qty = float(o.get("sz", 0) or 0)
+                        raw_fill = float(fill_sz)
+                        # SWAP/FUTURES: sz is in CONTRACTS — multiply by ctVal
+                        # to get base-currency units. SPOT: sz is already in base.
+                        ctval = await _ctval(inst_id) if inst_type in ("SWAP", "FUTURES") else 1.0
                         orders.append({
                             "order_id":    o.get("ordId", ""),
-                            "symbol":      o.get("instId", ""),
+                            "symbol":      inst_id,
                             "inst_type":   inst_type,
                             "side":        o.get("side", ""),       # buy / sell
                             "pos_side":    o.get("posSide", ""),    # long / short / net
                             "order_type":  o.get("ordType", ""),    # market / limit
                             "state":       o.get("state", ""),      # filled / cancelled / live
-                            "quantity":    float(o.get("sz", 0) or 0),
-                            "fill_qty":    float(fill_sz),
+                            "quantity":    raw_qty * ctval,         # base units (e.g. 0.7 ETH not 7 contracts)
+                            "fill_qty":    raw_fill * ctval,
                             "fill_price":  float(fill_px),
+                            "contracts":   raw_qty,                 # original for audit
+                            "fill_contracts": raw_fill,
+                            "ct_val":      ctval,
                             "fee":         float(fee),
                             "fee_ccy":     o.get("feeCcy", ""),
                             "leverage":    o.get("lever", ""),
