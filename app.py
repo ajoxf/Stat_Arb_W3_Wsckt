@@ -1626,13 +1626,19 @@ def get_account_info():
     account_data['configured_spot_leverage'] = config.spot_leverage
     account_data['configured_futures_leverage'] = config.futures_leverage
 
-    # Set actual leverage - prefer exchange data, use sensible defaults
-    # For spot: Default to 1x (cash trading) unless a margin position reports leverage
+    # Set actual leverage — prefer exchange data, use sensible defaults that
+    # respect the LEG'S instrument shape (not a blanket 'spot = cash' assumption).
+    # Leg A can be a derivative too (e.g. ETH-USDT-260626), in which case it uses
+    # the configured spot_leverage from settings, not the 'cash' fallback.
     if 'actual_spot_leverage' not in account_data:
-        # No spot margin position found - use 1x for cash trading
-        # VIP/margin accounts with active positions will get leverage from position data
-        account_data['actual_spot_leverage'] = 1
-        account_data['spot_leverage_source'] = 'cash'  # Cash spot = no leverage
+        if is_derivative(config.spot_symbol):
+            # Leg A is a derivative — use the user's configured leverage
+            account_data['actual_spot_leverage'] = config.spot_leverage
+            account_data['spot_leverage_source'] = 'configured'
+        else:
+            # Genuine spot leg — cash trading, no leverage
+            account_data['actual_spot_leverage'] = 1
+            account_data['spot_leverage_source'] = 'cash'
 
     # For futures: Check if we need to fetch leverage from exchange settings
     if 'actual_futures_leverage' not in account_data:

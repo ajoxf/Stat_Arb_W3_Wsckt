@@ -1447,10 +1447,16 @@
 
         card.style.display = 'block';
 
-        // Calculate position values based on current prices
-        const qty = currentPosition.quantity;
-        const spotValue = qty * spotPrice;
-        const futuresValue = qty * futuresPrice;
+        // Calculate position values based on current prices.
+        // currentPosition.quantity is the FUTURES (Leg B) quantity. For Leg A
+        // the actual size is futures_qty × β (engine rule: spot_qty = β × futures_qty).
+        // Treating both legs as the same quantity is correct ONLY for β=1; on
+        // cross pairs (β≠1) it under-reports Leg A's notional by a factor of β.
+        const futQty = currentPosition.quantity;
+        const beta = (_configuredBeta && _configuredBeta > 0) ? _configuredBeta : 1;
+        const spotQty = futQty * beta;
+        const spotValue = spotQty * spotPrice;
+        const futuresValue = futQty * futuresPrice;
 
         // Calculate margin used with ACTUAL exchange leverage (not configured)
         const spotMargin = spotValue / actualSpotLeverage;
