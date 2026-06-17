@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 import aiohttp
 
-from .base import ExchangeAdapter
+from .base import ExchangeAdapter, is_derivative
 from models import MarketTick, OrderResult, Position, AccountInfo
 
 logger = logging.getLogger(__name__)
@@ -288,27 +288,35 @@ class OKXAdapter(ExchangeAdapter):
             sz = quantity
             sz_str = ""
 
-            if inst_type == "SWAP":
-                # For SWAP: convert quantity to contracts
+            if inst_type in ("SWAP", "FUTURES"):
+                # SWAP *and* dated FUTURES are denominated in CONTRACTS on OKX,
+                # not base units. The caller passes a base-currency quantity
+                # (e.g. 0.0075 BTC); convert to contract count via ctVal. Dated
+                # futures previously fell through to the spot branch and the
+                # base quantity was sent as a raw contract count, placing a
+                # position 10-75x off intended size and breaking the hedge.
                 if symbol_info:
                     ct_val = float(symbol_info.get("contract_val") or 0.01)
                     if ct_val <= 0:
                         return OrderResult(success=False, error=f"Invalid contract value {ct_val}")
-                    # Convert BTC quantity to number of contracts
-                    # Use floor (int) not round — rounding up would make futures
-                    # larger than the spot leg, creating an unhedged short exposure.
+                    # Convert base quantity to number of contracts.
+                    # Use floor (int) not round — rounding up would over-size the
+                    # leg, creating unhedged exposure.
                     contracts = quantity / ct_val
                     sz = int(contracts)
                     # Validate minimum 1 contract - don't silently inflate small positions
                     if sz < 1:
-                        logger.error("SWAP quantity %.6f = %.2f contracts (ctVal=%.4f), minimum is 1",
-                                    quantity, contracts, ct_val)
-                        return OrderResult(success=False, error=f"Quantity {quantity} too small, need at least {ct_val} for 1 contract")
-                    logger.info("SWAP order: %.6f %s = %d contracts (ctVal=%.4f)",
-                               quantity, symbol.split("-")[0], sz, ct_val)
+                        logger.error("%s quantity %.6f = %.2f contracts (ctVal=%.4f), minimum is 1",
+                                    inst_type, quantity, contracts, ct_val)
+                        return OrderResult(success=False,
+                                           error=f"Quantity {quantity} too small for {symbol}: "
+                                                 f"need at least {ct_val} (1 contract)")
+                    logger.info("%s order: %.6f %s = %d contracts (ctVal=%.4f)",
+                               inst_type, quantity, symbol.split("-")[0], sz, ct_val)
                 else:
-                    # No symbol info - cannot safely place SWAP order
-                    return OrderResult(success=False, error="Cannot place SWAP order without symbol info")
+                    # No symbol info - cannot safely place a contract-denominated order
+                    return OrderResult(success=False,
+                                       error=f"Cannot place {inst_type} order without symbol info")
                 sz_str = str(int(sz))
             else:
                 # For SPOT: validate and format quantity properly
@@ -374,7 +382,7 @@ class OKXAdapter(ExchangeAdapter):
                     px_str = str(round(price, 2))
                 order_data["px"] = px_str
 
-            if reduce_only and inst_type == "SWAP":
+            if reduce_only and inst_type in ("SWAP", "FUTURES"):
                 order_data["reduceOnly"] = True
 
             # For spot cash-mode (tdMode=cash) market BUY, OKX defaults sz to quote (USDT).
@@ -764,7 +772,7 @@ class OKXAdapter(ExchangeAdapter):
                 return OrderResult(success=True)  # Nothing to close
 
             pos = positions[0]
-            is_swap = any(x in symbol for x in ("-SWAP", "-FUTURES", "-PERP"))
+            is_swap = is_derivative(symbol)
 
             if not is_swap:
                 # Spot margin: place explicit covering market order
@@ -812,7 +820,7 @@ class OKXAdapter(ExchangeAdapter):
                 "instId": symbol,
                 "mgnMode": "cross",
             }
-            is_perp = any(x in symbol for x in ("-SWAP", "-FUTURES", "-PERP"))
+            is_perp = is_derivative(symbol)
             if not is_perp:
                 parts = symbol.split("-")
                 if len(parts) >= 2:
@@ -1142,8 +1150,8 @@ class OKXAdapter(ExchangeAdapter):
             True if successful, False otherwise
         """
         try:
-            # Leverage setting is only for derivatives (SWAP/FUTURES), not spot
-            if "-SWAP" not in symbol and "-FUTURES" not in symbol:
+            # Leverage setting is only for derivatives (SWAP + dated FUTURES), not spot
+            if not is_derivative(symbol):
                 logger.debug("Leverage not applicable for spot symbol: %s", symbol)
                 return True
 
@@ -1178,7 +1186,7 @@ class OKXAdapter(ExchangeAdapter):
             Current leverage value or None if error
         """
         try:
-            if "-SWAP" not in symbol and "-FUTURES" not in symbol:
+            if not is_derivative(symbol):
                 return 1  # Spot doesn't have leverage
 
             result = await self._request(
@@ -1203,7 +1211,9 @@ class OKXAdapter(ExchangeAdapter):
         """
         orders = []
 
-        inst_types = ["SPOT", "SWAP"]
+        # Include dated FUTURES, not just SPOT + perpetual SWAP — otherwise
+        # dated-future trades (e.g. ETH-USDT-260626) never show in the order log.
+        inst_types = ["SPOT", "SWAP", "FUTURES"]
         for inst_type in inst_types:
             params: Dict[str, Any] = {"instType": inst_type, "limit": str(limit)}
             if symbol:

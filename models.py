@@ -89,6 +89,13 @@ class TradingConfig:
     # comparable; spot leg size is scaled by this ratio to stay dollar-hedged.
     hedge_ratio: float = 1.0
 
+    # M2M (mark-to-market) buffer, as a percent on top of the required per-leg
+    # margin. Headroom for fees, slippage, and adverse price drift between the
+    # balance check and order fill. The pre-trade balance guard requires
+    # available >= total_margin * (1 + m2m_buffer_pct/100). Default 10%;
+    # raise (e.g. 30%) for more safety margin against liquidation on volatile pairs.
+    m2m_buffer_pct: float = 10.0
+
     # Trading mode
     paper_trading: bool = True
     algo_enabled: bool = False
@@ -162,6 +169,7 @@ class TradingConfig:
             'spot_leverage': self.spot_leverage,
             'futures_leverage': self.futures_leverage,
             'hedge_ratio': self.hedge_ratio,
+            'm2m_buffer_pct': self.m2m_buffer_pct,
             'paper_trading': self.paper_trading,
             'algo_enabled': self.algo_enabled,
             'order_execution_mode': self.order_execution_mode,

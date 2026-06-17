@@ -25,6 +25,7 @@ from core.auto_tuner import AutoTuner
 from core.telegram_bot import get_notifier
 from database.manager import DatabaseManager
 from adapters import OKXAdapter, BinanceAdapter, BybitAdapter, OKXWebSocketManager
+from adapters.base import is_derivative
 
 # Load environment variables
 load_dotenv()
@@ -897,7 +898,7 @@ def get_exchange_positions():
         out = []
         for pos in positions:
             usd_value = abs(pos.quantity * pos.entry_price) if pos.entry_price else 0
-            is_swap = any(x in pos.symbol for x in ('-SWAP', '-FUTURES', '-PERP'))
+            is_swap = is_derivative(pos.symbol)
             picker = adapter if is_swap else spot_adapter
             min_qty = 0.0
             try:
@@ -999,8 +1000,8 @@ def close_exchange_position():
     if not symbol:
         return jsonify({'success': False, 'error': 'Symbol is required'})
 
-    # Use the correct adapter: spot for MARGIN symbols, futures for SWAP/FUTURES
-    is_swap = any(x in symbol for x in ('-SWAP', '-FUTURES', '-PERP'))
+    # Use the correct adapter: spot for MARGIN symbols, futures for SWAP / dated FUTURES
+    is_swap = is_derivative(symbol)
     adapter = engine.futures_adapter if is_swap else (engine.spot_adapter or engine.futures_adapter)
     if not adapter:
         return jsonify({'success': False, 'error': 'No adapter available'})
@@ -1139,7 +1140,7 @@ def sweep_dust_positions():
             usd_value = abs(pos.quantity * pos.entry_price) if pos.entry_price else 0
             if usd_value >= MIN_POSITION_USD:
                 continue
-            is_swap = any(x in pos.symbol for x in ('-SWAP', '-FUTURES', '-PERP'))
+            is_swap = is_derivative(pos.symbol)
             adapter = futures_adapter if is_swap else spot_adapter
             if not adapter:
                 results.append({'symbol': pos.symbol, 'success': False,
@@ -1601,11 +1602,12 @@ def get_account_info():
                     for pos in positions:
                         pos_data = pos.to_dict()
                         account_data['positions'].append(pos_data)
-                        # Track leverage from actual positions
-                        if 'SWAP' in pos.symbol or 'PERP' in pos.symbol:
+                        # Track leverage from actual positions. is_derivative
+                        # covers SWAP + dated FUTURES; everything else is spot/margin.
+                        if is_derivative(pos.symbol):
                             account_data['actual_futures_leverage'] = pos.leverage
                             account_data['futures_leverage_source'] = 'exchange'
-                        elif pos.symbol and not any(x in pos.symbol for x in ['SWAP', 'PERP', 'FUTURE']):
+                        elif pos.symbol:
                             # This is a spot/margin position - get its leverage
                             account_data['actual_spot_leverage'] = pos.leverage
                             account_data['spot_leverage_source'] = 'exchange'

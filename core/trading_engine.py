@@ -5,6 +5,7 @@ Manages the main trading loop, position management, and order execution.
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta, date
 from typing import Optional, Callable, Dict, Any, List, Tuple
 from dataclasses import dataclass
@@ -95,7 +96,8 @@ class TradingEngine:
         # that withdrawals / external trades won't go undetected for long.
         self._balance_cache: Optional[Tuple[datetime, float]] = None
         self._BALANCE_CACHE_TTL_SEC = 3.0
-        self._BALANCE_SAFETY_BUFFER = 1.10   # 10% headroom for fees, slippage, drift
+        # M2M buffer multiplier is derived from config.m2m_buffer_pct at check
+        # time so the user can change it without restarting.
 
         # Daily loss tracking
         self._daily_loss_usd: float = 0.0
@@ -718,6 +720,24 @@ class TradingEngine:
         spot_qty = self.config.position_size_usd / spot_price
         quantity = spot_qty / beta  # futures quantity
 
+        # Guard #11: BOTH legs must clear their exchange minimums BEFORE we place
+        # either order. Without this, a leg that rounds below its minimum (e.g. a
+        # futures leg under 1 contract) fails AFTER the other leg has already
+        # filled — orphaning it. Block the whole entry atomically instead.
+        min_size_block = await self._check_min_leg_sizes(
+            spot_qty=spot_qty, futures_qty=quantity,
+            spot_price=spot_price, beta=beta,
+        )
+        if min_size_block:
+            logger.warning("Entry blocked: %s", min_size_block)
+            self.signal_generator.last_blocked_signal = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'would_be_signal': signal.signal_type,
+                'zscore': round(signal.zscore, 4),
+                'reason': min_size_block,
+            }
+            return
+
         # Create trade record
         _leverage = max(getattr(self.config, 'futures_leverage', 1), 1)
         trade = Trade(
@@ -868,6 +888,76 @@ class TradingEngine:
         if self.on_trade:
             self.on_trade(trade)
 
+    async def _check_min_leg_sizes(self, *, spot_qty: float, futures_qty: float,
+                                    spot_price: float, beta: float) -> Optional[str]:
+        """Return ``None`` if both legs clear their exchange minimum order size,
+        else a human-readable reason string.
+
+        Per-leg minimum (in base units):
+          - derivative leg (SWAP / dated FUTURES): 1 contract = ``ctVal``
+          - spot leg: the instrument's ``min_qty``
+
+        Also computes the minimum position_size_usd that *would* let both legs
+        clear, so the operator knows exactly how much to raise size to. Fails
+        open (returns None) if symbol info can't be fetched — better to let the
+        exchange be the final arbiter than to block all trades on a metadata
+        hiccup.
+        """
+        legs = [
+            ("Leg A", self.config.spot_symbol, spot_qty, self.spot_adapter, 1.0),
+            ("Leg B", self.config.futures_symbol, futures_qty, self.futures_adapter, beta),
+        ]
+        problems = []
+        min_viable_usd = 0.0
+
+        for label, symbol, base_qty, adapter, leg_beta in legs:
+            if not adapter or not hasattr(adapter, 'get_symbol_info'):
+                continue  # fail open — can't determine the minimum
+            try:
+                info = await adapter.get_symbol_info(symbol)
+            except Exception as e:
+                logger.warning("%s (%s) symbol-info lookup failed — skipping min-size check: %s",
+                               label, symbol, e)
+                info = None
+            if not info:
+                continue  # fail open
+
+            if is_derivative(symbol):
+                unit = float(info.get("contract_val") or 0) or 0.0
+                unit_desc = f"{unit:g} (1 contract)"
+            else:
+                unit = float(info.get("min_qty") or 0) or 0.0
+                unit_desc = f"{unit:g} (min order)"
+
+            if unit <= 0:
+                continue  # unknown minimum → fail open
+
+            # Position size needed for THIS leg to clear: base_qty scales linearly
+            # with position_size_usd, so required size = unit * (current size / base_qty).
+            if base_qty > 0:
+                leg_required_usd = unit * (self.config.position_size_usd / base_qty)
+                min_viable_usd = max(min_viable_usd, leg_required_usd)
+
+            if base_qty < unit:
+                base_ccy = symbol.split("-")[0]
+                problems.append(
+                    f"{label} ({symbol}) size {base_qty:.8f} {base_ccy} is below the "
+                    f"minimum {unit_desc}"
+                )
+
+        if problems:
+            hint = ""
+            if min_viable_usd > 0:
+                # Round UP with a small buffer so the suggested size actually
+                # clears the boundary (the raw value is the exact minimum, which
+                # rounds down to just under 1 contract).
+                suggested = math.ceil(min_viable_usd * 1.02)
+                hint = (f" — raise Position Size to at least "
+                        f"${suggested:,.0f} for this pair, or pick instruments "
+                        f"with smaller minimums")
+            return "Below minimum order size: " + "; ".join(problems) + hint
+        return None
+
     async def _check_sufficient_balance(self, signal_type: str,
                                          spot_price: float,
                                          futures_price: float) -> Optional[str]:
@@ -923,7 +1013,8 @@ class TradingEngine:
         leg_b_lev = max(self.config.futures_leverage if is_derivative(self.config.futures_symbol) else 1, 1)
         margin_a = notional_a / leg_a_lev
         margin_b = notional_b / leg_b_lev
-        required = (margin_a + margin_b) * self._BALANCE_SAFETY_BUFFER
+        buffer_pct = max(getattr(self.config, 'm2m_buffer_pct', 10.0) or 0.0, 0.0)
+        required = (margin_a + margin_b) * (1 + buffer_pct / 100)
 
         if available < required:
             short_by = required - available
@@ -931,7 +1022,7 @@ class TradingEngine:
                 f"Insufficient balance: ${available:,.2f} available, "
                 f"${required:,.2f} needed "
                 f"(Leg A margin ${margin_a:,.0f} + Leg B margin ${margin_b:,.0f} "
-                f"+ {(self._BALANCE_SAFETY_BUFFER - 1) * 100:.0f}% buffer) "
+                f"+ {buffer_pct:.0f}% M2M buffer) "
                 f"— short by ${short_by:,.2f}"
             )
         return None
@@ -1024,8 +1115,14 @@ class TradingEngine:
                         # get_positions() returns ALL margin positions including pre-existing
                         # spot margin positions that are not managed by this bot.
                         # Spot margin positions can be $10M+ and must not be auto-closed.
-                        is_futures = any(x in pos.symbol for x in ('-SWAP', '-FUTURES', '-PERP'))
-                        if not is_futures:
+                        # is_derivative covers SWAP *and* dated FUTURES (e.g.
+                        # BTC-USDT-260626). The old substring check missed dated
+                        # futures entirely, so the monitor classified a real
+                        # futures position as 'not futures', ignored it, declared
+                        # the exchange flat, and force-cleared the engine — orphaning
+                        # the live position. Spot-margin symbols (BTC-USDT) remain
+                        # excluded, so they're still never auto-touched.
+                        if not is_derivative(pos.symbol):
                             logger.debug(
                                 "Ignoring non-futures position in mismatch check: %s %s qty=%.4f",
                                 pos.side, pos.symbol, pos.quantity,
@@ -1130,11 +1227,10 @@ class TradingEngine:
             side = pos['side']    # "LONG" or "SHORT"
             qty = pos['quantity'] # contracts (as reported by exchange)
 
-            # Safety: only auto-close SWAP/FUTURES positions.
+            # Safety: only auto-close SWAP / dated FUTURES positions.
             # Spot margin positions on the account are not bot-managed and
             # must never be touched by auto-close (could be $M+ user positions).
-            is_futures = any(x in symbol for x in ('-SWAP', '-FUTURES', '-PERP'))
-            if not is_futures:
+            if not is_derivative(symbol):
                 logger.warning(
                     "AUTO-CLOSE skipped: %s is not a SWAP/FUTURES position — "
                     "only bot-managed futures orphans are auto-closed. "

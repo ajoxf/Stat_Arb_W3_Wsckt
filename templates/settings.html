@@ -238,6 +238,16 @@
                             <label class="form-label">Max Position Size (USD)</label>
                             <input type="number" class="form-control" id="max_position_size_usd" name="max_position_size_usd" value="{{ config.max_position_size_usd }}" step="100" min="100">
                         </div>
+                        <div class="col-md-6 mt-3">
+                            <label class="form-label">M2M Buffer (%)</label>
+                            <input type="number" class="form-control" id="m2m_buffer_pct" name="m2m_buffer_pct"
+                                   value="{{ config.m2m_buffer_pct }}" step="5" min="0" max="100">
+                            <small class="text-secondary">
+                                Mark-to-market headroom on top of required margin (fees, slippage, drift).
+                                The pre-trade balance guard requires available &ge; margin &times; (1 + this%).
+                                Default 10%; raise to 30% for more safety on volatile pairs.
+                            </small>
+                        </div>
                     </div>
 
                     <div class="row mb-4">
@@ -955,7 +965,9 @@
         }
         const marginA = notA / aLev;
         const marginB = notB / bLev;
-        const required = (marginA + marginB) * 1.10;   // 10% safety buffer
+        const bufPctEl = document.getElementById('m2m_buffer_pct');
+        const bufPct = bufPctEl ? (parseFloat(bufPctEl.value) || 0) : 10;
+        const required = (marginA + marginB) * (1 + bufPct / 100);
 
         valEl.textContent = _fmtUsdLong(required);
         // Spell out the breakdown so the math is auditable
@@ -963,9 +975,11 @@
         const bDesc = bIsDeriv ? (bLev + 'x lev') : 'cash';
         const pricesNote = (_cachedLegAPrice > 0 && _cachedLegBPrice > 0)
             ? '' : '  (assuming β ≈ live ratio)';
+        const mult = (1 + bufPct / 100).toFixed(2);
         breakEl.innerHTML =
             ' &nbsp;= (Leg A ' + _fmtUsdShort(marginA) + ' ' + aDesc +
-            ' + Leg B ' + _fmtUsdShort(marginB) + ' ' + bDesc + ') × 1.10' + pricesNote;
+            ' + Leg B ' + _fmtUsdShort(marginB) + ' ' + bDesc + ') × ' + mult +
+            ' (' + bufPct + '% M2M)' + pricesNote;
     }
 
     function fetchBetaSuggestion() {
@@ -1178,7 +1192,7 @@
     // Wire the capital preview to every input that affects the math.
     // Symbols are already covered — they fire fetchBetaSuggestion which
     // calls updateCapitalPreview once prices land.
-    ['position_size_usd', 'hedge_ratio', 'spot_leverage', 'futures_leverage']
+    ['position_size_usd', 'hedge_ratio', 'spot_leverage', 'futures_leverage', 'm2m_buffer_pct']
         .forEach(function(id) {
             const el = document.getElementById(id);
             if (!el) return;
@@ -1251,6 +1265,7 @@
             spot_symbol: document.getElementById('spot_symbol').value,
             futures_symbol: document.getElementById('futures_symbol').value,
             hedge_ratio: parseFloat(document.getElementById('hedge_ratio').value) || 1.0,
+            m2m_buffer_pct: parseFloat(document.getElementById('m2m_buffer_pct').value) || 0.0,
             entry_threshold: parseFloat(document.getElementById('entry_threshold').value),
             exit_threshold: parseFloat(document.getElementById('exit_threshold').value),
             stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
@@ -1369,6 +1384,7 @@
                 document.getElementById('spot_symbol').value = config.spot_symbol;
                 document.getElementById('futures_symbol').value = config.futures_symbol;
                 document.getElementById('hedge_ratio').value = config.hedge_ratio;
+                document.getElementById('m2m_buffer_pct').value = config.m2m_buffer_pct;
                 updatePairLabel();
                 document.getElementById('entry_threshold').value = config.entry_threshold;
                 document.getElementById('exit_threshold').value = config.exit_threshold;
