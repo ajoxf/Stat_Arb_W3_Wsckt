@@ -7,6 +7,7 @@ Supports interactive commands: /status, /positions, /trades, /balance, /pnl, /eo
 Only requires the 'requests' library (already in requirements.txt).
 """
 
+import html
 import logging
 import threading
 import time
@@ -20,25 +21,43 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
 
-def send_telegram_message(token: str, chat_id: str, text: str) -> bool:
+def send_telegram_message(token: str, chat_id: str, text: str,
+                          parse_mode: Optional[str] = "HTML") -> bool:
     """
-    Send an HTML-formatted message to a Telegram chat.
+    Send a message to a Telegram chat.
 
-    Returns True on success, False on failure (errors are logged, never raised).
+    If parse_mode='HTML' (default) and Telegram rejects the message (HTTP 400
+    — usually because the body contains a stray '<', '>' or '&' that doesn't
+    parse as HTML), automatically retries as plain text. That way an error
+    message always reaches the user; the previous behavior silently dropped
+    parse-failed messages, which is why handler crashes looked like 'no reply
+    at all' instead of a visible error.
     """
     if not token or not chat_id:
         return False
     try:
         url = f"{TELEGRAM_API_BASE.format(token=token)}/sendMessage"
-        payload = {
+        payload: Dict[str, Any] = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code == 200:
             return True
+
+        # Telegram rejected — most commonly an HTML parse error. Fall back to
+        # plain text so the user actually sees what we tried to say.
+        if parse_mode and resp.status_code == 400:
+            logger.warning("Telegram HTML send failed (400): %s — retrying as plain text",
+                           resp.text[:200])
+            payload.pop("parse_mode", None)
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.status_code == 200:
+                return True
+
         logger.warning("Telegram sendMessage failed (%d): %s", resp.status_code, resp.text[:200])
         return False
     except Exception as e:
@@ -398,6 +417,7 @@ class TelegramNotifier:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         C = 13
         cmd_rows = [
+            f"{'/ping':<{C}}alive check (always responds)",
             f"{'/status':<{C}}engine &amp; algo state",
             f"{'/positions':<{C}}open positions",
             f"{'/trades':<{C}}recent closed trades",
@@ -484,6 +504,7 @@ class TelegramNotifier:
         handlers = {
             "/start": self._cmd_start,
             "/help": self._cmd_start,
+            "/ping": self._cmd_ping,
             "/status": self._cmd_status,
             "/positions": self._cmd_positions,
             "/trades": self._cmd_trades,
@@ -499,8 +520,15 @@ class TelegramNotifier:
             try:
                 handler()
             except Exception as e:
-                logger.error("Telegram command handler error (%s): %s", command, e)
-                self._send(f"Error handling command {command}: {e}")
+                # Always show the user *something*. Escape special chars and
+                # include the command name so a silent failure is impossible.
+                logger.error("Telegram command handler error (%s): %s", command, e, exc_info=True)
+                safe_cmd = html.escape(command)
+                safe_err = html.escape(f"{type(e).__name__}: {e}")
+                self._send(
+                    f"<b>Error handling {safe_cmd}</b>\n<code>{safe_err}</code>\n"
+                    "The full traceback is in the server log."
+                )
         elif text.startswith("/"):
             self._send(
                 "Unknown command. Available:\n"
@@ -510,6 +538,16 @@ class TelegramNotifier:
     # ------------------------------------------------------------------
     # Command Handlers
     # ------------------------------------------------------------------
+
+    def _cmd_ping(self) -> None:
+        """Instant alive-check — answers without any engine/exchange call.
+
+        If /ping responds but other commands don't, the bot's polling thread
+        is alive and chat_id is correct — the issue is in a specific
+        handler, not in connectivity.
+        """
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        self._send(f"pong  ·  {ts}")
 
     def _cmd_start(self) -> None:
         """Handle /start and /help commands."""
@@ -579,20 +617,26 @@ class TelegramNotifier:
             self._send(f"<b>OPEN POSITIONS  ·  {ts}</b>\nNo open positions.")
             return
 
-        asset = status.get("asset", "N/A")
-        entry_time = open_trade.get("entry_time", "—")
-        entry_spot = open_trade.get("entry_spot_price", 0)
-        entry_fut = open_trade.get("entry_futures_price", 0)
-        entry_spread = open_trade.get("entry_spread", 0)
-        entry_z = open_trade.get("entry_zscore", 0)
-        notional = open_trade.get("notional_usd", 0)
-        qty = open_trade.get("quantity", 0)
+        # `.get(key, default)` returns the DEFAULT only if the key is missing.
+        # If the value IS None (common when a Trade field hasn't been populated
+        # yet — e.g. exit fields on an open trade, or entry_zscore from a
+        # recovered position), `.get()` returns None and f-string formatting
+        # like f"{value:,.4f}" raises TypeError, which silently nukes the reply.
+        # Normalize with `or 0` to force a numeric default and avoid the crash.
+        asset = status.get("asset") or "N/A"
+        entry_time = open_trade.get("entry_time") or "—"
+        entry_spot = open_trade.get("entry_spot_price") or 0
+        entry_fut = open_trade.get("entry_futures_price") or 0
+        entry_spread = open_trade.get("entry_spread") or 0
+        entry_z = open_trade.get("entry_zscore") or 0
+        notional = open_trade.get("notional_usd") or 0
+        qty = open_trade.get("quantity") or 0
 
         sig = status.get("signal") or {}
-        current_z = sig.get("zscore", 0.0)
-        current_spread = sig.get("spread", 0.0)
+        current_z = sig.get("zscore") or 0.0
+        current_spread = sig.get("spread") or 0.0
 
-        margin_usd = open_trade.get("margin_usd", 0)
+        margin_usd = open_trade.get("margin_usd") or 0
         entry_latency = open_trade.get("entry_latency_ms")
         placed_str = open_trade.get("entry_placed_at") or ("simulated" if open_trade.get("is_paper") else "—")
         if placed_str and len(placed_str) > 10:
@@ -726,13 +770,15 @@ class TelegramNotifier:
             )
             return
 
-        equity = balance_data.get("total_equity", 0)
-        available = balance_data.get("available_margin", 0)
-        margin_used = balance_data.get("margin_used", 0)
-        margin_ratio = balance_data.get("margin_ratio", 0)
-        upnl = balance_data.get("unrealized_pnl", 0)
-        health = balance_data.get("margin_health", "N/A")
-        exchange = balance_data.get("exchange", "N/A")
+        # Same None-safety as _cmd_positions: a None value through .get(k, default)
+        # is None (not default), and f-string formatting of None blows up.
+        equity = balance_data.get("total_equity") or 0
+        available = balance_data.get("available_margin") or 0
+        margin_used = balance_data.get("margin_used") or 0
+        margin_ratio = balance_data.get("margin_ratio") or 0
+        upnl = balance_data.get("unrealized_pnl") or 0
+        health = balance_data.get("margin_health") or "N/A"
+        exchange = balance_data.get("exchange") or "N/A"
         mode = "Demo" if balance_data.get("is_demo") else "Live"
 
         R = self._R

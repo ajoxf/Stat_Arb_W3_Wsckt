@@ -807,89 +807,18 @@ class TradingEngine:
                 return
 
         trade = self.open_trade
-        # We need actual FILL prices to compute realized P&L (mid prices skip
-        # the bid/ask cross and miss the slippage). The executor stamps
-        # trade.exit_spot_price / exit_futures_price from the OKX fill response
-        # in _execute_exit_orders BEFORE this routine is called for live trades,
-        # but in paper trading the executor isn't invoked, so fall back to mid.
+        # Mid prices used only for the paper-trading fallback and as initial
+        # placeholders on the trade record. The executor will overwrite
+        # trade.exit_spot_price / exit_futures_price with REAL fill prices
+        # below, and realized P&L is then computed from those fills.
         spot_price = self.spot_tick.mid
         futures_price = self.futures_tick.mid
 
-        # Calculate P&L from ACTUAL fill prices (not mids) when available, and
-        # subtract the realized round-trip fee estimate. The old calc:
-        #   pnl = (signal.spread - trade.entry_spread) * quantity
-        # used live mid prices and ignored fees — making the dashboard P&L
-        # diverge from what OKX actually reported (e.g. -$1.62 on the dashboard
-        # vs ~-$0.35 real net). Compute the spread from the fills so what we
-        # store matches the exchange.
-        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
-        # Exit-side spread from fills (fall back to mid if a fill is missing —
-        # e.g. paper trading where there's no real fill)
-        exit_spot_fill = trade.exit_spot_price or spot_price
-        exit_fut_fill  = trade.exit_futures_price or futures_price
-        # Entry-side spread from the actual entry fills already stamped at open
-        entry_spread_fills = trade.entry_futures_price - beta * trade.entry_spot_price
-        exit_spread_fills  = exit_fut_fill - beta * exit_spot_fill
-
-        if trade.position_type == "LONG":
-            # LONG: bought Leg A (= short spread), profits when spread falls
-            spread_change = entry_spread_fills - exit_spread_fills
-        else:
-            spread_change = exit_spread_fills - entry_spread_fills
-        pnl_gross = spread_change * trade.quantity
-
-        # Realized round-trip fees: every leg pays its tier rate on its
-        # notional, for 4 fills (entry+exit, both legs). Uses the same
-        # spot/futures-tier fee schedule the engine's signal filter already
-        # uses, so cost estimates and realized P&L can't diverge silently.
-        spot_maker = getattr(self.config, 'spot_maker_fee_bps', self.config.maker_fee_bps)
-        spot_taker = getattr(self.config, 'spot_taker_fee_bps', self.config.taker_fee_bps)
-        fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
-        fut_taker  = getattr(self.config, 'futures_taker_fee_bps', self.config.taker_fee_bps)
-        entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
-        exit_mode  = getattr(self.config, 'exit_execution_mode',  self.config.order_execution_mode)
-        # Per-leg fee bps based on the leg's instrument shape
-        leg_a_deriv = is_derivative(self.config.spot_symbol)
-        leg_b_deriv = is_derivative(self.config.futures_symbol)
-        a_entry = (fut_maker if leg_a_deriv else spot_maker) if entry_mode == "LIMIT" else (fut_taker if leg_a_deriv else spot_taker)
-        b_entry = (fut_maker if leg_b_deriv else spot_maker) if entry_mode == "LIMIT" else (fut_taker if leg_b_deriv else spot_taker)
-        a_exit  = (fut_maker if leg_a_deriv else spot_maker) if exit_mode  == "LIMIT" else (fut_taker if leg_b_deriv else spot_taker)
-        b_exit  = (fut_maker if leg_b_deriv else spot_maker) if exit_mode  == "LIMIT" else (fut_taker if leg_b_deriv else spot_taker)
-        spot_qty = trade.quantity * beta
-        # Notionals from actual fills (closer to truth than mid)
-        a_entry_notional = spot_qty * trade.entry_spot_price
-        b_entry_notional = trade.quantity * trade.entry_futures_price
-        a_exit_notional  = spot_qty * exit_spot_fill
-        b_exit_notional  = trade.quantity * exit_fut_fill
-        fees_usd = (
-            a_entry / 10000.0 * a_entry_notional +
-            b_entry / 10000.0 * b_entry_notional +
-            a_exit  / 10000.0 * a_exit_notional  +
-            b_exit  / 10000.0 * b_exit_notional
-        )
-
-        pnl = pnl_gross - fees_usd
-        pnl_percent = (pnl / trade.notional_usd) * 100 if trade.notional_usd > 0 else 0
-
-        # Update trade record
         trade.exit_time = datetime.utcnow()
         trade.exit_spot_price = spot_price
         trade.exit_futures_price = futures_price
-        trade.exit_spread = signal.spread
         trade.exit_zscore = signal.zscore
         trade.exit_reason = signal.signal_type
-        trade.pnl_usd = pnl
-        trade.pnl_percent = pnl_percent
-        trade.pnl_gross_usd = pnl_gross
-        trade.fees_usd = fees_usd
-        # Update entry_spread / exit_spread to the fill-derived versions so the
-        # DB audit trail matches OKX, not the mid-derived signal values that
-        # were stamped at open time.
-        trade.entry_spread = entry_spread_fills
-        trade.exit_spread = exit_spread_fills
-
-        # Accumulate daily loss (pnl is negative for losses)
-        self._daily_loss_usd += pnl
 
         # Execute orders BEFORE marking closed — if orders fail we leave the
         # position open so the engine retries on the next tick rather than
@@ -915,8 +844,66 @@ class TradingEngine:
         self._last_exit_attempt = None  # Clear throttle on success
         trade.is_open = False
 
-        logger.info("Closed %s position: pnl=$%.2f (%.2f%%), reason=%s, zscore=%.4f",
-                    trade.position_type, pnl, pnl_percent, signal.signal_type, signal.zscore)
+        # ── Realized P&L from ACTUAL fills (now that the executor has stamped
+        # them onto trade.exit_spot_price / exit_futures_price). For paper or
+        # when fills weren't recorded, falls back to the mid placeholders we
+        # set above. Fees are subtracted to give the net the dashboard logs.
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        # Spread from fills (futures - β × spot)
+        entry_spread_fills = trade.entry_futures_price - beta * trade.entry_spot_price
+        exit_spread_fills  = trade.exit_futures_price  - beta * trade.exit_spot_price
+
+        if trade.position_type == "LONG":
+            # LONG profits when spread falls
+            spread_change = entry_spread_fills - exit_spread_fills
+        else:
+            spread_change = exit_spread_fills - entry_spread_fills
+        pnl_gross = spread_change * trade.quantity
+
+        # Per-leg fee bps from the same schedule the signal filter uses, so
+        # cost estimates and realized P&L can never silently diverge.
+        spot_maker = getattr(self.config, 'spot_maker_fee_bps', self.config.maker_fee_bps)
+        spot_taker = getattr(self.config, 'spot_taker_fee_bps', self.config.taker_fee_bps)
+        fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
+        fut_taker  = getattr(self.config, 'futures_taker_fee_bps', self.config.taker_fee_bps)
+        entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
+        exit_mode  = getattr(self.config, 'exit_execution_mode',  self.config.order_execution_mode)
+        leg_a_deriv = is_derivative(self.config.spot_symbol)
+        leg_b_deriv = is_derivative(self.config.futures_symbol)
+        def _bps(deriv, mode):
+            if mode == "LIMIT":
+                return fut_maker if deriv else spot_maker
+            return fut_taker if deriv else spot_taker
+        a_entry, b_entry = _bps(leg_a_deriv, entry_mode), _bps(leg_b_deriv, entry_mode)
+        a_exit,  b_exit  = _bps(leg_a_deriv, exit_mode),  _bps(leg_b_deriv, exit_mode)
+        spot_qty = trade.quantity * beta
+        fees_usd = (
+            a_entry / 10000.0 * spot_qty       * trade.entry_spot_price +
+            b_entry / 10000.0 * trade.quantity * trade.entry_futures_price +
+            a_exit  / 10000.0 * spot_qty       * trade.exit_spot_price +
+            b_exit  / 10000.0 * trade.quantity * trade.exit_futures_price
+        )
+
+        pnl = pnl_gross - fees_usd
+        pnl_percent = (pnl / trade.notional_usd) * 100 if trade.notional_usd > 0 else 0
+
+        trade.pnl_usd = pnl
+        trade.pnl_percent = pnl_percent
+        trade.pnl_gross_usd = pnl_gross
+        trade.fees_usd = fees_usd
+        # Audit trail: store fill-derived spreads so the DB matches OKX
+        trade.entry_spread = entry_spread_fills
+        trade.exit_spread  = exit_spread_fills
+
+        # Daily-loss tracker tracks NET realized P&L
+        self._daily_loss_usd += pnl
+
+        logger.info(
+            "Closed %s position: net=$%.2f (%.2f%%) = gross $%.2f − fees $%.2f, "
+            "reason=%s, zscore=%.4f",
+            trade.position_type, pnl, pnl_percent, pnl_gross, fees_usd,
+            signal.signal_type, signal.zscore,
+        )
 
         get_notifier().notify_trade_exit(trade)
 
@@ -1438,9 +1425,18 @@ class TradingEngine:
             if spread_order and spread_order.is_complete:
                 trade.spot_order_id = spread_order.spot_leg.order_id
                 trade.futures_order_id = spread_order.futures_leg.order_id
-                # Update actual fill prices
+                # Update actual fill prices + re-stamp entry_spread from FILLS
+                # (it was provisionally set from the mid-derived signal.spread
+                # at trade creation; now we have the real fills and β to
+                # recompute it). The dashboard's open-position Entry Spread
+                # display reads this field, so it'll be accurate during the
+                # life of the trade and not just at close.
                 trade.entry_spot_price = spread_order.spot_leg.filled_price
                 trade.entry_futures_price = spread_order.futures_leg.filled_price
+                _beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+                trade.entry_spread = (
+                    trade.entry_futures_price - _beta * trade.entry_spot_price
+                )
                 # Execution timing
                 trade.entry_placed_at = spread_order.created_at
                 fill_ts = (spread_order.spot_leg.last_update or

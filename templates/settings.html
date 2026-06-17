@@ -476,9 +476,13 @@
                         <div class="col-md-6">
                             <label class="form-label">Bot Token</label>
                             <input type="password" class="form-control" id="tg_token"
-                                   placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
-                                   value="{{ config.telegram_bot_token }}">
-                            <small class="text-secondary">From @BotFather → /newbot</small>
+                                   placeholder="{% if config.telegram_bot_token %}saved — leave blank to keep{% else %}123456789:ABCdefGHIjklMNOpqrsTUVwxyz{% endif %}"
+                                   value=""
+                                   autocomplete="off">
+                            <small class="text-secondary">
+                                From @BotFather → /newbot.
+                                {% if config.telegram_bot_token %}<span class="text-success">✓ token is saved</span> — leave blank to keep existing.{% endif %}
+                            </small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Chat ID</label>
@@ -1318,7 +1322,13 @@
     // ========== Telegram ==========
     function saveTelegramConfig(doTest = true) {
         const enabled   = document.getElementById('tg_enabled').checked;
-        const token     = document.getElementById('tg_token').value.trim();
+        // Empty token field = 'keep existing saved value'. The backend sees
+        // an empty string and preserves whatever token is in the DB. This
+        // matches the placeholder hint shown when a token is already saved,
+        // so the user doesn't have to re-paste it every time they visit
+        // Settings (or risk wiping it by saving with an empty box).
+        const tokenRaw  = document.getElementById('tg_token').value.trim();
+        const token     = tokenRaw === '' ? '***' : tokenRaw;  // '***' = preserve sentinel
         const chatId    = document.getElementById('tg_chat_id').value.trim();
         const trades    = document.getElementById('tg_notify_trades').checked;
         const signals   = document.getElementById('tg_notify_signals').checked;
