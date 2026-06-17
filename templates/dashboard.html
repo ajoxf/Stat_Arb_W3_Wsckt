@@ -1402,31 +1402,45 @@
         if (bMgEl) bMgEl.textContent = (bIsDeriv ? _fmtMoney(bMargin) : _fmtMoney(bNotional) + ' (cash)');
     }
 
+    // Headline price = MID (bid+ask)/2 — this is what the strategy trades on
+    // (spread/z-score use mid, not last). On illiquid instruments like dated
+    // futures, the last *traded* price goes stale for minutes while bid/ask keep
+    // moving, so showing 'last' as the headline looked frozen. Fall back to last
+    // only if bid/ask aren't both available.
+    function _headlinePrice(t) {
+        if (t && t.bid > 0 && t.ask > 0) return (t.bid + t.ask) / 2;
+        return t ? t.last : 0;
+    }
+
     function updatePrices(spot, futures) {
         if (spot) {
+            const spotMid = _headlinePrice(spot);
             updatePriceWithColor('spot-bid', spot.bid, 'neutral');
-            updatePriceWithColor('spot-last', spot.last, prevSpotPrice === null ? 'neutral' : spot.last > prevSpotPrice ? 'up' : spot.last < prevSpotPrice ? 'down' : 'neutral');
+            updatePriceWithColor('spot-last', spotMid, prevSpotPrice === null ? 'neutral' : spotMid > prevSpotPrice ? 'up' : spotMid < prevSpotPrice ? 'down' : 'neutral');
             updatePriceWithColor('spot-ask', spot.ask, 'neutral');
-            prevSpotPrice = spot.last;
+            prevSpotPrice = spotMid;
         }
         if (futures) {
+            const futMid = _headlinePrice(futures);
             updatePriceWithColor('futures-bid', futures.bid, 'neutral');
-            updatePriceWithColor('futures-last', futures.last, prevFuturesPrice === null ? 'neutral' : futures.last > prevFuturesPrice ? 'up' : futures.last < prevFuturesPrice ? 'down' : 'neutral');
+            updatePriceWithColor('futures-last', futMid, prevFuturesPrice === null ? 'neutral' : futMid > prevFuturesPrice ? 'up' : futMid < prevFuturesPrice ? 'down' : 'neutral');
             updatePriceWithColor('futures-ask', futures.ask, 'neutral');
-            prevFuturesPrice = futures.last;
+            prevFuturesPrice = futMid;
         }
 
         if (spot && futures) {
-            const spread = futures.last - spot.last;
+            const spotMid = _headlinePrice(spot);
+            const futMid = _headlinePrice(futures);
+            const spread = futMid - spotMid;
             const spreadEl = document.getElementById('spread-value');
             if (spreadEl) {
                 spreadEl.classList.remove('price-up', 'price-down', 'price-neutral');
                 spreadEl.classList.add(spread > 0 ? 'price-up' : spread < 0 ? 'price-down' : 'price-neutral');
             }
 
-            // Update margin display if we have a position
+            // Update margin display if we have a position (use mid, not stale last)
             if (currentPosition.type !== 'NONE' && currentPosition.quantity > 0) {
-                updateMarginDisplay(spot.last, futures.last);
+                updateMarginDisplay(spotMid, futMid);
             }
         }
 

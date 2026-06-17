@@ -177,19 +177,18 @@ class TradingEngine:
         try:
             cancelled_count = 0
 
-            # Clean up spot orders
+            # Clean up Leg A orders — adapter derives instType from the symbol
+            # (covers spot, swap, and dated futures correctly).
             if self.spot_adapter and hasattr(self.spot_adapter, 'cancel_all_orders'):
                 count = await self.spot_adapter.cancel_all_orders(
                     symbol=self.config.spot_symbol,
-                    inst_type="SPOT"
                 )
                 cancelled_count += count
 
-            # Clean up futures orders
+            # Clean up Leg B orders
             if self.futures_adapter and hasattr(self.futures_adapter, 'cancel_all_orders'):
                 count = await self.futures_adapter.cancel_all_orders(
                     symbol=self.config.futures_symbol,
-                    inst_type="SWAP"
                 )
                 cancelled_count += count
 

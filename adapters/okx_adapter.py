@@ -585,6 +585,11 @@ class OKXAdapter(ExchangeAdapter):
             params: Dict[str, Any] = {}
             if symbol:
                 params["instId"] = symbol
+                # The symbol is authoritative — derive instType from it rather
+                # than trusting a caller-supplied value. Callers historically
+                # hardcoded SPOT/SWAP, which is wrong for dated FUTURES
+                # (BTC-USDT-260626) and made OKX reject the query with 51015.
+                inst_type = _detect_inst_type(symbol)
             if inst_type:
                 params["instType"] = inst_type
 
