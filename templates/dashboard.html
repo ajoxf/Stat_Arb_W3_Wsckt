@@ -646,7 +646,12 @@
                     <div class="col-6">
                         <div class="text-center p-1" style="background: var(--bg-tertiary); border-radius: 4px;">
                             <div id="account-equity" class="fw-bold">$0.00</div>
-                            <div style="font-size: 0.65rem;" class="text-secondary">Equity</div>
+                            <div style="font-size: 0.65rem;" class="text-secondary">
+                                Equity
+                                <a href="#" onclick="showBalanceDebug(event)" class="ms-1"
+                                   style="font-size: 0.6rem;"
+                                   title="If this shows $0 but you've deposited funds, click for a Trading-vs-Funding breakdown — deposits land in Funding by default and the algo can only see Trading.">why?</a>
+                            </div>
                         </div>
                     </div>
                     <div class="col-6">
@@ -2661,6 +2666,57 @@ function updateFilterStatus(elementId, passed, value) {
             }
         })
         .catch(err => showToast('Error: ' + err, 'danger'));
+    }
+
+    // Diagnostic: shows where the user's money actually is across OKX wallets
+    // (Trading vs Funding) when the dashboard's Equity reads $0.
+    function showBalanceDebug(ev) {
+        if (ev) ev.preventDefault();
+        fetch('/api/balance-debug')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d || !d.success) {
+                    alert('Balance debug failed:\n' + ((d && d.error) || 'unknown error'));
+                    return;
+                }
+                let txt = 'OKX BALANCE BREAKDOWN\n' +
+                          '─────────────────────\n\n';
+                txt += 'TRADING wallet (what the algo uses):\n';
+                txt += '   Equity:    $' + (d.trading.equity_usd || 0).toFixed(2) + '\n';
+                txt += '   Available: $' + (d.trading.available_usd || 0).toFixed(2) + '\n';
+                if (d.trading.currencies && d.trading.currencies.length > 0) {
+                    txt += '   Currencies:\n';
+                    d.trading.currencies.forEach(function(c) {
+                        const eligible = c.availEq > 0.01 ? '✓ margin-eligible' : '✗ NOT margin-eligible';
+                        txt += '     ' + c.ccy + ': ' + c.cashBal +
+                               ' (= $' + (c.eq || 0).toFixed(2) + ' equity, $' +
+                               (c.availEq || 0).toFixed(2) + ' available)  ' + eligible + '\n';
+                    });
+                }
+                txt += '\nFUNDING wallet (where deposits land):\n';
+                if (d.funding.currencies && d.funding.currencies.length > 0) {
+                    d.funding.currencies.forEach(function(c) {
+                        txt += '   ' + c.ccy + ': ' + c.bal +
+                               (c.frozenBal > 0 ? ' (frozen: ' + c.frozenBal + ')' : '') + '\n';
+                    });
+                } else {
+                    txt += '   (empty)\n';
+                }
+                if (d.cross_account_valuation_usdt !== null && d.cross_account_valuation_usdt !== undefined) {
+                    txt += '\nTotal across all OKX accounts: ~$' +
+                           d.cross_account_valuation_usdt.toFixed(2) + ' USDT\n';
+                }
+                if (d.diagnosis && d.diagnosis.length > 0) {
+                    txt += '\nDIAGNOSIS:\n';
+                    d.diagnosis.forEach(function(line, i) {
+                        txt += (i + 1) + '. ' + line + '\n\n';
+                    });
+                }
+                alert(txt);
+            })
+            .catch(function(err) {
+                alert('Balance debug error:\n' + err);
+            });
     }
 
     function clearSDTouches() {

@@ -227,6 +227,12 @@
                         <div class="col-md-6">
                             <label class="form-label">Position Size (USD)</label>
                             <input type="number" class="form-control" id="position_size_usd" name="position_size_usd" value="{{ config.position_size_usd }}" step="100" min="100">
+                            <small class="text-secondary mt-1 d-block" style="font-size: 0.7rem;"
+                                   id="capital_preview"
+                                   title="Live preview of the same math the runtime balance guard uses: (Leg A margin + Leg B margin) × 1.10 buffer. Updates as you change size, leverage, β, or legs.">
+                                Capital required (live): <span id="capital_preview_value" class="fw-bold text-info">&mdash;</span>
+                                <span id="capital_preview_breakdown" class="text-secondary"></span>
+                            </small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Max Position Size (USD)</label>
@@ -893,12 +899,91 @@
         apply.dataset.beta = (betaValue !== undefined && betaValue !== null) ? String(betaValue) : '';
         apply.style.display = apply.dataset.beta ? '' : 'none';
     }
+    // Live prices cached from the most recent /api/leg-prices fetch — fed into
+    // updateCapitalPreview() so the user can see the actual β-scaled Leg B
+    // notional, not just an assumed dollar-neutral approximation.
+    let _cachedLegAPrice = 0;
+    let _cachedLegBPrice = 0;
+
+    // Mirrors adapters/base.is_derivative — drives the Cash vs Lev decision
+    function _settingsIsDerivative(symbol) {
+        if (!symbol) return false;
+        if (symbol.endsWith('-SWAP')) return true;
+        return (symbol.match(/-/g) || []).length >= 2;
+    }
+    function _fmtUsdLong(n) {
+        if (!isFinite(n)) return '—';
+        return '$' + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+    function _fmtUsdShort(n) {
+        if (!isFinite(n)) return '—';
+        return '$' + Math.round(n).toLocaleString();
+    }
+
+    // Mirror of core/trading_engine._check_sufficient_balance — same formula,
+    // 10% buffer, same per-leg margin treatment. Pure preview; engine does
+    // its own real-time check at signal time, so a stale price cache here
+    // doesn't cause a bad trade.
+    function updateCapitalPreview() {
+        const valEl   = document.getElementById('capital_preview_value');
+        const breakEl = document.getElementById('capital_preview_breakdown');
+        if (!valEl || !breakEl) return;
+
+        const ps   = parseFloat(document.getElementById('position_size_usd').value) || 0;
+        const beta = Math.max(parseFloat(document.getElementById('hedge_ratio').value) || 1, 1e-9);
+        const aLevRaw = parseInt(document.getElementById('spot_leverage').value, 10)    || 1;
+        const bLevRaw = parseInt(document.getElementById('futures_leverage').value, 10) || 1;
+        const aSym = (document.getElementById('spot_symbol').value    || '').trim();
+        const bSym = (document.getElementById('futures_symbol').value || '').trim();
+
+        if (ps <= 0) {
+            valEl.textContent = '—';
+            breakEl.textContent = '';
+            return;
+        }
+
+        const aIsDeriv = _settingsIsDerivative(aSym);
+        const bIsDeriv = _settingsIsDerivative(bSym);
+        const aLev = aIsDeriv ? Math.max(aLevRaw, 1) : 1;   // spot ignores leverage
+        const bLev = bIsDeriv ? Math.max(bLevRaw, 1) : 1;
+
+        // Leg B notional: use live β-scaled if we have prices, else assume dollar-neutral
+        const notA = ps;
+        let notB = ps;
+        if (_cachedLegAPrice > 0 && _cachedLegBPrice > 0) {
+            notB = ps * (_cachedLegBPrice / (beta * _cachedLegAPrice));
+        }
+        const marginA = notA / aLev;
+        const marginB = notB / bLev;
+        const required = (marginA + marginB) * 1.10;   // 10% safety buffer
+
+        valEl.textContent = _fmtUsdLong(required);
+        // Spell out the breakdown so the math is auditable
+        const aDesc = aIsDeriv ? (aLev + 'x lev') : 'cash';
+        const bDesc = bIsDeriv ? (bLev + 'x lev') : 'cash';
+        const pricesNote = (_cachedLegAPrice > 0 && _cachedLegBPrice > 0)
+            ? '' : '  (assuming β ≈ live ratio)';
+        breakEl.innerHTML =
+            ' &nbsp;= (Leg A ' + _fmtUsdShort(marginA) + ' ' + aDesc +
+            ' + Leg B ' + _fmtUsdShort(marginB) + ' ' + bDesc + ') × 1.10' + pricesNote;
+    }
+
     function fetchBetaSuggestion() {
         clearTimeout(_betaSuggestionTimer);
         const a = (document.getElementById('spot_symbol').value || '').trim();
         const b = (document.getElementById('futures_symbol').value || '').trim();
-        if (!a || !b) { setBetaSuggestion('', null); return; }
-        if (a === b) { setBetaSuggestion('1.0000  (same instrument)', 1); return; }
+        if (!a || !b) {
+            setBetaSuggestion('', null);
+            _cachedLegAPrice = 0; _cachedLegBPrice = 0;
+            updateCapitalPreview();
+            return;
+        }
+        if (a === b) {
+            setBetaSuggestion('1.0000  (same instrument)', 1);
+            _cachedLegAPrice = 0; _cachedLegBPrice = 0;
+            updateCapitalPreview();
+            return;
+        }
         // Debounce
         _betaSuggestionTimer = setTimeout(function() {
             const seq = ++_betaSuggestionSeq;
@@ -910,19 +995,27 @@
                     if (seq !== _betaSuggestionSeq) return;   // stale response
                     if (res.ok && res.body.success) {
                         const beta = res.body.suggested_beta;
+                        // Cache prices so the capital preview can use the real
+                        // β-scaled Leg B notional
+                        _cachedLegAPrice = res.body.leg_a_price || 0;
+                        _cachedLegBPrice = res.body.leg_b_price || 0;
                         // Compact display: keep 4 dp for most ratios, fewer for big numbers
                         const display = (Math.abs(beta) >= 100)
                             ? beta.toFixed(2)
                             : beta.toFixed(4);
                         setBetaSuggestion(display, beta);
                     } else {
+                        _cachedLegAPrice = 0; _cachedLegBPrice = 0;
                         const msg = (res.body && res.body.error) || 'unavailable';
                         setBetaSuggestion(msg.length > 30 ? 'unavailable' : msg, null);
                     }
+                    updateCapitalPreview();
                 })
                 .catch(function() {
                     if (seq !== _betaSuggestionSeq) return;
+                    _cachedLegAPrice = 0; _cachedLegBPrice = 0;
                     setBetaSuggestion('unavailable', null);
+                    updateCapitalPreview();
                 });
         }, 500);
     }
@@ -1081,6 +1174,18 @@
     loadInstruments(false);
     updatePairLabel();
     fetchBetaSuggestion();
+
+    // Wire the capital preview to every input that affects the math.
+    // Symbols are already covered — they fire fetchBetaSuggestion which
+    // calls updateCapitalPreview once prices land.
+    ['position_size_usd', 'hedge_ratio', 'spot_leverage', 'futures_leverage']
+        .forEach(function(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('input',  updateCapitalPreview);
+            el.addEventListener('change', updateCapitalPreview);
+        });
+    updateCapitalPreview();   // initial paint from server-rendered values
 
     // Show/hide live trading checklist when paper trading toggle changes
     function toggleLiveChecklist(checkbox) {
