@@ -381,6 +381,14 @@ class OKXAdapter(ExchangeAdapter):
             if len(symbol_parts) >= 2 and symbol_parts[1]:
                 order_data["ccy"] = symbol_parts[1]   # "USDT" for ETH-USDT-260626
 
+        # Dated FUTURES require instFamily (instrument family without expiry).
+        # OKX WS trading API uses this to route the order internally.
+        # e.g. ETH-USDT-260626 -> instFamily = "ETH-USDT"
+        if inst_type == "FUTURES":
+            parts = symbol.split("-")
+            if len(parts) >= 3:
+                order_data["instFamily"] = "-".join(parts[:-1])
+
         if inst_type in ("SWAP", "FUTURES"):
             if pos_side:
                 order_data["posSide"] = pos_side
