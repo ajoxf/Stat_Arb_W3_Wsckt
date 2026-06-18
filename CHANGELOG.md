@@ -1,5 +1,52 @@
 # Changelog
 
+## Milestone 3 — Executor Integration & Push-Driven Fill Detection (2026-06-18)
+
+### What shipped
+
+#### `app.py` (updated) — backend selection & WS lifecycle
+- **`_build_trade_adapters` (new helper)**: reads the `EXCHANGE_BACKEND` flag
+  (`rest` | `websocket`, default `rest`). When `websocket`, builds an
+  `OKXWebSocketAdapter` for each leg and connects both on the engine loop via
+  `run_coroutine_threadsafe(...).result()`. If the WS connect fails, it tears down
+  any partial connection and falls back to the REST adapters so the bot still runs.
+  The `rest` default path is byte-for-byte the original behaviour.
+- **`start_engine_loop`**: now calls the builder instead of hardcoding `OKXAdapter`.
+- **`stop_engine_loop`**: disconnects the execution adapters on shutdown (closes the
+  WS and its background tasks cleanly) before stopping the loop.
+- Note: `EXCHANGE_BACKEND` (order execution) is independent of the existing
+  `USE_WEBSOCKET` flag (price-feed streaming via `OKXWebSocketManager`).
+
+#### `adapters/okx_ws_adapter.py` (updated)
+- **`spot_leverage` constructor param**: forwarded to the embedded REST adapter so
+  the spot leg's `td_mode` (cross vs cash) matches the REST path.
+- **Disconnection-only REST fallback policy** (per design decision): the WS is the
+  sole primary path; REST is the safety net only when the WS is genuinely down.
+  - `place_order`: WS primary; REST only on not-connected / timeout; other errors fail.
+  - `cancel_order`: tightened — REST only on not-connected / timeout; an unexpected
+    WS error now returns `False` (no double-routing) and the executor re-attempts.
+  - `amend_order`: WS only (executor falls back to cancel-and-replace by design).
+  - Reads (`get_order_status` / `get_positions` / `get_account_info`): WS push cache
+    first, REST only when the cache lacks the data (subsumes the disconnected case).
+
+#### Fill detection
+No interface change was needed: order pushes populate `_order_cache`, and
+`get_order_status` (the method the executor already polls) reads that cache first.
+With the WS backend active, fills are observed from the push stream rather than REST
+polling. `scripts/ws_fill_test.py` (new) demonstrates this end-to-end on testnet:
+place a marketable LIMIT → detect `state=filled` from the push cache → flatten.
+
+#### `tests/test_ws_adapter.py` (updated)
+3 new tests (58 total): `spot_leverage` → embedded-REST `td_mode`, `cancel_order`
+timeout→REST, and `cancel_order` generic-error→no-REST-fallback.
+
+### Caveats
+- `EXCHANGE_BACKEND=websocket` opens one private WS per leg (two total); each
+  subscribes to orders/positions/account with `instType=ANY`, so both caches see all
+  account updates. Mirrors the existing two-adapter model with no engine changes.
+- `core/trading_engine.py` is untouched; integration is entirely via `app.py` and the
+  adapter's `ExchangeAdapter`-compatible surface.
+
 ## Milestone 2 — WS Order Placement & Amendment (2026-06-18)
 
 ### What shipped

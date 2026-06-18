@@ -116,16 +116,19 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         secret_key: str,
         passphrase: str = "",
         is_testnet: bool = True,
+        spot_leverage: int = 1,
     ) -> None:
         super().__init__(api_key, secret_key, passphrase, is_testnet)
 
-        # Embedded REST adapter handles market-data operations (always REST);
-        # trade ops (place_order, cancel_order) now use WS with REST fallback.
+        # Embedded REST adapter handles market-data operations (always REST) and
+        # is the disconnection-only fallback for trade ops.  spot_leverage is
+        # forwarded so the spot leg's td_mode (cross vs cash) matches the REST path.
         self._rest = OKXAdapter(
             api_key=api_key,
             secret_key=secret_key,
             passphrase=passphrase,
             is_testnet=is_testnet,
+            spot_leverage=spot_leverage,
         )
 
         # WS transport
@@ -401,8 +404,12 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             logger.error("[ws_adapter] cancel_order timed out, falling back to REST: %s", order_id)
             return await self._rest.cancel_order(symbol, order_id)
         except Exception as e:
-            logger.error("[ws_adapter] cancel_order error: %s — falling back to REST", e)
-            return await self._rest.cancel_order(symbol, order_id)
+            # Disconnection-only fallback policy: REST is the net only when the WS
+            # is genuinely down (handled above) or times out.  An unexpected WS
+            # error is not a "WS down" signal, so surface failure rather than
+            # double-routing; the executor's monitor loop re-attempts the cancel.
+            logger.error("[ws_adapter] cancel_order error (no REST fallback): %s", e)
+            return False
 
     async def amend_order(
         self,

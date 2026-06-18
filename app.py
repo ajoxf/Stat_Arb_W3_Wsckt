@@ -24,7 +24,7 @@ from core.post_trade_analyzer import PostTradeAnalyzer
 from core.auto_tuner import AutoTuner
 from core.telegram_bot import get_notifier
 from database.manager import DatabaseManager
-from adapters import OKXAdapter, BinanceAdapter, BybitAdapter, OKXWebSocketManager
+from adapters import OKXAdapter, BinanceAdapter, BybitAdapter, OKXWebSocketManager, OKXWebSocketAdapter
 from adapters.base import is_derivative
 
 # Load environment variables
@@ -188,6 +188,62 @@ def _get_balance_for_telegram() -> Dict[str, Any]:
     return {}
 
 
+def _build_trade_adapters(api_key: str, secret_key: str, passphrase: str, is_demo: bool):
+    """
+    Create the (spot, futures) execution adapters per the EXCHANGE_BACKEND flag.
+
+    EXCHANGE_BACKEND=websocket selects OKXWebSocketAdapter (private-channel WS,
+    sub-500ms order placement) and connects both legs on the engine loop. If the
+    WS connect fails, falls back to the REST adapters so the bot still runs.
+    The default (rest) preserves the original REST behaviour exactly.
+
+    Returns (spot_adapter, futures_adapter, backend_label).
+    """
+    backend = os.getenv('EXCHANGE_BACKEND', 'rest').strip().lower()
+
+    if backend == 'websocket':
+        spot = OKXWebSocketAdapter(
+            api_key=api_key, secret_key=secret_key, passphrase=passphrase,
+            is_testnet=is_demo, spot_leverage=config.spot_leverage,
+        )
+        futures = OKXWebSocketAdapter(
+            api_key=api_key, secret_key=secret_key, passphrase=passphrase,
+            is_testnet=is_demo,
+        )
+        try:
+            ws_ok = True
+            for label, ad in (("spot", spot), ("futures", futures)):
+                connected = asyncio.run_coroutine_threadsafe(
+                    ad.connect(), loop).result(timeout=20)
+                if not connected:
+                    logger.error("WS %s adapter connect returned False: %s", label, ad.last_error)
+                    ws_ok = False
+                    break
+            if ws_ok:
+                logger.info("WebSocket execution adapters connected (demo=%s)", is_demo)
+                return spot, futures, "websocket"
+        except Exception as e:
+            logger.error("WS adapter connect failed: %s", e)
+
+        # Connect failed — tear down any partial WS and fall back to REST.
+        for ad in (spot, futures):
+            try:
+                asyncio.run_coroutine_threadsafe(ad.disconnect(), loop).result(timeout=5)
+            except Exception:
+                pass
+        logger.error("EXCHANGE_BACKEND=websocket connect failed — falling back to REST adapters")
+
+    spot = OKXAdapter(
+        api_key=api_key, secret_key=secret_key, passphrase=passphrase,
+        is_testnet=is_demo, spot_leverage=config.spot_leverage,
+    )
+    futures = OKXAdapter(
+        api_key=api_key, secret_key=secret_key, passphrase=passphrase,
+        is_testnet=is_demo,
+    )
+    return spot, futures, "rest"
+
+
 def start_engine_loop():
     """Start the trading engine in a background thread."""
     global loop, engine_thread, ws_manager
@@ -292,23 +348,13 @@ def start_engine_loop():
     is_demo = os.getenv('OKX_DEMO_MODE', 'false').lower() == 'true'
 
     if api_key and secret_key and passphrase:
-        # Create adapter instances - used for account info always, order execution only if not paper trading
-        spot_adapter = OKXAdapter(
-            api_key=api_key,
-            secret_key=secret_key,
-            passphrase=passphrase,
-            is_testnet=is_demo,
-            spot_leverage=config.spot_leverage,
-        )
-        futures_adapter = OKXAdapter(
-            api_key=api_key,
-            secret_key=secret_key,
-            passphrase=passphrase,
-            is_testnet=is_demo,
-        )
+        # Backend selected by EXCHANGE_BACKEND (rest | websocket); default rest.
+        # Used for account info always, order execution only if not paper trading.
+        spot_adapter, futures_adapter, backend_label = _build_trade_adapters(
+            api_key, secret_key, passphrase, is_demo)
         engine.set_adapters(spot_adapter, futures_adapter)
-        logger.info("REST adapters configured: demo=%s, paper=%s, symbols=(%s, %s)",
-                   is_demo, config.paper_trading, config.spot_symbol, config.futures_symbol)
+        logger.info("%s adapters configured: demo=%s, paper=%s, symbols=(%s, %s)",
+                   backend_label, is_demo, config.paper_trading, config.spot_symbol, config.futures_symbol)
     else:
         logger.warning("API keys not configured - using paper trading simulation only")
 
@@ -338,6 +384,15 @@ def stop_engine_loop():
             logger.info("Trading engine stopped")
         except Exception as e:
             logger.warning("Error stopping engine: %s", e)
+
+        # Disconnect execution adapters (engine.stop handles price streaming, not
+        # the WS trade connection). Closes the WS and its background tasks cleanly.
+        for ad in (getattr(engine, 'spot_adapter', None), getattr(engine, 'futures_adapter', None)):
+            if ad is not None and hasattr(ad, 'disconnect'):
+                try:
+                    asyncio.run_coroutine_threadsafe(ad.disconnect(), loop).result(timeout=5)
+                except Exception as e:
+                    logger.warning("Error disconnecting adapter: %s", e)
 
         try:
             # Stop the event loop

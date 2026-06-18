@@ -951,3 +951,39 @@ class TestWSTradingOps:
         adapter._send_op = fake_send_op
         await adapter.amend_order("BTC-USDT", "ORD_1", new_price=50000.0)
         assert captured["args"][0]["instIdCode"] == "111222"
+
+    # --- spot_leverage forwarding & disconnection-only fallback policy ---
+
+    async def test_init_forwards_spot_leverage_to_rest(self):
+        """spot_leverage propagates to the embedded REST adapter's td_mode."""
+        from adapters.okx_ws_adapter import OKXWebSocketAdapter
+        levered = OKXWebSocketAdapter(
+            api_key="k", secret_key="s", passphrase="p", is_testnet=True, spot_leverage=5)
+        assert levered._rest._spot_td_mode == "cross"
+        flat = OKXWebSocketAdapter(
+            api_key="k", secret_key="s", passphrase="p", is_testnet=True, spot_leverage=1)
+        assert flat._rest._spot_td_mode == "cash"
+
+    async def test_cancel_order_falls_back_to_rest_on_timeout(self):
+        """Disconnection-only net: a WS cancel timeout still routes to REST."""
+        adapter = self._make_connected_adapter()
+        adapter._rest.cancel_order = AsyncMock(return_value=True)
+
+        async def timeout_op(op, args, timeout=5.0):
+            raise asyncio.TimeoutError
+
+        adapter._send_op = timeout_op
+        assert await adapter.cancel_order("BTC-USDT", "ORD_T") is True
+        adapter._rest.cancel_order.assert_called_once()
+
+    async def test_cancel_order_no_rest_fallback_on_generic_error(self):
+        """Disconnection-only net: an unexpected WS error fails without REST double-routing."""
+        adapter = self._make_connected_adapter()
+        adapter._rest.cancel_order = AsyncMock(return_value=True)
+
+        async def boom(op, args, timeout=5.0):
+            raise ValueError("unexpected ws error")
+
+        adapter._send_op = boom
+        assert await adapter.cancel_order("BTC-USDT", "ORD_X") is False
+        adapter._rest.cancel_order.assert_not_called()
