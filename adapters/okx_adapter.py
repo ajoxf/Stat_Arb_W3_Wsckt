@@ -373,6 +373,14 @@ class OKXAdapter(ExchangeAdapter):
                             "order blocked to prevent wrong-size placement"
                         ), 0.0
 
+        # Cross-margin SWAP/FUTURES also need ccy (settlement currency).
+        # REST infers it from instId; WS enforces it explicitly (sCode 50014
+        # "Parameter instIdCode can not be empty" if absent).
+        if inst_type in ("SWAP", "FUTURES") and td_mode == "cross":
+            symbol_parts = symbol.split("-")
+            if len(symbol_parts) >= 2 and symbol_parts[1]:
+                order_data["ccy"] = symbol_parts[1]   # "USDT" for ETH-USDT-260626
+
         if inst_type in ("SWAP", "FUTURES"):
             if pos_side:
                 order_data["posSide"] = pos_side
