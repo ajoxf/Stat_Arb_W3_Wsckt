@@ -246,6 +246,12 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             if error:
                 return OrderResult(success=False, error=error)
 
+            # WS trading engine requires uly (underlying) for SWAP and FUTURES.
+            # e.g. ETH-USDT-SWAP -> uly="ETH-USDT", ETH-USDT-260626 -> uly="ETH-USDT"
+            parts = symbol.split("-")
+            if len(parts) >= 3:
+                order_data["uly"] = f"{parts[0]}-{parts[1]}"
+
             resp = await self._send_op("order", [order_data])
 
             if resp.get("code") != "0":
