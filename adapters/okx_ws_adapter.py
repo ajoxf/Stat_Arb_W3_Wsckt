@@ -159,7 +159,6 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         # OKX is migrating WS trade ops from the string instId to the numeric
         # instIdCode; the demo endpoint already enforces it (sCode 50014 otherwise).
         self._inst_code_cache: Dict[str, str] = {}
-        self._inst_code_logged: bool = False  # log raw instrument keys once
 
     # ------------------------------------------------------------------
     # ExchangeAdapter: connect / disconnect
@@ -224,10 +223,10 @@ class OKXWebSocketAdapter(ExchangeAdapter):
     # instIdCode resolution
     # ------------------------------------------------------------------
 
-    # Candidate field names for the numeric instrument code in the OKX
-    # public/instruments response.  OKX docs call it instIdCode; we try a few
-    # spellings defensively and log the raw keys on first miss so the exact
-    # field can be confirmed without another code change.
+    # The numeric instrument code is the "instIdCode" field of the OKX
+    # public/instruments response (confirmed live on testnet, e.g.
+    # ETH-USDT-260626 -> 2021032622051187).  Extra spellings are kept as a
+    # defensive fallback; on a miss the raw instrument keys are logged.
     _INST_CODE_FIELDS = ("instIdCode", "instIdCd", "instCode", "instIdNum", "instNum")
 
     async def _inst_id_code(self, symbol: str) -> Optional[str]:
@@ -261,16 +260,12 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             return None
 
         rec = data[0]
-        if not self._inst_code_logged:
-            logger.info("[ws_adapter] instrument record keys for %s: %s", symbol, sorted(rec.keys()))
-            self._inst_code_logged = True
-
         for field in self._INST_CODE_FIELDS:
             val = rec.get(field)
             if val not in (None, ""):
                 code = str(val)
                 self._inst_code_cache[symbol] = code
-                logger.info("[ws_adapter] resolved instIdCode for %s via '%s' = %s", symbol, field, code)
+                logger.debug("[ws_adapter] resolved instIdCode for %s = %s", symbol, code)
                 return code
 
         logger.warning(

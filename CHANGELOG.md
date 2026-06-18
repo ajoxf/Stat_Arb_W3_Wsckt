@@ -23,6 +23,13 @@ WS order placement, cancellation, and price amendment replacing REST delegation.
   (late responses from OKX after timeout won't crash `_dispatch`).
 - **`_pending_ops`**: `Dict[str, asyncio.Future]` map for request-response correlation.
   `_dispatch` now routes responses with matching `id` to the right future.
+- **`_inst_id_code` (new private method)**: OKX is migrating WS trade ops from the string
+  `instId` to the numeric `instIdCode`; the demo endpoint already enforces it, rejecting
+  orders that carry only `instId` with `sCode 50014 "Parameter instIdCode can not be empty"`.
+  The resolver fetches `public/instruments`, extracts the `instIdCode` field, and caches it
+  per symbol for the session. All three trade ops inject `instIdCode` when resolved (e.g.
+  `ETH-USDT-260626 -> 2021032622051187`) while keeping `instId` for the live endpoint during
+  the transition. On a lookup miss the raw instrument keys are logged for diagnosis.
 
 #### `adapters/okx_adapter.py` (updated)
 - **`_prepare_order` (new method)**: extracted from `place_order`. Validates inputs, converts
@@ -37,12 +44,19 @@ Falls back to cancel-and-replace when `amend_order` is unavailable or returns `F
 (REST adapter, or WS adapter while disconnected).
 
 #### `tests/test_ws_adapter.py` (updated)
-19 new tests in `TestWSTradingOps` covering:
+25 new tests in `TestWSTradingOps` (55 total in the file) covering:
 - `_send_op` request-response correlation, timeout, cleanup
 - `_dispatch` routing of trade-op responses to pending futures
 - `place_order`: WS success, WS error, REST fallback (not connected), REST fallback (timeout)
 - `cancel_order`: WS success, WS error, REST fallback (not connected)
 - `amend_order`: WS success, WS rejection, WS timeout, not-connected
+- `_inst_id_code`: resolution + caching, missing-field fallback, error fallback, and
+  injection into `place_order` / `cancel_order` / `amend_order` args
+
+### Verified live (OKX testnet, `wspap.okx.com`)
+`scripts/ws_trade_test.py` exercises the full lifecycle on `ETH-USDT-260626`:
+place POST_ONLY (→ `state=live`), amend price (push-confirmed), cancel (→ `state=canceled`).
+All steps PASS round-trip over WS — no REST fallback, no real funds.
 
 ### Caveats
 - Order cancellation is now via WS; the REST fallback fires automatically on disconnection.
