@@ -318,12 +318,12 @@
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Leg A Maker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="spot_maker_fee_bps" name="spot_maker_fee_bps" value="{{ config.spot_maker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
+                            <input type="number" class="form-control fee-input" id="spot_maker_fee_bps" name="spot_maker_fee_bps" value="{{ config.spot_maker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
                             <small class="text-secondary">Limit orders on the spot leg</small>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Leg A Taker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="spot_taker_fee_bps" name="spot_taker_fee_bps" value="{{ config.spot_taker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
+                            <input type="number" class="form-control fee-input" id="spot_taker_fee_bps" name="spot_taker_fee_bps" value="{{ config.spot_taker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
                             <small class="text-secondary">Market orders on the spot leg</small>
                         </div>
 
@@ -334,12 +334,12 @@
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Leg B Maker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="futures_maker_fee_bps" name="futures_maker_fee_bps" value="{{ config.futures_maker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
+                            <input type="number" class="form-control fee-input" id="futures_maker_fee_bps" name="futures_maker_fee_bps" value="{{ config.futures_maker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
                             <small class="text-secondary">Limit orders on the derivative leg</small>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Leg B Taker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="futures_taker_fee_bps" name="futures_taker_fee_bps" value="{{ config.futures_taker_fee_bps }}" step="0.5" min="0" max="50" oninput="updateFeeSummary()">
+                            <input type="number" class="form-control fee-input" id="futures_taker_fee_bps" name="futures_taker_fee_bps" value="{{ config.futures_taker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
                             <small class="text-secondary">Market orders on the derivative leg</small>
                         </div>
 
@@ -350,7 +350,7 @@
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Slippage per Leg (bps)</label>
-                            <input type="number" class="form-control fee-input" id="slippage_bps" name="slippage_bps" value="{{ config.slippage_bps }}" step="0.5" min="0" max="20" oninput="updateFeeSummary()">
+                            <input type="number" class="form-control fee-input" id="slippage_bps" name="slippage_bps" value="{{ config.slippage_bps }}" step="any" min="0" max="20" oninput="updateFeeSummary()">
                             <small class="text-secondary">Applied to all 4 legs (×4 round-trip)</small>
                         </div>
                     </div>
@@ -416,7 +416,7 @@
                         </div>
                         <div class="col-md-3" id="limit-offset-group">
                             <label class="form-label">Price Offset (bps)</label>
-                            <input type="number" class="form-control" id="limit_order_price_offset_bps" name="limit_order_price_offset_bps" value="{{ config.limit_order_price_offset_bps }}" step="0.5" min="0" max="10">
+                            <input type="number" class="form-control" id="limit_order_price_offset_bps" name="limit_order_price_offset_bps" value="{{ config.limit_order_price_offset_bps }}" step="any" min="0" max="10">
                             <small class="text-secondary">0 = passive, higher = faster</small>
                         </div>
                     </div>
