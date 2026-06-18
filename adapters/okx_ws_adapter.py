@@ -923,6 +923,10 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         imr = float(data.get("imr", 0) or 0)
         mmr = float(data.get("mmr", 0) or 0)
         upl = float(data.get("upl", 0) or 0)
+        # Account-level availEq is 0 when no positions are open on OKX Unified Account.
+        # Fall back to summing per-currency availEq (always populated).
+        if avail_eq <= 0:
+            avail_eq = sum(float(d.get("availEq", 0) or 0) for d in data.get("details", []))
         margin_ratio = (total_eq / mmr * 100) if mmr > 0 else 0.0
         return AccountInfo(
             exchange="OKX",
