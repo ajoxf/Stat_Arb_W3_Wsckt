@@ -50,3 +50,6 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Claude Code agent working directories
+.claude/worktrees/
