@@ -283,18 +283,46 @@ class OKXAdapter(ExchangeAdapter):
 
         if inst_type in ("SWAP", "FUTURES"):
             if symbol_info:
-                ct_val = float(symbol_info.get("contract_val") or 0.01)
-                if ct_val <= 0:
-                    return None, f"Invalid contract value {ct_val}", 0.0
-                contracts = quantity / ct_val
+                ct_type = symbol_info.get("ct_type", "linear")
+                if ct_type == "inverse":
+                    # Inverse (coin-margined): ctVal is in USD, quantity is in base coin.
+                    # e.g. BTC-USD-SWAP ctVal=100 USD, qty=0.01 BTC at $100k → 10 contracts.
+                    # ct_val_usd = raw OKX ctVal; contract_val is already normalised to base coin.
+                    ct_val_usd = symbol_info.get("ct_val_usd")
+                    if not ct_val_usd or ct_val_usd <= 0:
+                        return None, (f"Symbol info for inverse {symbol} missing ct_val_usd "
+                                      f"(adapter mismatch)"), 0.0
+                    effective_price = price
+                    if not effective_price or effective_price <= 0:
+                        # Market order with no explicit price — fetch live mid for sizing
+                        tick = await self.get_tick(symbol)
+                        if tick and tick.bid > 0 and tick.ask > 0:
+                            effective_price = (tick.bid + tick.ask) / 2.0
+                        elif tick and tick.last > 0:
+                            effective_price = tick.last
+                    if not effective_price or effective_price <= 0:
+                        return None, (f"Cannot size inverse contract {symbol}: "
+                                      f"no price available"), 0.0
+                    contracts = (quantity * effective_price) / ct_val_usd
+                    ct_val_log = ct_val_usd
+                else:
+                    # Linear (USDT-margined): ctVal is in base coin
+                    ct_val = float(symbol_info.get("contract_val") or 0.01)
+                    if ct_val <= 0:
+                        return None, f"Invalid linear ctVal {ct_val}", 0.0
+                    effective_price = price or 0
+                    contracts = quantity / ct_val
+                    ct_val_log = ct_val
                 sz = int(contracts)
                 if sz < 1:
-                    logger.error("%s quantity %.6f = %.2f contracts (ctVal=%.4f), minimum is 1",
-                                inst_type, quantity, contracts, ct_val)
+                    logger.error("%s %s quantity %.6f price %.2f = %.4f contracts (ctVal=%.4f), minimum is 1",
+                                inst_type, ct_type, quantity, effective_price if ct_type == "inverse" else price or 0,
+                                contracts, ct_val_log)
                     return None, (f"Quantity {quantity} too small for {symbol}: "
-                                  f"need at least {ct_val} (1 contract)"), 0.0
-                logger.info("%s order: %.6f %s = %d contracts (ctVal=%.4f)",
-                           inst_type, quantity, symbol.split("-")[0], sz, ct_val)
+                                  f"need at least 1 contract"), 0.0
+                logger.info("%s %s order: %.6f %s @ %.2f = %d contracts (ctVal=%.4f)",
+                           inst_type, ct_type, quantity, symbol.split("-")[0],
+                           effective_price if ct_type == "inverse" else price or 0, sz, ct_val_log)
             else:
                 return None, f"Cannot place {inst_type} order without symbol info", 0.0
             sz_str = str(int(sz))
@@ -1013,6 +1041,28 @@ class OKXAdapter(ExchangeAdapter):
                 qty_precision = len(lot_sz_str.split(".")[1]) if "." in lot_sz_str else 0
                 price_precision = len(tick_sz_str.split(".")[1]) if "." in tick_sz_str else 0
 
+                ct_type = data.get("ctType", "linear")
+                ct_val_raw = float(data.get("ctVal") or 1)
+
+                # For inverse (coin-margined) contracts, ctVal is in USD.
+                # The trading engine's min-size check compares base_qty (BTC) to
+                # contract_val, so we must normalise to base-coin equivalent here.
+                # ct_val_usd preserves the raw USD face value for the sizing formula.
+                ct_val_usd = None
+                contract_val = ct_val_raw
+                if ct_type == "inverse":
+                    ct_val_usd = ct_val_raw
+                    # Fetch live mid-price to convert USD face → base-coin equivalent.
+                    # Fails open: returns a tiny sentinel so min-size never blocks.
+                    try:
+                        tick = await self.get_tick(symbol)
+                        mid = 0.0
+                        if tick:
+                            mid = (tick.bid + tick.ask) / 2.0 if tick.bid > 0 and tick.ask > 0 else tick.last
+                        contract_val = (ct_val_usd / mid) if mid > 0 else 1e-9
+                    except Exception:
+                        contract_val = 1e-9  # fail open — never blocks entry
+
                 return {
                     "symbol": symbol,
                     "min_qty": float(data.get("minSz") or 0),
@@ -1020,7 +1070,13 @@ class OKXAdapter(ExchangeAdapter):
                     "tick_sz": float(tick_sz_str),  # Price tick size
                     "qty_precision": qty_precision,
                     "price_precision": price_precision,
-                    "contract_val": float(data.get("ctVal") or 1),
+                    # Base-coin equivalent of 1 contract (used by min-size check)
+                    "contract_val": contract_val,
+                    # Raw USD face value per contract; only set for inverse contracts
+                    "ct_val_usd": ct_val_usd,
+                    # "USD" means inverse (coin-margined); base ccy means linear
+                    "ct_val_ccy": data.get("ctValCcy", ""),
+                    "ct_type": ct_type,
                 }
 
         except Exception as e:
