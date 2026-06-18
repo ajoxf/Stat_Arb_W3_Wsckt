@@ -1448,7 +1448,54 @@ class TradingEngine:
                 futures_quantity=trade.quantity,  # futures leg quantity
             )
 
-            if spread_order and spread_order.is_complete:
+            # Defensive: log the executor's final state so we can audit when
+            # is_complete disagrees with the underlying leg statuses. The
+            # 06/18 07:25-07:37 cascade hit a state where `Recovery SUCCESS`
+            # was logged immediately followed by `Spread order failed or
+            # incomplete` — the engine then auto-closed the recovered
+            # positions as orphans. This print makes the actual leg statuses
+            # at the decision boundary visible.
+            if spread_order:
+                from core.order_executor import LegStatus as _LS
+                logger.info(
+                    "EXECUTOR RETURNED: spot.status=%s qty=%s price=%s | fut.status=%s qty=%s price=%s | is_complete=%s",
+                    spread_order.spot_leg.status.name,
+                    spread_order.spot_leg.filled_qty,
+                    spread_order.spot_leg.filled_price,
+                    spread_order.futures_leg.status.name,
+                    spread_order.futures_leg.filled_qty,
+                    spread_order.futures_leg.filled_price,
+                    spread_order.is_complete,
+                )
+                # SAFETY NET: if both legs report FILLED but is_complete is
+                # False (state-machine bug), trust the leg statuses. Without
+                # this, the engine treats a successfully-recovered position
+                # as a "failed" entry, fails to record the trade, and the
+                # orphan-detector then auto-closes the position 3 ticks
+                # later at MARKET — eating the user's money on every cycle.
+                if not spread_order.is_complete:
+                    both_filled = (
+                        spread_order.spot_leg.status == _LS.FILLED
+                        and spread_order.futures_leg.status == _LS.FILLED
+                        and spread_order.spot_leg.filled_qty > 0
+                        and spread_order.futures_leg.filled_qty > 0
+                    )
+                    if both_filled:
+                        logger.warning(
+                            "OVERRIDE: spread_order.is_complete=False but both "
+                            "legs are FILLED with qty>0 — treating as SUCCESS "
+                            "to avoid destructive auto-close loop"
+                        )
+
+            if spread_order and (
+                spread_order.is_complete
+                or (
+                    spread_order.spot_leg.status.name == 'FILLED'
+                    and spread_order.futures_leg.status.name == 'FILLED'
+                    and spread_order.spot_leg.filled_qty > 0
+                    and spread_order.futures_leg.filled_qty > 0
+                )
+            ):
                 trade.spot_order_id = spread_order.spot_leg.order_id
                 trade.futures_order_id = spread_order.futures_leg.order_id
                 # Update actual fill prices + re-stamp entry_spread from FILLS

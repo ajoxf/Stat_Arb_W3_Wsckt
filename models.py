@@ -64,6 +64,17 @@ class TradingConfig:
     exit_threshold: float = 0.5
     stop_loss_threshold: float = 4.0
 
+    # Exit-signal mode. The default ("zscore") matches the original behaviour:
+    # exit when the rolling z-score reverts to ±exit_threshold. The problem is
+    # that the rolling mean drifts during the hold — z can revert to ~0 without
+    # the spread actually moving back, producing trades that "look like" mean
+    # reversion exits but are actually flat-or-losing in dollars (see trade 32
+    # post-mortem). The "spread" mode freezes the rolling mean at entry time
+    # and exits only when the live spread crosses back over that frozen value;
+    # "hybrid" exits when either condition fires. Stop-loss always uses z-score
+    # regardless of mode — that's a safety net, not a profit-take.
+    exit_signal_mode: str = "zscore"  # zscore | spread | hybrid
+
     # Rolling window settings
     lookback_period: int = 100
     stats_update_interval: int = 300  # Seconds between mean/std recalculation (default 5 min)
@@ -157,6 +168,7 @@ class TradingConfig:
             'entry_threshold': self.entry_threshold,
             'exit_threshold': self.exit_threshold,
             'stop_loss_threshold': self.stop_loss_threshold,
+            'exit_signal_mode': self.exit_signal_mode,
             'lookback_period': self.lookback_period,
             'stats_update_interval': self.stats_update_interval,
             'hurst_enabled': self.hurst_enabled,

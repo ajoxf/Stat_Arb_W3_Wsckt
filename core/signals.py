@@ -555,22 +555,52 @@ class SignalGenerator:
                                     self.current_zscore, blocked_reason)
 
         elif self.current_position == "LONG":
-            # Exit and stop both use the ROLLING current_zscore — the exact
-            # number shown on the dashboard — so what you watch is what the
-            # engine acts on. LONG entered at high +z: take profit when z
-            # reverts down to the exit band, stop if it pushes further up.
-            if self.current_zscore <= self.config.exit_threshold:
-                signal_type = "EXIT"
-            elif self.current_zscore >= self.config.stop_loss_threshold:
+            # LONG entered at high +z. Two exit paths depending on mode:
+            #   zscore : exit when rolling z reverts to ±exit_threshold (original)
+            #   spread : exit only when the live spread falls back to the
+            #            rolling mean *frozen at entry time*. Decouples exit
+            #            from rolling-mean drift, which is the failure mode
+            #            that turned trade 32 from +$0.22 (theoretical) into
+            #            -$1.08 (actual).
+            #   hybrid : either fires
+            # Stop-loss is always z-score (safety net, not a profit-take).
+            mode = getattr(self.config, 'exit_signal_mode', 'zscore') or 'zscore'
+            z_exit_hit = self.current_zscore <= self.config.exit_threshold
+            spread_exit_hit = (
+                self.entry_mean is not None
+                and self.current_spread <= self.entry_mean
+            )
+            if mode == 'spread':
+                if spread_exit_hit:
+                    signal_type = "EXIT"
+            elif mode == 'hybrid':
+                if z_exit_hit or spread_exit_hit:
+                    signal_type = "EXIT"
+            else:  # 'zscore' (default, original behaviour)
+                if z_exit_hit:
+                    signal_type = "EXIT"
+            if signal_type == "NONE" and self.current_zscore >= self.config.stop_loss_threshold:
                 signal_type = "STOP_LOSS"
 
         elif self.current_position == "SHORT":
-            # SHORT entered at low -z: take profit when z reverts up to the
-            # exit band, stop if it pushes further down. Same rolling-z basis
-            # as LONG so the dashboard and the decisions never disagree.
-            if self.current_zscore >= -self.config.exit_threshold:
-                signal_type = "EXIT"
-            elif self.current_zscore <= -self.config.stop_loss_threshold:
+            # SHORT entered at low -z. Mirror of LONG: in 'spread' mode we
+            # exit only when the live spread rises back to the entry mean.
+            mode = getattr(self.config, 'exit_signal_mode', 'zscore') or 'zscore'
+            z_exit_hit = self.current_zscore >= -self.config.exit_threshold
+            spread_exit_hit = (
+                self.entry_mean is not None
+                and self.current_spread >= self.entry_mean
+            )
+            if mode == 'spread':
+                if spread_exit_hit:
+                    signal_type = "EXIT"
+            elif mode == 'hybrid':
+                if z_exit_hit or spread_exit_hit:
+                    signal_type = "EXIT"
+            else:  # 'zscore' default
+                if z_exit_hit:
+                    signal_type = "EXIT"
+            if signal_type == "NONE" and self.current_zscore <= -self.config.stop_loss_threshold:
                 signal_type = "STOP_LOSS"
 
         return Signal(

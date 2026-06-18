@@ -61,6 +61,7 @@ class DatabaseManager:
                     entry_threshold REAL DEFAULT 2.0,
                     exit_threshold REAL DEFAULT 0.5,
                     stop_loss_threshold REAL DEFAULT 4.0,
+                    exit_signal_mode TEXT DEFAULT 'zscore',
                     lookback_period INTEGER DEFAULT 100,
                     stats_update_interval INTEGER DEFAULT 300,
                     hurst_enabled INTEGER DEFAULT 1,
@@ -324,6 +325,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN hedge_ratio REAL DEFAULT 1.0")
             if 'm2m_buffer_pct' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN m2m_buffer_pct REAL DEFAULT 10.0")
+            if 'exit_signal_mode' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_signal_mode TEXT DEFAULT 'zscore'")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -375,6 +378,7 @@ class DatabaseManager:
                     entry_threshold=row["entry_threshold"],
                     exit_threshold=row["exit_threshold"],
                     stop_loss_threshold=row["stop_loss_threshold"],
+                    exit_signal_mode=row["exit_signal_mode"] if "exit_signal_mode" in row.keys() else "zscore",
                     lookback_period=row["lookback_period"],
                     stats_update_interval=row["stats_update_interval"] if "stats_update_interval" in row.keys() else 300,
                     hurst_enabled=bool(row["hurst_enabled"]),
@@ -429,6 +433,7 @@ class DatabaseManager:
                     entry_threshold = ?,
                     exit_threshold = ?,
                     stop_loss_threshold = ?,
+                    exit_signal_mode = ?,
                     lookback_period = ?,
                     stats_update_interval = ?,
                     hurst_enabled = ?,
@@ -475,6 +480,7 @@ class DatabaseManager:
                 config.entry_threshold,
                 config.exit_threshold,
                 config.stop_loss_threshold,
+                config.exit_signal_mode,
                 config.lookback_period,
                 config.stats_update_interval,
                 int(config.hurst_enabled),

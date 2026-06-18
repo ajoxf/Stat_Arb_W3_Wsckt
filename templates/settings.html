@@ -107,6 +107,20 @@
                         </div>
                     </div>
 
+                    <div class="row mb-4">
+                        <div class="col-md-12">
+                            <label class="form-label">Exit Signal Mode</label>
+                            <select class="form-select" id="exit_signal_mode" name="exit_signal_mode">
+                                <option value="zscore"  {% if config.exit_signal_mode == 'zscore' %}selected{% endif %}>Z-Score (original) — exit when rolling Z returns to ±exit threshold</option>
+                                <option value="spread"  {% if config.exit_signal_mode == 'spread' %}selected{% endif %}>Absolute Spread — exit only when spread crosses entry-time mean (resistant to rolling-mean drift)</option>
+                                <option value="hybrid"  {% if config.exit_signal_mode == 'hybrid' %}selected{% endif %}>Hybrid — exit when EITHER fires (whichever is first)</option>
+                            </select>
+                            <small class="text-secondary d-block mt-1">
+                                Z-Score mode can "exit at the mean" while the spread hasn't actually reverted — the rolling mean drifts during the hold to chase the spread. <b>Spread mode</b> freezes the entry-time mean and waits for the live spread to actually cross it before exiting. Stop-loss always uses Z-score regardless.
+                            </small>
+                        </div>
+                    </div>
+
                     <hr class="my-4" style="border-color: var(--border-color);">
 
                     <!-- Rolling Window -->
@@ -1274,6 +1288,7 @@
             entry_threshold: parseFloat(document.getElementById('entry_threshold').value),
             exit_threshold: parseFloat(document.getElementById('exit_threshold').value),
             stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
+            exit_signal_mode: document.getElementById('exit_signal_mode').value,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
             hurst_enabled: document.getElementById('hurst_enabled').checked,
@@ -1400,6 +1415,7 @@
                 document.getElementById('entry_threshold').value = config.entry_threshold;
                 document.getElementById('exit_threshold').value = config.exit_threshold;
                 document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;
+                document.getElementById('exit_signal_mode').value = config.exit_signal_mode || 'zscore';
                 document.getElementById('lookback_period').value = config.lookback_period;
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
