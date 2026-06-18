@@ -838,7 +838,7 @@ class OrderExecutor:
         # Amend spot order if still open
         if spread_order.spot_leg.status == LegStatus.OPEN:
             try:
-                # First check if already filled before attempting cancel
+                # Check fill status first
                 status = await self.spot_adapter.get_order_status(
                     spread_order.spot_leg.symbol,
                     spread_order.spot_leg.order_id
@@ -849,39 +849,52 @@ class OrderExecutor:
                     spread_order.spot_leg.filled_price = status["filled_price"]
                     logger.info("Spot leg already filled during amend check")
                 elif status and status["state"] in ("live", "partially_filled"):
-                    # Cancel and replace with LIMIT order
-                    cancel_success = await self.spot_adapter.cancel_order(
-                        spread_order.spot_leg.symbol,
-                        spread_order.spot_leg.order_id,
-                    )
-                    if cancel_success:
-                        remaining_qty = spread_order.spot_leg.quantity - spread_order.spot_leg.filled_qty
-                        if remaining_qty > 0:
-                            result = await self.spot_adapter.place_order(
-                                symbol=spread_order.spot_leg.symbol,
-                                side=spread_order.spot_leg.side,
-                                order_type="POST_ONLY",  # guaranteed maker (reprice on rejection)
-                                quantity=remaining_qty,
-                                price=spread_order.spot_leg.target_price,
-                                pos_side=spread_order.spot_leg.pos_side,
-                            )
-                            if result.success:
-                                spread_order.spot_leg.order_id = result.order_id
-                                spread_order.spot_leg.placed_price = spread_order.spot_leg.target_price
-                                logger.debug("Spot order amended: new_id=%s, price=%.2f",
-                                           result.order_id, spread_order.spot_leg.target_price)
-                            else:
-                                logger.error("Failed to place new spot order after cancel: %s", result.error)
-                                spread_order.spot_leg.status = LegStatus.FAILED
-                    else:
-                        logger.warning("Failed to cancel spot order for amend - skipping to avoid duplicates")
+                    # Try native WS amend first; fall back to cancel+replace for REST
+                    amended = False
+                    if hasattr(self.spot_adapter, "amend_order"):
+                        amended = await self.spot_adapter.amend_order(
+                            symbol=spread_order.spot_leg.symbol,
+                            order_id=spread_order.spot_leg.order_id,
+                            new_price=spread_order.spot_leg.target_price,
+                            pos_side=spread_order.spot_leg.pos_side,
+                        )
+                        if amended:
+                            spread_order.spot_leg.placed_price = spread_order.spot_leg.target_price
+                            logger.debug("Spot order amended in-place: ordId=%s price=%.2f",
+                                        spread_order.spot_leg.order_id,
+                                        spread_order.spot_leg.target_price)
+                    if not amended:
+                        cancel_success = await self.spot_adapter.cancel_order(
+                            spread_order.spot_leg.symbol,
+                            spread_order.spot_leg.order_id,
+                        )
+                        if cancel_success:
+                            remaining_qty = spread_order.spot_leg.quantity - spread_order.spot_leg.filled_qty
+                            if remaining_qty > 0:
+                                result = await self.spot_adapter.place_order(
+                                    symbol=spread_order.spot_leg.symbol,
+                                    side=spread_order.spot_leg.side,
+                                    order_type="POST_ONLY",
+                                    quantity=remaining_qty,
+                                    price=spread_order.spot_leg.target_price,
+                                    pos_side=spread_order.spot_leg.pos_side,
+                                )
+                                if result.success:
+                                    spread_order.spot_leg.order_id = result.order_id
+                                    spread_order.spot_leg.placed_price = spread_order.spot_leg.target_price
+                                    logger.debug("Spot order replaced: new_id=%s, price=%.2f",
+                                               result.order_id, spread_order.spot_leg.target_price)
+                                else:
+                                    logger.error("Failed to place new spot order after cancel: %s", result.error)
+                                    spread_order.spot_leg.status = LegStatus.FAILED
+                        else:
+                            logger.warning("Failed to cancel spot order for amend - skipping to avoid duplicates")
             except Exception as e:
                 logger.error("Failed to amend spot order: %s", e)
 
         # Amend futures order if still open
         if spread_order.futures_leg.status == LegStatus.OPEN:
             try:
-                # First check if already filled before attempting cancel
                 status = await self.futures_adapter.get_order_status(
                     spread_order.futures_leg.symbol,
                     spread_order.futures_leg.order_id
@@ -892,32 +905,45 @@ class OrderExecutor:
                     spread_order.futures_leg.filled_price = status["filled_price"]
                     logger.info("Futures leg already filled during amend check")
                 elif status and status["state"] in ("live", "partially_filled"):
-                    # Cancel and replace with LIMIT order
-                    cancel_success = await self.futures_adapter.cancel_order(
-                        spread_order.futures_leg.symbol,
-                        spread_order.futures_leg.order_id,
-                    )
-                    if cancel_success:
-                        remaining_qty = spread_order.futures_leg.quantity - spread_order.futures_leg.filled_qty
-                        if remaining_qty > 0:
-                            result = await self.futures_adapter.place_order(
-                                symbol=spread_order.futures_leg.symbol,
-                                side=spread_order.futures_leg.side,
-                                order_type="POST_ONLY",  # guaranteed maker (reprice on rejection)
-                                quantity=remaining_qty,
-                                price=spread_order.futures_leg.target_price,
-                                pos_side=spread_order.futures_leg.pos_side,
-                            )
-                            if result.success:
-                                spread_order.futures_leg.order_id = result.order_id
-                                spread_order.futures_leg.placed_price = spread_order.futures_leg.target_price
-                                logger.debug("Futures order amended: new_id=%s, price=%.2f",
-                                           result.order_id, spread_order.futures_leg.target_price)
-                            else:
-                                logger.error("Failed to place new futures order after cancel: %s", result.error)
-                                spread_order.futures_leg.status = LegStatus.FAILED
-                    else:
-                        logger.warning("Failed to cancel futures order for amend - skipping to avoid duplicates")
+                    amended = False
+                    if hasattr(self.futures_adapter, "amend_order"):
+                        amended = await self.futures_adapter.amend_order(
+                            symbol=spread_order.futures_leg.symbol,
+                            order_id=spread_order.futures_leg.order_id,
+                            new_price=spread_order.futures_leg.target_price,
+                            pos_side=spread_order.futures_leg.pos_side,
+                        )
+                        if amended:
+                            spread_order.futures_leg.placed_price = spread_order.futures_leg.target_price
+                            logger.debug("Futures order amended in-place: ordId=%s price=%.2f",
+                                        spread_order.futures_leg.order_id,
+                                        spread_order.futures_leg.target_price)
+                    if not amended:
+                        cancel_success = await self.futures_adapter.cancel_order(
+                            spread_order.futures_leg.symbol,
+                            spread_order.futures_leg.order_id,
+                        )
+                        if cancel_success:
+                            remaining_qty = spread_order.futures_leg.quantity - spread_order.futures_leg.filled_qty
+                            if remaining_qty > 0:
+                                result = await self.futures_adapter.place_order(
+                                    symbol=spread_order.futures_leg.symbol,
+                                    side=spread_order.futures_leg.side,
+                                    order_type="POST_ONLY",
+                                    quantity=remaining_qty,
+                                    price=spread_order.futures_leg.target_price,
+                                    pos_side=spread_order.futures_leg.pos_side,
+                                )
+                                if result.success:
+                                    spread_order.futures_leg.order_id = result.order_id
+                                    spread_order.futures_leg.placed_price = spread_order.futures_leg.target_price
+                                    logger.debug("Futures order replaced: new_id=%s, price=%.2f",
+                                               result.order_id, spread_order.futures_leg.target_price)
+                                else:
+                                    logger.error("Failed to place new futures order after cancel: %s", result.error)
+                                    spread_order.futures_leg.status = LegStatus.FAILED
+                        else:
+                            logger.warning("Failed to cancel futures order for amend - skipping to avoid duplicates")
             except Exception as e:
                 logger.error("Failed to amend futures order: %s", e)
 

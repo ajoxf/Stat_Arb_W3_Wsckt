@@ -1,9 +1,10 @@
 """
 OKX WebSocket adapter — private channel (authenticated).
 
-Milestone 1: Infrastructure and state cache only.
-Order placement, amendment, and cancellation via WS are Milestone 2/3.
-All trade-mutating operations delegate to the embedded REST adapter until then.
+Milestones 1 & 2: Infrastructure, state cache, and WS trading operations.
+place_order and cancel_order now execute via WS with REST fallback.
+amend_order (new in Milestone 2) provides atomic in-place price amendment.
+Market-data methods always delegate to the embedded REST adapter.
 
 Private endpoint (testnet):
     wss://wspap.okx.com:8443/ws/v5/private  (header: x-simulated-trading: 1)
@@ -36,6 +37,12 @@ _LIVE_PRIVATE_URL = "wss://ws.okx.com:8443/ws/v5/private"
 
 # Exponential backoff delays (seconds) for reconnect; last value is the cap.
 _BACKOFF = [1, 2, 4, 8, 16, 30]
+
+# WS ops that generate a request-response (vs push subscriptions).
+_TRADE_OPS = frozenset({
+    "order", "amend-order", "cancel-order",
+    "batch-orders", "batch-amend-orders", "batch-cancel-orders",
+})
 
 
 def _new_cid() -> str:
@@ -86,17 +93,16 @@ class OKXWebSocketAdapter(ExchangeAdapter):
     """
     OKX private-channel WebSocket adapter.
 
-    Responsibilities (Milestone 1):
+    Responsibilities (Milestones 1 & 2):
     - Maintain an authenticated WebSocket connection to the OKX private channel.
     - Route order / position / account push events to registered callbacks.
     - Keep an in-memory cache of orders, positions, and account state.
     - Auto-reconnect with exponential backoff; re-login and re-subscribe after reconnect.
     - Send raw "ping" heartbeat every 25 s; log received "pong".
     - Log every WS frame sent and received at DEBUG with a correlation ID.
-
-    All trade-mutating operations (place_order, cancel_order, close_position,
-    set_leverage, etc.) and market-data operations (get_tick, get_orderbook)
-    delegate to an embedded OKXAdapter (REST) until Milestone 2/3.
+    - place_order and cancel_order execute via WS trading-op frames with REST fallback.
+    - amend_order provides atomic in-place price amendment via WS amend-order op.
+    - Market-data operations (get_tick, get_orderbook, etc.) always delegate to REST.
     """
 
     HEARTBEAT_INTERVAL = 25  # seconds; OKX requires ping within 30 s
@@ -110,7 +116,8 @@ class OKXWebSocketAdapter(ExchangeAdapter):
     ) -> None:
         super().__init__(api_key, secret_key, passphrase, is_testnet)
 
-        # Embedded REST adapter handles market-data and trade ops until WS migration
+        # Embedded REST adapter handles market-data operations (always REST);
+        # trade ops (place_order, cancel_order) now use WS with REST fallback.
         self._rest = OKXAdapter(
             api_key=api_key,
             secret_key=secret_key,
@@ -141,6 +148,9 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         # Background tasks
         self._receive_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+
+        # Pending WS operation futures: op_id → asyncio.Future[Dict]
+        self._pending_ops: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
 
     # ------------------------------------------------------------------
     # ExchangeAdapter: connect / disconnect
@@ -217,22 +227,150 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         notional_usdt: Optional[float] = None,
         force_td_mode: Optional[str] = None,
     ) -> OrderResult:
-        """Delegate to REST — WS order placement is Milestone 2."""
-        return await self._rest.place_order(
-            symbol=symbol,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            price=price,
-            reduce_only=reduce_only,
-            pos_side=pos_side,
-            notional_usdt=notional_usdt,
-            force_td_mode=force_td_mode,
-        )
+        """Place an order via WS; falls back to REST if WS is not ready."""
+        if not self._connected or not self._ws or self._ws.closed:
+            logger.warning("[ws_adapter] WS not ready, falling back to REST for place_order %s %s",
+                           side, symbol)
+            return await self._rest.place_order(
+                symbol=symbol, side=side, order_type=order_type, quantity=quantity,
+                price=price, reduce_only=reduce_only, pos_side=pos_side,
+                notional_usdt=notional_usdt, force_td_mode=force_td_mode,
+            )
+
+        try:
+            order_data, error, sz = await self._rest._prepare_order(
+                symbol=symbol, side=side, order_type=order_type, quantity=quantity,
+                price=price, reduce_only=reduce_only, pos_side=pos_side,
+                notional_usdt=notional_usdt, force_td_mode=force_td_mode,
+            )
+            if error:
+                return OrderResult(success=False, error=error)
+
+            resp = await self._send_op("order", [order_data])
+
+            if resp.get("code") != "0":
+                err_msg = resp.get("msg") or "WS order op failed"
+                data_list = resp.get("data") or []
+                already_flat = False
+                if data_list:
+                    s_msg = data_list[0].get("sMsg", "")
+                    if s_msg:
+                        err_msg = f"{err_msg}: {s_msg}"
+                    already_flat = any(
+                        str(d.get("sCode", "")) == "51169"
+                        for d in data_list if isinstance(d, dict)
+                    )
+                logger.error("[ws_adapter] place_order failed: %s | order_data=%s", err_msg, order_data)
+                return OrderResult(success=False, error=err_msg, already_flat=already_flat)
+
+            data_list = resp.get("data") or [{}]
+            order_id = data_list[0].get("ordId", "") if data_list else ""
+            logger.info("[ws_adapter] order placed via WS: %s %s %s qty=%s ordId=%s",
+                        side, order_type, symbol, sz, order_id)
+
+            if order_type == "MARKET":
+                # Wait up to 1.5 s for the fill push to land in _order_cache
+                for _ in range(15):
+                    await asyncio.sleep(0.1)
+                    cached = self._order_cache.get(order_id)
+                    if cached and cached.get("state") == "filled":
+                        return OrderResult(
+                            success=True,
+                            order_id=order_id,
+                            filled_qty=cached["filled_qty"],
+                            filled_price=cached["filled_price"],
+                        )
+                # Fall back to REST status poll if push hasn't arrived
+                status = await self._rest.get_order_status(symbol, order_id)
+                if status and status.get("state") == "filled":
+                    return OrderResult(
+                        success=True,
+                        order_id=order_id,
+                        filled_qty=status["filled_qty"],
+                        filled_price=status["filled_price"],
+                    )
+                logger.warning(
+                    "[ws_adapter] MARKET order %s fill not confirmed in WS cache or REST poll "
+                    "— using estimated values", order_id,
+                )
+                return OrderResult(success=True, order_id=order_id, filled_qty=sz, filled_price=price or 0)
+
+            return OrderResult(success=True, order_id=order_id, filled_qty=0, filled_price=0)
+
+        except asyncio.TimeoutError:
+            logger.error("[ws_adapter] place_order timed out, falling back to REST: %s %s", symbol, side)
+            return await self._rest.place_order(
+                symbol=symbol, side=side, order_type=order_type, quantity=quantity,
+                price=price, reduce_only=reduce_only, pos_side=pos_side,
+                notional_usdt=notional_usdt, force_td_mode=force_td_mode,
+            )
+        except Exception as e:
+            logger.exception("[ws_adapter] place_order error: %s", e)
+            return OrderResult(success=False, error=str(e))
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
-        """Delegate to REST — WS cancel is Milestone 3."""
-        return await self._rest.cancel_order(symbol, order_id)
+        """Cancel an order via WS; falls back to REST if WS is not ready."""
+        if not self._connected or not self._ws or self._ws.closed:
+            logger.warning("[ws_adapter] WS not ready, falling back to REST for cancel_order %s", order_id)
+            return await self._rest.cancel_order(symbol, order_id)
+
+        try:
+            resp = await self._send_op("cancel-order", [{"instId": symbol, "ordId": order_id}])
+            if resp.get("code") == "0":
+                return True
+            logger.warning(
+                "[ws_adapter] cancel_order rejected: code=%s msg=%s ordId=%s",
+                resp.get("code"), resp.get("msg"), order_id,
+            )
+            return False
+        except asyncio.TimeoutError:
+            logger.error("[ws_adapter] cancel_order timed out, falling back to REST: %s", order_id)
+            return await self._rest.cancel_order(symbol, order_id)
+        except Exception as e:
+            logger.error("[ws_adapter] cancel_order error: %s — falling back to REST", e)
+            return await self._rest.cancel_order(symbol, order_id)
+
+    async def amend_order(
+        self,
+        symbol: str,
+        order_id: str,
+        new_price: float,
+        pos_side: Optional[str] = None,
+    ) -> bool:
+        """
+        Atomically amend a live order's price via WS amend-order op.
+
+        Returns True on success, False when WS not ready or exchange rejects.
+        When False, the caller should fall back to cancel-and-replace.
+        pos_side is accepted for interface parity but not forwarded — OKX
+        amend-order identifies the order by ordId, not posSide.
+        """
+        if not self._connected or not self._ws or self._ws.closed:
+            return False
+
+        symbol_info = await self._rest.get_symbol_info(symbol)
+        price_decimals = symbol_info.get("price_precision", 2) if symbol_info else 2
+        px_str = f"{round(new_price, price_decimals):.{price_decimals}f}"
+
+        try:
+            resp = await self._send_op(
+                "amend-order",
+                [{"instId": symbol, "ordId": order_id, "newPx": px_str}],
+            )
+            if resp.get("code") == "0":
+                logger.debug("[ws_adapter] amend_order ok: ordId=%s newPx=%s", order_id, px_str)
+                return True
+            logger.debug(
+                "[ws_adapter] amend_order rejected: code=%s msg=%s ordId=%s newPx=%s",
+                resp.get("code"), resp.get("msg"), order_id, px_str,
+            )
+            return False
+        except asyncio.TimeoutError:
+            logger.warning("[ws_adapter] amend_order timed out for ordId=%s", order_id)
+            return False
+        except Exception as e:
+            logger.error("[ws_adapter] amend_order error: %s", e)
+            return False
 
     async def close_position(self, symbol: str) -> OrderResult:
         return await self._rest.close_position(symbol)
@@ -425,6 +563,36 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         }
         await self._send_frame(frame, cid)
 
+    async def _send_op(
+        self,
+        op: str,
+        args: List[Dict[str, Any]],
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """
+        Send a trading-operation frame and block until the exchange responds.
+
+        Uses asyncio.shield so a TimeoutError from wait_for does not cancel the
+        underlying future — important because a late OKX response after our
+        timeout should not crash the receive loop when it tries to set_result.
+        """
+        if not self._ws or self._ws.closed:
+            raise RuntimeError(f"WS not connected — cannot execute '{op}'")
+
+        op_id = _new_cid()
+        fut: "asyncio.Future[Dict[str, Any]]" = asyncio.get_running_loop().create_future()
+        self._pending_ops[op_id] = fut
+        try:
+            await self._send_frame({"id": op_id, "op": op, "args": args}, op_id)
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("[%s] WS op '%s' timed out after %.1f s", op_id, op, timeout)
+            raise
+        finally:
+            self._pending_ops.pop(op_id, None)
+            if not fut.done():
+                fut.cancel()
+
     async def _send_frame(
         self, frame: Dict[str, Any], cid: Optional[str] = None
     ) -> None:
@@ -514,6 +682,17 @@ class OKXWebSocketAdapter(ExchangeAdapter):
                 "[%s] WS error event: code=%s msg=%s",
                 cid, msg.get("code"), msg.get("msg"),
             )
+            return
+
+        # --- trading-op responses (have "id" + known op) ---
+        op = msg.get("op", "")
+        if "id" in msg and op in _TRADE_OPS:
+            fut = self._pending_ops.get(msg["id"])
+            if fut is not None and not fut.done():
+                fut.set_result(msg)
+            else:
+                logger.debug("[%s] unsolicited or late trade-op response: op=%s id=%s",
+                             cid, op, msg.get("id"))
             return
 
         # --- push data ---

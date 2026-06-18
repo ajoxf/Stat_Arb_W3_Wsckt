@@ -644,3 +644,236 @@ class TestCacheAccessors:
         assert info is not None
         assert info.total_equity == 10000.0
         assert info.available_balance_usd == 8000.0
+
+
+# ---------------------------------------------------------------------------
+# WS trading operations (Milestone 2)
+# ---------------------------------------------------------------------------
+
+class TestWSTradingOps:
+    """WS place_order, cancel_order, amend_order — request/response correlation."""
+
+    def _make_connected_adapter(self):
+        """Return an adapter that appears connected with a mock WS."""
+        adapter = _make_adapter()
+        adapter._connected = True
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_str = AsyncMock()
+        return adapter
+
+    # --- _send_op ---
+
+    async def test_send_op_resolves_future_on_response(self):
+        """_send_op returns the response dict when _dispatch routes a matching reply."""
+        adapter = self._make_connected_adapter()
+
+        async def fake_send_frame(frame, cid=None):
+            # Simulate the exchange responding immediately
+            resp = {"id": frame["id"], "op": frame["op"], "code": "0", "data": [{"ordId": "X1"}]}
+            fut = adapter._pending_ops.get(frame["id"])
+            if fut and not fut.done():
+                fut.set_result(resp)
+
+        adapter._send_frame = fake_send_frame
+        result = await adapter._send_op("order", [{"instId": "BTC-USDT"}])
+        assert result["code"] == "0"
+        assert result["data"][0]["ordId"] == "X1"
+
+    async def test_send_op_raises_on_not_connected(self):
+        """_send_op raises RuntimeError when WS is closed."""
+        adapter = _make_adapter()
+        adapter._ws = MagicMock()
+        adapter._ws.closed = True
+        with pytest.raises(RuntimeError, match="WS not connected"):
+            await adapter._send_op("order", [{}])
+
+    async def test_send_op_raises_timeout(self):
+        """_send_op raises asyncio.TimeoutError when no response arrives in time."""
+        adapter = self._make_connected_adapter()
+        adapter._send_frame = AsyncMock()  # sends but never resolves
+
+        with pytest.raises(asyncio.TimeoutError):
+            await adapter._send_op("order", [{"instId": "BTC-USDT"}], timeout=0.05)
+
+    async def test_pending_op_cleaned_up_after_timeout(self):
+        """After a timeout _pending_ops should not retain stale futures."""
+        adapter = self._make_connected_adapter()
+        adapter._send_frame = AsyncMock()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await adapter._send_op("order", [{}], timeout=0.05)
+
+        assert len(adapter._pending_ops) == 0
+
+    # --- _dispatch routes trade-op responses ---
+
+    async def test_dispatch_routes_trade_op_to_pending_future(self):
+        """_dispatch must resolve the pending future for a matching id+op."""
+        adapter = _make_adapter()
+        # Manually inject a pending future
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        adapter._pending_ops["abc123"] = fut
+
+        resp = json.dumps({"id": "abc123", "op": "order", "code": "0",
+                           "data": [{"ordId": "999", "sCode": "0"}]})
+        await adapter._dispatch(resp, "cid_trade")
+
+        assert fut.done()
+        assert fut.result()["data"][0]["ordId"] == "999"
+
+    async def test_dispatch_ignores_unknown_id(self):
+        """_dispatch silently ignores a trade-op response whose id has no pending future."""
+        adapter = _make_adapter()
+        resp = json.dumps({"id": "no_match", "op": "order", "code": "0", "data": []})
+        # Should not raise
+        await adapter._dispatch(resp, "cid_no_match")
+
+    # --- place_order ---
+
+    async def test_place_order_falls_back_to_rest_when_not_connected(self):
+        """place_order uses REST when WS is not connected."""
+        from models import OrderResult
+        adapter = _make_adapter()
+        adapter._connected = False
+        adapter._rest.place_order = AsyncMock(
+            return_value=OrderResult(success=True, order_id="REST_1", filled_qty=0, filled_price=0)
+        )
+
+        result = await adapter.place_order("BTC-USDT", "buy", "LIMIT", 0.01, price=50000.0)
+        adapter._rest.place_order.assert_called_once()
+        assert result.order_id == "REST_1"
+
+    async def test_place_order_ws_success_limit(self):
+        """place_order returns OrderResult with order_id on successful WS LIMIT placement."""
+        from models import OrderResult
+        adapter = self._make_connected_adapter()
+
+        # Mock _prepare_order to skip REST calls
+        adapter._rest._prepare_order = AsyncMock(
+            return_value=({"instId": "BTC-USDT", "sz": "1"}, None, 1.0)
+        )
+
+        async def fake_send_op(op, args, timeout=5.0):
+            return {"id": "x", "op": op, "code": "0",
+                    "data": [{"ordId": "WS_ORDER_1", "sCode": "0"}]}
+
+        adapter._send_op = fake_send_op
+
+        result = await adapter.place_order("BTC-USDT", "buy", "LIMIT", 0.01, price=50000.0)
+        assert result.success is True
+        assert result.order_id == "WS_ORDER_1"
+
+    async def test_place_order_ws_error_returns_failure(self):
+        """place_order returns OrderResult(success=False) when exchange rejects."""
+        from models import OrderResult
+        adapter = self._make_connected_adapter()
+        adapter._rest._prepare_order = AsyncMock(
+            return_value=({"instId": "BTC-USDT", "sz": "1"}, None, 1.0)
+        )
+
+        async def fake_send_op(op, args, timeout=5.0):
+            return {"id": "x", "op": op, "code": "1",
+                    "msg": "insufficient margin",
+                    "data": [{"sCode": "54000", "sMsg": "insufficient margin"}]}
+
+        adapter._send_op = fake_send_op
+        result = await adapter.place_order("BTC-USDT", "buy", "LIMIT", 0.01, price=50000.0)
+        assert result.success is False
+        assert "insufficient margin" in result.error
+
+    async def test_place_order_falls_back_to_rest_on_timeout(self):
+        """place_order falls back to REST when _send_op times out."""
+        from models import OrderResult
+        adapter = self._make_connected_adapter()
+        adapter._rest._prepare_order = AsyncMock(
+            return_value=({"instId": "BTC-USDT", "sz": "1"}, None, 1.0)
+        )
+        adapter._rest.place_order = AsyncMock(
+            return_value=OrderResult(success=True, order_id="REST_FALLBACK", filled_qty=0, filled_price=0)
+        )
+
+        async def timeout_op(op, args, timeout=5.0):
+            raise asyncio.TimeoutError
+
+        adapter._send_op = timeout_op
+        result = await adapter.place_order("BTC-USDT", "buy", "LIMIT", 0.01, price=50000.0)
+        assert result.order_id == "REST_FALLBACK"
+
+    # --- cancel_order ---
+
+    async def test_cancel_order_ws_success(self):
+        """cancel_order returns True on WS success response."""
+        adapter = self._make_connected_adapter()
+
+        async def fake_send_op(op, args, timeout=5.0):
+            return {"id": "x", "op": op, "code": "0", "data": []}
+
+        adapter._send_op = fake_send_op
+        assert await adapter.cancel_order("BTC-USDT", "ORD_123") is True
+
+    async def test_cancel_order_falls_back_to_rest_when_not_connected(self):
+        """cancel_order falls back to REST when WS is not ready."""
+        adapter = _make_adapter()
+        adapter._connected = False
+        adapter._rest.cancel_order = AsyncMock(return_value=True)
+
+        result = await adapter.cancel_order("BTC-USDT", "ORD_456")
+        adapter._rest.cancel_order.assert_called_once_with("BTC-USDT", "ORD_456")
+        assert result is True
+
+    async def test_cancel_order_returns_false_on_rejection(self):
+        """cancel_order returns False when exchange sends non-zero code."""
+        adapter = self._make_connected_adapter()
+
+        async def fake_send_op(op, args, timeout=5.0):
+            return {"id": "x", "op": op, "code": "1", "msg": "order not found"}
+
+        adapter._send_op = fake_send_op
+        assert await adapter.cancel_order("BTC-USDT", "GONE") is False
+
+    # --- amend_order ---
+
+    async def test_amend_order_ws_success(self):
+        """amend_order returns True on WS success."""
+        adapter = self._make_connected_adapter()
+        adapter._rest.get_symbol_info = AsyncMock(return_value={"price_precision": 2})
+
+        async def fake_send_op(op, args, timeout=5.0):
+            assert op == "amend-order"
+            assert args[0]["newPx"] == "50000.00"
+            return {"id": "x", "op": op, "code": "0", "data": []}
+
+        adapter._send_op = fake_send_op
+        result = await adapter.amend_order("BTC-USDT", "ORD_789", new_price=50000.0)
+        assert result is True
+
+    async def test_amend_order_returns_false_when_not_connected(self):
+        """amend_order returns False when WS is not ready."""
+        adapter = _make_adapter()
+        adapter._connected = False
+        result = await adapter.amend_order("BTC-USDT", "ORD_ABC", new_price=50000.0)
+        assert result is False
+
+    async def test_amend_order_returns_false_on_rejection(self):
+        """amend_order returns False when exchange rejects the amend."""
+        adapter = self._make_connected_adapter()
+        adapter._rest.get_symbol_info = AsyncMock(return_value={"price_precision": 2})
+
+        async def fake_send_op(op, args, timeout=5.0):
+            return {"id": "x", "op": op, "code": "1", "msg": "order not found"}
+
+        adapter._send_op = fake_send_op
+        assert await adapter.amend_order("BTC-USDT", "ORD_GONE", new_price=50000.0) is False
+
+    async def test_amend_order_returns_false_on_timeout(self):
+        """amend_order returns False (not raises) on timeout."""
+        adapter = self._make_connected_adapter()
+        adapter._rest.get_symbol_info = AsyncMock(return_value={"price_precision": 2})
+
+        async def timeout_op(op, args, timeout=5.0):
+            raise asyncio.TimeoutError
+
+        adapter._send_op = timeout_op
+        assert await adapter.amend_order("BTC-USDT", "ORD_T", new_price=50000.0) is False

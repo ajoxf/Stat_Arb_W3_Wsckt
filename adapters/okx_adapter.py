@@ -10,7 +10,7 @@ import json
 import time
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import aiohttp
 
 from .base import ExchangeAdapter, is_derivative
@@ -253,6 +253,139 @@ class OKXAdapter(ExchangeAdapter):
 
         return None
 
+    async def _prepare_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        price: Optional[float] = None,
+        reduce_only: bool = False,
+        pos_side: Optional[str] = None,
+        notional_usdt: Optional[float] = None,
+        force_td_mode: Optional[str] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str], float]:
+        """
+        Validate inputs and build the OKX order parameter dict without making an HTTP call.
+
+        Returns (order_data, error_msg, effective_sz):
+          - Success: (order_data_dict, None, sz)
+          - Failure: (None, error_string, 0.0)
+        """
+        inst_type = _detect_inst_type(symbol)
+        td_mode = "cross" if inst_type in ("SWAP", "FUTURES") else self._spot_td_mode
+        if force_td_mode:
+            td_mode = force_td_mode
+
+        symbol_info = await self.get_symbol_info(symbol)
+        sz = quantity
+        sz_str = ""
+
+        if inst_type in ("SWAP", "FUTURES"):
+            if symbol_info:
+                ct_val = float(symbol_info.get("contract_val") or 0.01)
+                if ct_val <= 0:
+                    return None, f"Invalid contract value {ct_val}", 0.0
+                contracts = quantity / ct_val
+                sz = int(contracts)
+                if sz < 1:
+                    logger.error("%s quantity %.6f = %.2f contracts (ctVal=%.4f), minimum is 1",
+                                inst_type, quantity, contracts, ct_val)
+                    return None, (f"Quantity {quantity} too small for {symbol}: "
+                                  f"need at least {ct_val} (1 contract)"), 0.0
+                logger.info("%s order: %.6f %s = %d contracts (ctVal=%.4f)",
+                           inst_type, quantity, symbol.split("-")[0], sz, ct_val)
+            else:
+                return None, f"Cannot place {inst_type} order without symbol info", 0.0
+            sz_str = str(int(sz))
+        else:
+            decimals: int = 8
+            if symbol_info:
+                min_sz = symbol_info.get("min_qty", 0)
+                lot_sz = symbol_info.get("lot_sz", 0.00000001)
+                decimals = symbol_info.get("qty_precision", 8)
+                sz = round(quantity, decimals)
+                if sz < min_sz:
+                    logger.error("SPOT order size %.8f below minimum %.8f for %s",
+                                sz, min_sz, symbol)
+                    return None, f"Size {sz} below minimum {min_sz}", 0.0
+                logger.info("SPOT order: qty=%.8f (minSz=%.8f, lotSz=%.8f, decimals=%d)",
+                           sz, min_sz, lot_sz, decimals)
+            else:
+                sz = round(quantity, decimals)
+                logger.warning("SPOT order without symbol info, using defaults: qty=%.8f, decimals=%d",
+                              sz, decimals)
+
+            if sz <= 0:
+                return None, f"Order size {sz} is not positive after rounding", 0.0
+
+            sz_str = f"{sz:.{decimals}f}".rstrip("0").rstrip(".")
+            if not sz_str or sz_str == "0":
+                return None, f"Order size formatted to invalid value: {sz_str}", 0.0
+
+        if order_type == "MARKET":
+            okx_ord_type = "market"
+        elif order_type == "POST_ONLY":
+            okx_ord_type = "post_only"
+        else:
+            okx_ord_type = "limit"
+
+        order_data: Dict[str, Any] = {
+            "instId": symbol,
+            "tdMode": td_mode,
+            "side": side.lower(),
+            "ordType": okx_ord_type,
+            "sz": sz_str,
+        }
+
+        if order_type in ("LIMIT", "POST_ONLY") and price:
+            if symbol_info:
+                price_decimals = symbol_info.get("price_precision", 2)
+                rounded_price = round(price, price_decimals)
+                px_str = f"{rounded_price:.{price_decimals}f}"
+            else:
+                px_str = str(round(price, 2))
+            order_data["px"] = px_str
+
+        if reduce_only and inst_type in ("SWAP", "FUTURES"):
+            order_data["reduceOnly"] = True
+
+        if inst_type == "SPOT" and okx_ord_type == "market" and side.upper() == "BUY" and td_mode == "cash":
+            order_data["tgtCcy"] = "base_ccy"
+
+        if inst_type == "SPOT" and td_mode == "cross":
+            symbol_parts = symbol.split("-")
+            if len(symbol_parts) >= 2 and symbol_parts[1]:
+                order_data["ccy"] = symbol_parts[1]
+                if okx_ord_type == "market" and side.upper() == "BUY":
+                    if notional_usdt and notional_usdt > 0:
+                        sz_str = f"{round(notional_usdt, 2):.2f}"
+                        order_data["sz"] = sz_str
+                        logger.info("Cross-margin SPOT MARKET BUY: overriding sz to notional_usdt=%.2f USDT",
+                                    notional_usdt)
+                    else:
+                        logger.error(
+                            "Cross-margin SPOT MARKET BUY requires notional_usdt "
+                            "(qty=%.8f BTC would be read as USDT by OKX). Blocking order.", quantity
+                        )
+                        return None, (
+                            "Cross-margin SPOT MARKET BUY missing notional_usdt — "
+                            "order blocked to prevent wrong-size placement"
+                        ), 0.0
+
+        if inst_type in ("SWAP", "FUTURES"):
+            if pos_side:
+                order_data["posSide"] = pos_side
+                logger.info("Using explicit posSide=%s", pos_side)
+            elif not reduce_only:
+                account_config = await self.get_account_config()
+                if account_config and account_config.get("position_mode") == "long_short_mode":
+                    order_data["posSide"] = "long" if side.upper() == "BUY" else "short"
+                    logger.info("Account in long_short_mode, auto-setting posSide=%s for entry",
+                                order_data["posSide"])
+
+        return order_data, None, sz
+
     async def place_order(
         self,
         symbol: str,
@@ -276,167 +409,19 @@ class OKXAdapter(ExchangeAdapter):
                       If None, will auto-detect based on account mode.
         """
         try:
-            # Determine instrument type and trade mode
-            inst_type = _detect_inst_type(symbol)
-            # SWAP and dated FUTURES are both cross-margined on OKX's linear book
-            td_mode = "cross" if inst_type in ("SWAP", "FUTURES") else self._spot_td_mode
-            if force_td_mode:
-                td_mode = force_td_mode
-
-            # Get symbol info for size validation and formatting
-            symbol_info = await self.get_symbol_info(symbol)
-            sz = quantity
-            sz_str = ""
-
-            if inst_type in ("SWAP", "FUTURES"):
-                # SWAP *and* dated FUTURES are denominated in CONTRACTS on OKX,
-                # not base units. The caller passes a base-currency quantity
-                # (e.g. 0.0075 BTC); convert to contract count via ctVal. Dated
-                # futures previously fell through to the spot branch and the
-                # base quantity was sent as a raw contract count, placing a
-                # position 10-75x off intended size and breaking the hedge.
-                if symbol_info:
-                    ct_val = float(symbol_info.get("contract_val") or 0.01)
-                    if ct_val <= 0:
-                        return OrderResult(success=False, error=f"Invalid contract value {ct_val}")
-                    # Convert base quantity to number of contracts.
-                    # Use floor (int) not round — rounding up would over-size the
-                    # leg, creating unhedged exposure.
-                    contracts = quantity / ct_val
-                    sz = int(contracts)
-                    # Validate minimum 1 contract - don't silently inflate small positions
-                    if sz < 1:
-                        logger.error("%s quantity %.6f = %.2f contracts (ctVal=%.4f), minimum is 1",
-                                    inst_type, quantity, contracts, ct_val)
-                        return OrderResult(success=False,
-                                           error=f"Quantity {quantity} too small for {symbol}: "
-                                                 f"need at least {ct_val} (1 contract)")
-                    logger.info("%s order: %.6f %s = %d contracts (ctVal=%.4f)",
-                               inst_type, quantity, symbol.split("-")[0], sz, ct_val)
-                else:
-                    # No symbol info - cannot safely place a contract-denominated order
-                    return OrderResult(success=False,
-                                       error=f"Cannot place {inst_type} order without symbol info")
-                sz_str = str(int(sz))
-            else:
-                # For SPOT: validate and format quantity properly
-                if symbol_info:
-                    min_sz = symbol_info.get("min_qty", 0)
-                    lot_sz = symbol_info.get("lot_sz", 0.00000001)
-
-                    # Use qty_precision from symbol_info (calculated from original API string)
-                    # Don't recalculate from float - str(0.00000001) becomes "1e-08"
-                    decimals = symbol_info.get("qty_precision", 8)
-
-                    # Round to lot_sz precision
-                    sz = round(quantity, decimals)
-
-                    # Validate minimum
-                    if sz < min_sz:
-                        logger.error("SPOT order size %.8f below minimum %.8f for %s",
-                                    sz, min_sz, symbol)
-                        return OrderResult(success=False, error=f"Size {sz} below minimum {min_sz}")
-
-                    logger.info("SPOT order: qty=%.8f (minSz=%.8f, lotSz=%.8f, decimals=%d)",
-                               sz, min_sz, lot_sz, decimals)
-                else:
-                    # No symbol info - use safe defaults
-                    decimals = 8
-                    sz = round(quantity, decimals)
-                    logger.warning("SPOT order without symbol info, using defaults: qty=%.8f, decimals=%d",
-                                  sz, decimals)
-
-                # Validate sz is positive after rounding
-                if sz <= 0:
-                    return OrderResult(success=False, error=f"Order size {sz} is not positive after rounding")
-
-                # Format size string with correct precision (use decimals, not hardcoded 8)
-                sz_str = f"{sz:.{decimals}f}".rstrip("0").rstrip(".")
-                if not sz_str or sz_str == "0":
-                    return OrderResult(success=False, error=f"Order size formatted to invalid value: {sz_str}")
-
-            # OKX order types: market, limit, post_only, fok, ioc
-            # post_only = limit order that's cancelled if it would fill immediately (ensures maker)
-            if order_type == "MARKET":
-                okx_ord_type = "market"
-            elif order_type == "POST_ONLY":
-                okx_ord_type = "post_only"  # Maker-only limit order
-            else:
-                okx_ord_type = "limit"
-
-            order_data = {
-                "instId": symbol,
-                "tdMode": td_mode,
-                "side": side.lower(),
-                "ordType": okx_ord_type,
-                "sz": sz_str,
-            }
-
-            if order_type in ("LIMIT", "POST_ONLY") and price:
-                # Use price_precision from symbol_info (calculated from original API string)
-                if symbol_info:
-                    price_decimals = symbol_info.get("price_precision", 2)
-                    rounded_price = round(price, price_decimals)
-                    px_str = f"{rounded_price:.{price_decimals}f}"
-                else:
-                    px_str = str(round(price, 2))
-                order_data["px"] = px_str
-
-            if reduce_only and inst_type in ("SWAP", "FUTURES"):
-                order_data["reduceOnly"] = True
-
-            # For spot cash-mode (tdMode=cash) market BUY, OKX defaults sz to quote (USDT).
-            # tgtCcy=base_ccy tells OKX that sz is in base currency (BTC) instead.
-            # NOTE: tgtCcy is NOT supported in cross-margin mode (sCode=59110).
-            if inst_type == "SPOT" and okx_ord_type == "market" and side.upper() == "BUY" and td_mode == "cash":
-                order_data["tgtCcy"] = "base_ccy"
-
-            # Cross-margin SPOT orders require ccy = margin currency (quote currency).
-            # OKX rejects cross-margin spot orders without ccy ("Parameter ccy can not be empty").
-            # For cross-margin SPOT MARKET BUY, ccy=USDT also causes OKX to interpret sz
-            # as USDT amount (not BTC qty) — so the caller must pass notional_usdt and we
-            # override sz here to the USDT value.
-            if inst_type == "SPOT" and td_mode == "cross":
-                symbol_parts = symbol.split("-")
-                # BTC-USDT → quote = USDT; guard against malformed symbols
-                if len(symbol_parts) >= 2 and symbol_parts[1]:
-                    order_data["ccy"] = symbol_parts[1]
-                    # Market BUY: sz must be in USDT (quote currency) because ccy=USDT
-                    if okx_ord_type == "market" and side.upper() == "BUY":
-                        if notional_usdt and notional_usdt > 0:
-                            sz_str = f"{round(notional_usdt, 2):.2f}"
-                            order_data["sz"] = sz_str
-                            logger.info("Cross-margin SPOT MARKET BUY: overriding sz to notional_usdt=%.2f USDT", notional_usdt)
-                        else:
-                            # Without notional_usdt, OKX interprets sz as USDT, making
-                            # a $5000 BTC order look like a $0.05 order. Refuse to proceed.
-                            logger.error(
-                                "Cross-margin SPOT MARKET BUY requires notional_usdt "
-                                "(qty=%.8f BTC would be read as USDT by OKX). Blocking order.", quantity
-                            )
-                            return OrderResult(
-                                success=False,
-                                error="Cross-margin SPOT MARKET BUY missing notional_usdt — order blocked to prevent wrong-size placement",
-                            )
-
-            # Handle position side for long/short mode accounts. Required for
-            # any OKX derivative — SWAP *and* FUTURES (dated). Previously only
-            # checked SWAP, which is why dated-future entries on a
-            # long_short_mode account failed with sCode 51000 "Parameter
-            # posSide error" — the posSide the executor passed in was being
-            # silently dropped here.
-            if inst_type in ("SWAP", "FUTURES"):
-                if pos_side:
-                    # Explicit pos_side provided - use it (important for closing positions!)
-                    order_data["posSide"] = pos_side
-                    logger.info("Using explicit posSide=%s", pos_side)
-                elif not reduce_only:
-                    # Only auto-detect for NEW positions (entries), not for exits
-                    account_config = await self.get_account_config()
-                    if account_config and account_config.get("position_mode") == "long_short_mode":
-                        # In long/short mode: buy opens long, sell opens short
-                        order_data["posSide"] = "long" if side.upper() == "BUY" else "short"
-                        logger.info("Account in long_short_mode, auto-setting posSide=%s for entry", order_data["posSide"])
+            order_data, error, sz = await self._prepare_order(
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+                reduce_only=reduce_only,
+                pos_side=pos_side,
+                notional_usdt=notional_usdt,
+                force_td_mode=force_td_mode,
+            )
+            if error:
+                return OrderResult(success=False, error=error)
 
             logger.info("Placing order: %s", order_data)
             result = await self._request("POST", "/api/v5/trade/order", data=order_data)

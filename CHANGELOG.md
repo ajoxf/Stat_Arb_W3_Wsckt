@@ -1,5 +1,56 @@
 # Changelog
 
+## Milestone 2 — WS Order Placement & Amendment (2026-06-18)
+
+### What shipped
+
+#### `adapters/okx_ws_adapter.py` (updated)
+WS order placement, cancellation, and price amendment replacing REST delegation.
+
+- **`place_order` via WS**: builds the OKX order dict via `OKXAdapter._prepare_order()`
+  (all sizing, contract-conversion, and td-mode logic reused unchanged), then submits via
+  `{"op": "order", "args": [...]}`. Falls back to REST transparently on WS-not-ready or
+  5 s timeout. MARKET fills are detected from the WS order cache (up to 1.5 s); falls
+  back to REST `get_order_status` if the push hasn't arrived.
+- **`cancel_order` via WS**: `{"op": "cancel-order", "args": [...]}` with REST fallback on
+  timeout or disconnection.
+- **`amend_order` (new method)**: `{"op": "amend-order", "args": [{"newPx": "..."}]}` for
+  atomic in-place price updates (no cancel-gap risk). Returns `False` when WS not ready or
+  exchange rejects, signalling the executor to fall back to cancel-and-replace.
+- **`_send_op` (new private method)**: sends a trading-op frame with a unique `id`, awaits
+  the response via `asyncio.Future` in `_pending_ops`, and returns the response dict.
+  Uses `asyncio.shield` to prevent `wait_for` timeout cancelling the underlying future
+  (late responses from OKX after timeout won't crash `_dispatch`).
+- **`_pending_ops`**: `Dict[str, asyncio.Future]` map for request-response correlation.
+  `_dispatch` now routes responses with matching `id` to the right future.
+
+#### `adapters/okx_adapter.py` (updated)
+- **`_prepare_order` (new method)**: extracted from `place_order`. Validates inputs, converts
+  base-currency quantity to contracts, builds the full OKX order param dict, and returns
+  `(order_data, error_msg, sz)`. No HTTP call — pure param prep, shareable with WS adapter.
+- **`place_order`**: refactored to call `_prepare_order()` + REST HTTP call. Behaviour
+  unchanged from the caller's perspective.
+
+#### `core/order_executor.py` (updated)
+`_amend_limit_orders` now tries `adapter.amend_order(...)` first (WS native amend).
+Falls back to cancel-and-replace when `amend_order` is unavailable or returns `False`
+(REST adapter, or WS adapter while disconnected).
+
+#### `tests/test_ws_adapter.py` (updated)
+19 new tests in `TestWSTradingOps` covering:
+- `_send_op` request-response correlation, timeout, cleanup
+- `_dispatch` routing of trade-op responses to pending futures
+- `place_order`: WS success, WS error, REST fallback (not connected), REST fallback (timeout)
+- `cancel_order`: WS success, WS error, REST fallback (not connected)
+- `amend_order`: WS success, WS rejection, WS timeout, not-connected
+
+### Caveats
+- Order cancellation is now via WS; the REST fallback fires automatically on disconnection.
+- `amend_order` is a new public method not present in `ExchangeAdapter` base class —
+  the executor uses `hasattr` to detect it so the REST adapter path is unchanged.
+- Fill detection for MARKET orders still has a REST poll fallback; a future milestone
+  can eliminate this by relying entirely on the WS order-cache push.
+
 ## Milestone 1 — WebSocket Infrastructure (2026-06-18)
 
 ### What shipped
