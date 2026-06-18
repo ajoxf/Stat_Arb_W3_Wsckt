@@ -72,6 +72,7 @@ loop: Optional[asyncio.AbstractEventLoop] = None
 engine_thread: Optional[Thread] = None
 ws_manager: Optional[OKXWebSocketManager] = None
 shutdown_in_progress = False
+_execution_backend: str = "rest"  # updated by start_engine_loop; "rest" or "websocket"
 
 
 def run_async_loop(loop: asyncio.AbstractEventLoop):
@@ -353,6 +354,8 @@ def start_engine_loop():
         spot_adapter, futures_adapter, backend_label = _build_trade_adapters(
             api_key, secret_key, passphrase, is_demo)
         engine.set_adapters(spot_adapter, futures_adapter)
+        global _execution_backend
+        _execution_backend = backend_label
         logger.info("%s adapters configured: demo=%s, paper=%s, symbols=(%s, %s)",
                    backend_label, is_demo, config.paper_trading, config.spot_symbol, config.futures_symbol)
     else:
@@ -940,7 +943,9 @@ def toggle_algo():
 @app.route('/api/engine/status', methods=['GET'])
 def get_engine_status():
     """Get engine status."""
-    return jsonify(engine.get_status())
+    status = engine.get_status()
+    status['execution_backend'] = _execution_backend
+    return jsonify(status)
 
 
 @app.route('/api/engine/reset', methods=['POST'])
@@ -4201,7 +4206,7 @@ if __name__ == '__main__':
     time.sleep(1.0)
 
     # Log the server address
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", 5002))
     logger.info("=" * 50)
     logger.info("Dashboard available at: http://localhost:%d", port)
     logger.info("=" * 50)

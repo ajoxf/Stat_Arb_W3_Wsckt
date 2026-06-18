@@ -13,6 +13,7 @@
                     <div>
                         <small class="text-secondary">Exchange</small>
                         <div class="fw-bold" id="exchange-name">OKX</div>
+                        <span id="execution-backend-badge" class="badge bg-secondary" style="font-size:0.58rem;margin-top:2px;">REST</span>
                     </div>
                 </div>
             </div>
@@ -1199,6 +1200,20 @@
 
     // ── Health score badge ────────────────────────────────────────────
 
+    function updateExecutionBackendBadge(backend) {
+        const badge = document.getElementById('execution-backend-badge');
+        if (!badge) return;
+        if (backend === 'websocket') {
+            badge.textContent = 'WS Streaming';
+            badge.className = 'badge bg-success';
+            badge.title = 'Orders placed & fills detected via WebSocket';
+        } else {
+            badge.textContent = 'REST';
+            badge.className = 'badge bg-secondary';
+            badge.title = 'Orders placed via REST API';
+        }
+    }
+
     function updateHealthScore(score) {
         const badge = document.getElementById('health-score-badge');
         if (!badge) return;
@@ -1269,6 +1284,7 @@
     loadLearningLog();
     loadInsights();
     fetch('/api/config').then(r => r.json()).then(cfg => updateAutoTuneBadge(cfg)).catch(() => {});
+    fetch('/api/engine/status').then(r => r.json()).then(d => { if (d.execution_backend) updateExecutionBackendBadge(d.execution_backend); }).catch(() => {});
     // ══════════════════════════════════════════════════════════════════
 
     // Fallback polling
@@ -1287,6 +1303,7 @@
                     // Sync open trade details for position detail panel
                     currentOpenTrade = data.open_trade || null;
                     updatePosition(data.position || 'NONE');
+                    if (data.execution_backend) updateExecutionBackendBadge(data.execution_backend);
                     // Update stop-loss cooldown indicator
                     const cooldownIndicator = document.getElementById('sl-cooldown-indicator');
                     const cooldownSecs = document.getElementById('sl-cooldown-secs');
