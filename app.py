@@ -82,6 +82,74 @@ def run_async_loop(loop: asyncio.AbstractEventLoop):
     loop.run_forever()
 
 
+def _backfill_capital_metrics() -> None:
+    """Recompute notional/margin/capital metrics for closed trades using the
+    trade's stored entry prices, quantity, and current β + leverage config.
+    Exact when config hasn't changed; approximate otherwise.
+
+    Three things get re-derived per closed trade:
+
+    1. notional_usd → total (Leg A + Leg B). Was previously only Leg A
+       (position_size_usd), under-reporting by ~2× on dollar-neutral pairs.
+    2. margin_usd → total margin across both legs (was futures-only).
+    3. capital_locked_usd + pnl_pct_on_capital (the locked-capital % metric).
+
+    pnl_percent is also recomputed against the new total notional so the
+    Trade Journal % column is internally consistent.
+    """
+    try:
+        leg_a_deriv = is_derivative(config.spot_symbol)
+        leg_b_deriv = is_derivative(config.futures_symbol)
+        leg_a_lev = max(config.spot_leverage    if leg_a_deriv else 1, 1)
+        leg_b_lev = max(config.futures_leverage if leg_b_deriv else 1, 1)
+        beta = max(getattr(config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        buffer_pct = getattr(config, 'm2m_buffer_pct', 0.0) or 0.0
+        buffer_mult = 1 + buffer_pct / 100.0
+
+        n = 0
+        for trade in db.get_trades(limit=10000, open_only=False):
+            if trade.is_open:
+                continue
+            if not (trade.entry_spot_price and trade.entry_futures_price and trade.quantity):
+                continue
+
+            # Recompute leg notionals from the stored entry fills.
+            leg_a_notional = trade.entry_spot_price * trade.quantity * beta
+            leg_b_notional = trade.entry_futures_price * trade.quantity
+            new_total_notional = leg_a_notional + leg_b_notional
+
+            # Margin totals across both legs.
+            margin_a = leg_a_notional / leg_a_lev
+            margin_b = leg_b_notional / leg_b_lev
+            new_total_margin = margin_a + margin_b
+
+            # Capital metric (margin + M2M buffer).
+            capital = new_total_margin * buffer_mult
+
+            # Skip rows where nothing would change (e.g. already back-filled).
+            old_notional_close = abs((trade.notional_usd or 0) - new_total_notional) < 0.01
+            old_margin_close   = abs((trade.margin_usd or 0)   - new_total_margin)   < 0.01
+            old_capital_close  = abs((trade.capital_locked_usd or 0) - capital)      < 0.01
+            if old_notional_close and old_margin_close and old_capital_close:
+                continue
+
+            trade.notional_usd        = round(new_total_notional, 2)
+            trade.margin_usd          = round(new_total_margin, 2)
+            trade.capital_locked_usd  = round(capital, 2)
+            if new_total_notional > 0:
+                trade.pnl_percent = (trade.pnl_usd / new_total_notional) * 100
+            if capital > 0:
+                trade.pnl_pct_on_capital = (trade.pnl_usd / capital) * 100
+            db.save_trade(trade)
+            n += 1
+        if n:
+            logger.info(
+                "Back-filled notional/margin/capital metrics on %d closed trade(s)", n
+            )
+    except Exception as e:
+        logger.warning("Trade metric back-fill skipped: %s", e)
+
+
 def _get_balance_for_telegram() -> Dict[str, Any]:
     """Fetch account balance data for Telegram /balance command."""
     try:
@@ -151,8 +219,26 @@ def start_engine_loop():
     _telegram.get_trades_cb = lambda: [t.to_dict() for t in db.get_trades(limit=20)]
     _telegram.get_balance_cb = _get_balance_for_telegram
     _telegram.optimize_cb = lambda: engine.signal_generator.optimize_parameters()
+
+    def _toggle_algo_from_telegram(enabled: bool) -> bool:
+        engine.toggle_algo(enabled)
+        # Persist so the new state survives restarts.
+        try:
+            config.algo_enabled = enabled
+            db.save_config(config)
+        except Exception as e:
+            logger.warning("Persisting algo toggle failed: %s", e)
+        return engine.state.algo_enabled
+    _telegram.toggle_algo_cb = _toggle_algo_from_telegram
     # Start command polling in a background daemon thread
     _telegram.start_polling()
+
+    # One-time back-fill: closed trades from before the capital-locked column
+    # existed have capital_locked_usd = 0 (default). Recompute from each
+    # trade's stored entry prices + quantity using the CURRENT leverage and
+    # M2M buffer config. This is an approximation when leverage has changed
+    # mid-history, but covers the common case.
+    _backfill_capital_metrics()
 
     # Load spread history from database for recovery.
     # Pass the raw spot/futures prices so the signal generator recomputes every
@@ -451,17 +537,29 @@ def save_config():
         if not data:
             return jsonify({'success': False, 'error': 'No data received'}), 400
 
-        # Preserve the real telegram token if the form sent back the masked '***' placeholder
-        if data.get('telegram_bot_token') == '***':
-            existing = db.get_config()
-            data['telegram_bot_token'] = existing.telegram_bot_token
+        # Telegram settings live in a separate panel — the main Settings form
+        # doesn't include them in its payload. Without this merge, from_dict()
+        # below would reset every missing telegram_* field to its dataclass
+        # default (enabled→False, chat_id→""), silently killing the bot every
+        # time the user saves any unrelated setting. Also honor the '***'
+        # sentinel sent by the Telegram panel to mean "keep the saved token".
+        existing = db.get_config()
+        telegram_fields = (
+            'telegram_enabled', 'telegram_bot_token', 'telegram_chat_id',
+            'telegram_notify_trades', 'telegram_notify_signals', 'telegram_notify_errors',
+        )
+        for field in telegram_fields:
+            if field not in data or data.get(field) == '***':
+                data[field] = getattr(existing, field)
 
-        # Validate leverage bounds before saving
+        # Validate leverage bounds before saving. OKX caps Expiry Futures
+        # at 20x; perpetual SWAPs go higher but we match the more conservative
+        # ceiling for the strategy this bot was built for.
         for lev_key in ('spot_leverage', 'futures_leverage'):
             if lev_key in data:
                 try:
                     v = int(float(data[lev_key]))
-                    data[lev_key] = max(1, min(v, 25))
+                    data[lev_key] = max(1, min(v, 20))
                 except (TypeError, ValueError):
                     data[lev_key] = 1
 
@@ -2110,8 +2208,8 @@ def apply_ai_insight(insight_id: int):
 
         # Hard bounds for safety-critical parameters
         PARAM_BOUNDS = {
-            'spot_leverage':     (1, 10),
-            'futures_leverage':  (1, 25),
+            'spot_leverage':     (1, 20),
+            'futures_leverage':  (1, 20),
             'position_size_usd': (10, 1_000_000),
             'entry_threshold':   (0.1, 10.0),
             'exit_threshold':    (0.0, 10.0),
@@ -2275,7 +2373,12 @@ def save_telegram_config():
 
     try:
         config.telegram_enabled = bool(data.get('telegram_enabled', False))
-        config.telegram_bot_token = str(data.get('telegram_bot_token', '')).strip()
+        # '***' sentinel from the panel means "leave the saved token alone" —
+        # the input field is rendered blank by design so the user doesn't have
+        # to re-paste the token on every visit. Treat blank the same way.
+        token_in = str(data.get('telegram_bot_token', '')).strip()
+        if token_in and token_in != '***':
+            config.telegram_bot_token = token_in
         config.telegram_chat_id = str(data.get('telegram_chat_id', '')).strip()
         config.telegram_notify_trades = bool(data.get('telegram_notify_trades', True))
         config.telegram_notify_signals = bool(data.get('telegram_notify_signals', False))

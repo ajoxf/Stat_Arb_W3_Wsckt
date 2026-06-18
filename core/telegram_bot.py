@@ -98,6 +98,9 @@ class TelegramNotifier:
         self.close_all_cb: Optional[Callable[[], Dict[str, Any]]] = None
         # Returns result of SignalGenerator.optimize_parameters()
         self.optimize_cb: Optional[Callable[[], Dict[str, Any]]] = None
+        # Flip algo_enabled on/off from Telegram (panic switch).
+        # Signature: toggle_algo_cb(enabled: bool) -> bool (new state).
+        self.toggle_algo_cb: Optional[Callable[[bool], bool]] = None
 
         # Polling state
         self._poll_thread: Optional[threading.Thread] = None
@@ -513,6 +516,8 @@ class TelegramNotifier:
             "/eod": self._cmd_eod,
             "/closeall": self._cmd_closeall,
             "/optimize": self._cmd_optimize,
+            "/pause": self._cmd_pause,
+            "/resume": self._cmd_resume,
         }
 
         handler = handlers.get(command)
@@ -560,6 +565,8 @@ class TelegramNotifier:
             f"{'/pnl':<{C}}P&amp;L summary",
             f"{'/eod':<{C}}end-of-day report",
             f"{'/optimize':<{C}}run parameter grid search",
+            f"{'/pause':<{C}}halt new entries (open trades unaffected)",
+            f"{'/resume':<{C}}re-enable new entries",
             f"{'/closeall':<{C}}emergency: close all",
         ]
         self._send(
@@ -896,6 +903,30 @@ class TelegramNotifier:
         self._send(
             f"<b>END OF DAY  ·  {ts}</b>\n" + "\n".join(rows)
         )
+
+    def _cmd_pause(self) -> None:
+        """Disable algo (no new entries). Open positions continue to be monitored."""
+        self._toggle_algo(False, "PAUSE ALGO")
+
+    def _cmd_resume(self) -> None:
+        """Re-enable algo (new entries allowed again)."""
+        self._toggle_algo(True, "RESUME ALGO")
+
+    def _toggle_algo(self, target: bool, title: str) -> None:
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        if not self.toggle_algo_cb:
+            self._send(f"<b>{title}  ·  {ts}</b>\n<pre>Not configured.</pre>")
+            return
+        try:
+            new_state = bool(self.toggle_algo_cb(target))
+            R = self._R
+            rows = [
+                R("Algo", "ON" if new_state else "OFF"),
+                R("Effect", "New entries enabled" if new_state else "New entries blocked"),
+            ]
+            self._send(f"<b>{title}  ·  {ts}</b>\n" + "\n".join(rows))
+        except Exception as e:
+            self._send(f"<b>{title}  ·  {ts}</b>\n<b>Error</b>  <code>{e}</code>")
 
     def _cmd_closeall(self) -> None:
         """Handle /closeall emergency command - immediately close all open positions."""

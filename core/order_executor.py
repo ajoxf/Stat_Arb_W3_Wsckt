@@ -343,9 +343,27 @@ class OrderExecutor:
                 )
                 spread_order.spot_leg.status = LegStatus.FILLED
                 spread_order.spot_leg.filled_qty = expected
-                # 0.0 fill price: engine PnL will be off but that's preferable
-                # to over-closing into a naked position.
-                spread_order.spot_leg.filled_price = 0.0
+                # Reconcile-skip: we missed the fill but the position IS flat,
+                # so an order this cycle must have filled. POST_ONLY fills at
+                # the posted price, so the last target_price is the best
+                # available approximation. Falling back to 0.0 here would
+                # make _close_position compute exit_spread = -β × 0 = 0,
+                # producing a wildly wrong P&L (trade 30 hit this: -$24
+                # logged on a +$0.65 actual trade).
+                spread_order.spot_leg.filled_price = (
+                    spread_order.spot_leg.target_price or 0.0
+                )
+                if spread_order.spot_leg.filled_price > 0:
+                    logger.warning(
+                        "Exit reconcile: spot fill price not detected — "
+                        "approximating with last quoted price %.4f for P&L",
+                        spread_order.spot_leg.filled_price,
+                    )
+                else:
+                    logger.warning(
+                        "Exit reconcile: spot fill price unknown and no "
+                        "quoted price available — P&L will use mid placeholder",
+                    )
             elif spot_qty < expected * partial_threshold:
                 logger.warning(
                     "Exit reconcile: spot position partial (have=%.6f, expected=%.6f) — "
@@ -389,7 +407,21 @@ class OrderExecutor:
                 )
                 spread_order.futures_leg.status = LegStatus.FILLED
                 spread_order.futures_leg.filled_qty = expected
-                spread_order.futures_leg.filled_price = 0.0
+                # See spot-side comment above re: target_price fallback.
+                spread_order.futures_leg.filled_price = (
+                    spread_order.futures_leg.target_price or 0.0
+                )
+                if spread_order.futures_leg.filled_price > 0:
+                    logger.warning(
+                        "Exit reconcile: futures fill price not detected — "
+                        "approximating with last quoted price %.4f for P&L",
+                        spread_order.futures_leg.filled_price,
+                    )
+                else:
+                    logger.warning(
+                        "Exit reconcile: futures fill price unknown and no "
+                        "quoted price available — P&L will use mid placeholder",
+                    )
             elif fut_qty_btc < expected * partial_threshold:
                 logger.warning(
                     "Exit reconcile: futures position partial (have=%.6f BTC, expected=%.6f BTC) — "
@@ -880,6 +912,33 @@ class OrderExecutor:
             except Exception as e:
                 logger.error("Failed to amend futures order: %s", e)
 
+    # Map of OKX cancelSource codes → human-readable explanations.
+    # Source: OKX docs and observed behaviour. The 20/21/13 codes are the
+    # ones we hit in practice; everything else routes to "exchange/system".
+    _OKX_CANCEL_REASONS = {
+        "0":  "user initiated",
+        "1":  "system cancelled",
+        "2":  "not matched and cancelled",
+        "13": "price limit breach",
+        "17": "IOC unfilled portion",
+        "20": "POST_ONLY would have crossed the book — quoted price was too aggressive",
+        "21": "self-trade prevented",
+        "31": "trigger-order limit",
+    }
+
+    @classmethod
+    def _explain_cancel(cls, status: Dict[str, Any]) -> str:
+        """Translate an OKX cancelled-order status into a human-readable reason."""
+        code = str(status.get("cancel_source") or "")
+        text = (status.get("cancel_source_reason") or "").strip()
+        if code and code in cls._OKX_CANCEL_REASONS:
+            return f"{cls._OKX_CANCEL_REASONS[code]} (cancelSource={code})"
+        if text:
+            return f"{text} (cancelSource={code or 'n/a'})"
+        if code:
+            return f"exchange cancelled (cancelSource={code})"
+        return "exchange cancelled (no reason supplied)"
+
     async def _check_order_status(self, spread_order: SpreadOrder) -> None:
         """Check the fill status of both legs by querying the exchange."""
         # Check spot leg
@@ -902,7 +961,10 @@ class OrderExecutor:
                         spread_order.spot_leg.filled_price = status["filled_price"]
                     elif status["state"] == "canceled":
                         spread_order.spot_leg.status = LegStatus.CANCELLED
-                        logger.warning("Spot leg was cancelled (POST_ONLY rejected or external)")
+                        logger.warning(
+                            "Spot leg cancelled: %s",
+                            self._explain_cancel(status),
+                        )
             except Exception as e:
                 logger.error("Error checking spot order status: %s", e)
 
@@ -926,7 +988,10 @@ class OrderExecutor:
                         spread_order.futures_leg.filled_price = status["filled_price"]
                     elif status["state"] == "canceled":
                         spread_order.futures_leg.status = LegStatus.CANCELLED
-                        logger.warning("Futures leg was cancelled (POST_ONLY rejected or external)")
+                        logger.warning(
+                            "Futures leg cancelled: %s",
+                            self._explain_cancel(status),
+                        )
             except Exception as e:
                 logger.error("Error checking futures order status: %s", e)
 

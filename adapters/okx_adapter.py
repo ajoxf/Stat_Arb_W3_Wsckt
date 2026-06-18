@@ -559,6 +559,14 @@ class OKXAdapter(ExchangeAdapter):
                     "remaining_qty": sz - fill_sz,
                     "side": o.get("side", ""),
                     "order_type": o.get("ordType", ""),
+                    # OKX cancelSource codes (only set when state == 'canceled'):
+                    #   0  user-initiated     1  system
+                    #   2  not-matched cancel 20 POST_ONLY would-have-matched (rejected)
+                    #   21 self-trade-prevention triggered
+                    #   31 trigger order limit  17 IOC unfilled portion
+                    # Full list: https://www.okx.com/docs-v5/en/#error-code
+                    "cancel_source": o.get("cancelSource", ""),
+                    "cancel_source_reason": o.get("cancelSourceReason", ""),
                 }
             else:
                 # Order might not exist (already cancelled or never placed)

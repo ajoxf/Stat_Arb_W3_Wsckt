@@ -150,15 +150,16 @@
                                 <th>Entry Fut</th>
                                 <th>Exit Spot</th>
                                 <th>Exit Fut</th>
-                                <th>Notional</th>
+                                <th title="Leg A notional = position size (sizing anchor). Total exposure across both legs is ~2× this.">Notional</th>
                                 <th>P&L</th>
-                                <th>P&L %</th>
+                                <th title="Return on Leg A notional — strategy edge metric.">P&L %</th>
+                                <th title="Return on actually-locked capital: per-leg margin (notional ÷ leverage) + M2M buffer. The honest 'return on what I couldn't deploy elsewhere'.">Cap %</th>
                                 <th>Exit Reason</th>
                             </tr>
                         </thead>
                         <tbody id="trade-journal-table">
                             <tr>
-                                <td colspan="14" class="text-center text-secondary">Loading...</td>
+                                <td colspan="15" class="text-center text-secondary">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -225,7 +226,7 @@
             tbody.innerHTML = '';
 
             if (data.trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="14" class="text-center text-secondary">No trades recorded</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="15" class="text-center text-secondary">No trades recorded</td></tr>';
                 return;
             }
 
@@ -248,6 +249,7 @@
                     <td>$${(trade.notional_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">$${(trade.pnl_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">${(trade.pnl_percent || 0).toFixed(2)}%</td>
+                    <td class="${pnlClass}" title="${trade.capital_locked_usd ? 'On $' + trade.capital_locked_usd.toFixed(0) + ' locked' : 'Capital not recorded'}">${trade.capital_locked_usd ? (trade.pnl_pct_on_capital || 0).toFixed(2) + '%' : '—'}</td>
                     <td><span class="badge ${trade.is_open ? 'bg-warning' : 'bg-secondary'}">${trade.exit_reason || (trade.is_open ? 'OPEN' : '-')}</span></td>
                 `;
                 tbody.appendChild(row);
@@ -256,7 +258,7 @@
         .catch(error => {
             console.error('Error:', error);
             document.getElementById('trade-journal-table').innerHTML =
-                '<tr><td colspan="14" class="text-center text-danger">Error loading trades</td></tr>';
+                '<tr><td colspan="15" class="text-center text-danger">Error loading trades</td></tr>';
         });
 
     // Asset filter

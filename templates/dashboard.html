@@ -761,9 +761,10 @@
                     <span class="text-secondary">Asset:</span>
                     <span class="badge bg-primary" style="font-size: 0.7rem;">{{ config.asset }}</span>
                 </div>
-                <div class="d-flex justify-content-between mb-1">
+                <div class="d-flex justify-content-between mb-1"
+                     title="Total notional across both legs (Leg A + Leg B). For a dollar-neutral pair this is ~2× the per-leg position size.">
                     <span class="text-secondary">Size:</span>
-                    <span>${{ config.position_size_usd }}</span>
+                    <span id="config-total-notional">${{ config.position_size_usd }}</span>
                 </div>
                 <div class="d-flex justify-content-between mb-1">
                     <span class="text-secondary">Entry:</span>
@@ -1416,6 +1417,12 @@
         if (bNoEl) bNoEl.textContent = _fmtMoney(bNotional);
         if (bLvEl) bLvEl.textContent = bLevText;
         if (bMgEl) bMgEl.textContent = (bIsDeriv ? _fmtMoney(bMargin) : _fmtMoney(bNotional) + ' (cash)');
+
+        // Mirror the total (A + B) into the Config card's "Size" line so the
+        // headline number matches what's actually exposed on the exchange,
+        // not just one leg.
+        const totalNotionalEl = document.getElementById('config-total-notional');
+        if (totalNotionalEl) totalNotionalEl.textContent = _fmtMoney(aNotional + bNotional);
     }
 
     // Headline price = MID (bid+ask)/2 — this is what the strategy trades on

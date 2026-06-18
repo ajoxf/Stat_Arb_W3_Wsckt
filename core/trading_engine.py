@@ -25,9 +25,9 @@ from adapters.okx_websocket import OKXWebSocketManager
 logger = logging.getLogger(__name__)
 
 # Hard safety cap on futures leverage to prevent accidental over-leveraging.
-# OKX technically allows up to 125x on BTC, but statistical arbitrage has
-# correlated legs that reduce net risk — 25x on the futures leg is already generous.
-MAX_SAFE_FUTURES_LEVERAGE = 25
+# OKX caps Expiry (dated) Futures at 20x and that's the contract type this
+# bot targets; perpetuals go higher but we use the more conservative ceiling.
+MAX_SAFE_FUTURES_LEVERAGE = 20
 
 
 @dataclass
@@ -737,8 +737,20 @@ class TradingEngine:
             }
             return
 
-        # Create trade record
-        _leverage = max(getattr(self.config, 'futures_leverage', 1), 1)
+        # Create trade record. notional_usd and margin_usd are TOTALS across
+        # both legs — previously only Leg A was counted (position_size_usd) so
+        # Telegram, the Position card, and any "leverage = notional/margin"
+        # calc were silently under-reporting by ~2× for a dollar-neutral pair.
+        beta_for_sizing = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        leg_a_notional = abs(spot_price * quantity * beta_for_sizing)
+        leg_b_notional = abs(futures_price * quantity)
+        total_notional = leg_a_notional + leg_b_notional
+        leg_a_is_deriv = is_derivative(self.config.spot_symbol)
+        leg_b_is_deriv = is_derivative(self.config.futures_symbol)
+        leg_a_lev = max(self.config.spot_leverage    if leg_a_is_deriv else 1, 1)
+        leg_b_lev = max(self.config.futures_leverage if leg_b_is_deriv else 1, 1)
+        total_margin = leg_a_notional / leg_a_lev + leg_b_notional / leg_b_lev
+
         trade = Trade(
             asset=self.config.asset,
             position_type=position_type,
@@ -750,8 +762,8 @@ class TradingEngine:
             entry_spread_mean=signal.spread_mean,
             entry_spread_std=signal.spread_std,
             quantity=quantity,
-            notional_usd=self.config.position_size_usd,
-            margin_usd=round(self.config.position_size_usd / _leverage, 2),
+            notional_usd=round(total_notional, 2),
+            margin_usd=round(total_margin, 2),
             is_open=True,
             is_paper=self.state.paper_trading,
         )
@@ -1647,9 +1659,15 @@ class TradingEngine:
             )
 
             if spread_order and spread_order.is_complete:
-                # Update actual exit prices from fills
-                trade.exit_spot_price = spread_order.spot_leg.filled_price
-                trade.exit_futures_price = spread_order.futures_leg.filled_price
+                # Update actual exit prices from fills. Guard against 0.0 from
+                # the reconcile-skip path: a 0.0 fill price would zero out
+                # exit_spread in _close_position and produce a wildly wrong
+                # net (e.g. trade 30 logged -$24 on a +$0.65 actual trade).
+                # The mid placeholder set above is far better than 0.0.
+                if spread_order.spot_leg.filled_price > 0:
+                    trade.exit_spot_price = spread_order.spot_leg.filled_price
+                if spread_order.futures_leg.filled_price > 0:
+                    trade.exit_futures_price = spread_order.futures_leg.filled_price
                 # Execution timing
                 trade.exit_placed_at = spread_order.created_at
                 fill_ts = (spread_order.spot_leg.last_update or

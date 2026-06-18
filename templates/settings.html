@@ -263,8 +263,10 @@
                                 <option value="3" {% if config.spot_leverage == 3 %}selected{% endif %}>3x</option>
                                 <option value="5" {% if config.spot_leverage == 5 %}selected{% endif %}>5x</option>
                                 <option value="10" {% if config.spot_leverage == 10 %}selected{% endif %}>10x</option>
+                                <option value="15" {% if config.spot_leverage == 15 %}selected{% endif %}>15x</option>
+                                <option value="20" {% if config.spot_leverage == 20 %}selected{% endif %}>20x (OKX Expiry max)</option>
                             </select>
-                            <small class="text-secondary">Applies when Leg A is a perpetual or dated future. Spot legs trade as cash regardless.</small>
+                            <small class="text-secondary">Applies when Leg A is a perpetual or dated future. Spot legs trade as cash regardless. OKX caps Expiry Futures at 20x.</small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Leg B Leverage</label>
@@ -275,10 +277,9 @@
                                 <option value="5" {% if config.futures_leverage == 5 %}selected{% endif %}>5x</option>
                                 <option value="10" {% if config.futures_leverage == 10 %}selected{% endif %}>10x</option>
                                 <option value="15" {% if config.futures_leverage == 15 %}selected{% endif %}>15x</option>
-                                <option value="20" {% if config.futures_leverage == 20 %}selected{% endif %}>20x</option>
-                                <option value="25" {% if config.futures_leverage == 25 %}selected{% endif %}>25x (max allowed)</option>
+                                <option value="20" {% if config.futures_leverage == 20 %}selected{% endif %}>20x (OKX Expiry max)</option>
                             </select>
-                            <small class="text-secondary">Applies when Leg B is a derivative. Engine hard-caps at 25x for safety.</small>
+                            <small class="text-secondary">Applies when Leg B is a derivative. OKX caps Expiry Futures at 20x; engine enforces the same.</small>
                         </div>
                     </div>
 
