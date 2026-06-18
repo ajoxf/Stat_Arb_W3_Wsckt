@@ -37,7 +37,7 @@ load_dotenv()
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
-    datefmt="%H:%M:%S.%f",
+    datefmt="%H:%M:%S",  # %f is not supported by Windows strftime
 )
 # Quiet noisy libraries
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
