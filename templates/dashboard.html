@@ -867,6 +867,27 @@
         </div>
     </div>
 </div>
+
+<!-- Balance Debug Modal -->
+<div class="modal fade" id="balanceDebugModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header py-2">
+                <h6 class="modal-title mb-0"><i class="bi bi-wallet2 me-2"></i>OKX Balance Breakdown</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body py-3" id="balance-debug-body" style="font-size:0.85rem;">
+                <div class="text-center py-3">
+                    <div class="spinner-border spinner-border-sm text-secondary"></div>
+                    <span class="ms-2 text-secondary">Loading…</span>
+                </div>
+            </div>
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -2788,54 +2809,91 @@ function updateFilterStatus(elementId, passed, value) {
         .catch(err => showToast('Error: ' + err, 'danger'));
     }
 
-    // Diagnostic: shows where the user's money actually is across OKX wallets
-    // (Trading vs Funding) when the dashboard's Equity reads $0.
     function showBalanceDebug(ev) {
         if (ev) ev.preventDefault();
+        const body = document.getElementById('balance-debug-body');
+        body.innerHTML = '<div class="text-center py-3"><div class="spinner-border spinner-border-sm text-secondary"></div><span class="ms-2 text-secondary">Loading…</span></div>';
+        new bootstrap.Modal(document.getElementById('balanceDebugModal')).show();
+
         fetch('/api/balance-debug')
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
+            .then(r => r.json())
+            .then(d => {
                 if (!d || !d.success) {
-                    alert('Balance debug failed:\n' + ((d && d.error) || 'unknown error'));
+                    body.innerHTML = '<div class="alert alert-danger mb-0">Failed: ' + ((d && d.error) || 'unknown error') + '</div>';
                     return;
                 }
-                let txt = 'OKX BALANCE BREAKDOWN\n' +
-                          '─────────────────────\n\n';
-                txt += 'TRADING wallet (what the algo uses):\n';
-                txt += '   Equity:    $' + (d.trading.equity_usd || 0).toFixed(2) + '\n';
-                txt += '   Available: $' + (d.trading.available_usd || 0).toFixed(2) + '\n';
+                const av = parseFloat(d.trading.available_usd || 0);
+                let html = '';
+
+                // Trading wallet
+                html += '<div class="d-flex align-items-center mb-2">'
+                      + '<span class="badge bg-primary me-2">TRADING</span>'
+                      + '<small class="text-secondary">Unified account &mdash; what the algo uses</small></div>';
+                html += '<div class="row g-2 mb-3">'
+                      + '<div class="col-4"><div class="p-2 rounded text-center" style="background:var(--bg-tertiary)">'
+                      + '<div class="text-secondary mb-1" style="font-size:0.7rem;">Equity</div>'
+                      + '<div class="fw-bold">$' + (d.trading.equity_usd || 0).toFixed(2) + '</div></div></div>'
+                      + '<div class="col-4"><div class="p-2 rounded text-center" style="background:var(--bg-tertiary)">'
+                      + '<div class="text-secondary mb-1" style="font-size:0.7rem;">Available</div>'
+                      + '<div class="fw-bold ' + (av > 0 ? 'text-success' : 'text-warning') + '">$' + av.toFixed(2) + '</div></div></div>';
+                if (d.cross_account_valuation_usdt != null) {
+                    html += '<div class="col-4"><div class="p-2 rounded text-center" style="background:var(--bg-tertiary)">'
+                          + '<div class="text-secondary mb-1" style="font-size:0.7rem;">All Accounts</div>'
+                          + '<div class="fw-bold">~$' + parseFloat(d.cross_account_valuation_usdt).toFixed(2) + '</div></div></div>';
+                }
+                html += '</div>';
+
                 if (d.trading.currencies && d.trading.currencies.length > 0) {
-                    txt += '   Currencies:\n';
-                    d.trading.currencies.forEach(function(c) {
-                        const eligible = c.availEq > 0.01 ? '✓ margin-eligible' : '✗ NOT margin-eligible';
-                        txt += '     ' + c.ccy + ': ' + c.cashBal +
-                               ' (= $' + (c.eq || 0).toFixed(2) + ' equity, $' +
-                               (c.availEq || 0).toFixed(2) + ' available)  ' + eligible + '\n';
+                    html += '<table class="table table-sm mb-0" style="font-size:0.78rem;">'
+                          + '<thead><tr class="text-secondary"><th>Currency</th><th class="text-end">Balance</th>'
+                          + '<th class="text-end">Equity&nbsp;(USD)</th><th class="text-end">Available&nbsp;(USD)</th>'
+                          + '<th class="text-center">Margin</th></tr></thead><tbody>';
+                    d.trading.currencies.forEach(c => {
+                        const ok = c.availEq > 0.01;
+                        html += '<tr>'
+                              + '<td class="fw-bold">' + c.ccy + '</td>'
+                              + '<td class="text-end font-monospace">' + parseFloat(c.cashBal).toFixed(4) + '</td>'
+                              + '<td class="text-end">$' + (c.eq || 0).toFixed(2) + '</td>'
+                              + '<td class="text-end ' + (ok ? 'text-success fw-bold' : 'text-secondary') + '">$' + (c.availEq || 0).toFixed(2) + '</td>'
+                              + '<td class="text-center"><span class="badge ' + (ok ? 'bg-success' : 'bg-secondary') + '" style="font-size:0.6rem;">'
+                              + (ok ? '✓ eligible' : '✗ not eligible') + '</span></td></tr>';
                     });
+                    html += '</tbody></table>';
                 }
-                txt += '\nFUNDING wallet (where deposits land):\n';
+
+                // Funding wallet
+                html += '<hr class="my-3">'
+                      + '<div class="d-flex align-items-center mb-2">'
+                      + '<span class="badge bg-warning text-dark me-2">FUNDING</span>'
+                      + '<small class="text-secondary">Where deposits land &mdash; transfer to Trading before the algo can use it</small></div>';
                 if (d.funding.currencies && d.funding.currencies.length > 0) {
-                    d.funding.currencies.forEach(function(c) {
-                        txt += '   ' + c.ccy + ': ' + c.bal +
-                               (c.frozenBal > 0 ? ' (frozen: ' + c.frozenBal + ')' : '') + '\n';
+                    html += '<table class="table table-sm mb-0" style="font-size:0.78rem;">'
+                          + '<thead><tr class="text-secondary"><th>Currency</th><th class="text-end">Balance</th><th class="text-end">Frozen</th></tr></thead><tbody>';
+                    d.funding.currencies.forEach(c => {
+                        const frozen = parseFloat(c.frozenBal || 0);
+                        html += '<tr><td class="fw-bold">' + c.ccy + '</td>'
+                              + '<td class="text-end font-monospace">' + parseFloat(c.bal || 0).toFixed(4) + '</td>'
+                              + '<td class="text-end text-secondary">' + (frozen > 0 ? frozen.toFixed(4) : '&mdash;') + '</td></tr>';
                     });
+                    html += '</tbody></table>';
                 } else {
-                    txt += '   (empty)\n';
+                    html += '<small class="text-secondary">Empty</small>';
                 }
-                if (d.cross_account_valuation_usdt !== null && d.cross_account_valuation_usdt !== undefined) {
-                    txt += '\nTotal across all OKX accounts: ~$' +
-                           d.cross_account_valuation_usdt.toFixed(2) + ' USDT\n';
-                }
+
+                // Diagnosis
                 if (d.diagnosis && d.diagnosis.length > 0) {
-                    txt += '\nDIAGNOSIS:\n';
-                    d.diagnosis.forEach(function(line, i) {
-                        txt += (i + 1) + '. ' + line + '\n\n';
+                    html += '<hr class="my-3"><div class="alert alert-warning py-2 mb-0" style="font-size:0.8rem;">'
+                          + '<strong><i class="bi bi-exclamation-triangle me-1"></i>Diagnosis</strong>';
+                    d.diagnosis.forEach((line, i) => {
+                        html += '<div class="mt-2">' + (i + 1) + '. ' + line + '</div>';
                     });
+                    html += '</div>';
                 }
-                alert(txt);
+
+                body.innerHTML = html;
             })
-            .catch(function(err) {
-                alert('Balance debug error:\n' + err);
+            .catch(err => {
+                body.innerHTML = '<div class="alert alert-danger mb-0">Error fetching balance data: ' + err + '</div>';
             });
     }
 

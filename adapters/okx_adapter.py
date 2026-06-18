@@ -865,23 +865,27 @@ class OKXAdapter(ExchangeAdapter):
                 # This is more accurate than just USDT availBal
                 avail_eq = float(data.get("availEq") or 0)
 
-                # Get USDT balance specifically as fallback
+                # Per-currency totals
                 usdt_avail = 0
                 usdt_eq = 0
                 total_cash_bal = 0
+                total_avail_eq = 0  # sum of per-currency availEq (margin-eligible across all CCYs)
                 for detail in data.get("details", []):
                     ccy = detail.get("ccy", "")
-                    # Sum up all cash balances for reference
                     cash_bal = float(detail.get("cashBal") or 0)
                     eq = float(detail.get("eq") or 0)
+                    ccy_avail_eq = float(detail.get("availEq") or 0)
                     total_cash_bal += cash_bal
+                    total_avail_eq += ccy_avail_eq
 
                     if ccy == "USDT":
                         usdt_avail = float(detail.get("availBal") or 0)
                         usdt_eq = eq
 
-                # Use availEq if available, otherwise fall back to USDT available
-                available = avail_eq if avail_eq > 0 else usdt_avail
+                # Account-level availEq is the most accurate (cross-margin free collateral).
+                # For accounts with no open positions OKX returns 0 there; fall back to the
+                # sum of per-currency availEq which is always populated.
+                available = avail_eq if avail_eq > 0 else (total_avail_eq if total_avail_eq > 0 else usdt_avail)
 
                 # Calculate margin ratio (lower is riskier)
                 margin_ratio = 0.0
