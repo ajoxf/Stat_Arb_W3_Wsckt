@@ -43,17 +43,16 @@ from adapters.okx_ws_adapter import OKXWebSocketAdapter  # noqa: E402
 # Configuration
 # ---------------------------------------------------------------------------
 
-# ETH-USDT-SWAP = perpetual swap, used as WS smoke-test proxy.
-# The dated futures contract (ETH-USDT-260626) returns sCode 50014
-# "Parameter instIdCode can not be empty" on the demo WS endpoint — a
-# demo-specific quirk for dated FUTURES not present on the live endpoint.
-# The perpetual swap exercises the same place/amend/cancel WS paths.
-# Switch back to "ETH-USDT-260626" when testing on the live endpoint.
-SYMBOL = "ETH-USDT-SWAP"
+# ETH-USDT-260626 = dated futures the live bot trades.  ctVal = 0.1 ETH/contract.
+# Swap alternative: "ETH-USDT-SWAP" — same contract value, never expires.
+#
+# OKX WS trade ops now require the numeric instIdCode (the demo endpoint rejects
+# orders carrying only the string instId with sCode 50014); the adapter resolves
+# and injects instIdCode automatically.  Both SWAP and FUTURES exercise that path.
+SYMBOL = "ETH-USDT-260626"
 
-# 1 contract = 0.01 ETH on OKX ETH-USDT-SWAP. _prepare_order converts
-# base-currency quantity to contracts automatically via get_symbol_info.
-QUANTITY = 0.1   # ETH base units → 10 contracts
+# 1 contract = 0.1 ETH on OKX ETH-USDT linear futures.
+QUANTITY = 0.1   # ETH base units → 1 contract; increase to 0.2 for 2 contracts
 
 # How far below market to post the passive BUY (will not fill).
 DISCOUNT_PCT = 0.05   # 5% below mid

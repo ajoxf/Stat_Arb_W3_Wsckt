@@ -660,6 +660,10 @@ class TestWSTradingOps:
         adapter._ws = MagicMock()
         adapter._ws.closed = False
         adapter._ws.send_str = AsyncMock()
+        # Default instruments lookup so instIdCode resolution succeeds quietly.
+        adapter._rest._request = AsyncMock(
+            return_value={"code": "0", "data": [{"instId": "BTC-USDT", "instIdCode": "111222"}]}
+        )
         return adapter
 
     # --- _send_op ---
@@ -877,3 +881,73 @@ class TestWSTradingOps:
 
         adapter._send_op = timeout_op
         assert await adapter.amend_order("BTC-USDT", "ORD_T", new_price=50000.0) is False
+
+    # --- instIdCode resolution ---
+
+    async def test_inst_id_code_resolves_and_caches(self):
+        """_inst_id_code reads the numeric code from instruments and caches it."""
+        adapter = _make_adapter()
+        adapter._rest._request = AsyncMock(
+            return_value={"code": "0", "data": [{"instId": "ETH-USDT-SWAP", "instIdCode": "654321"}]}
+        )
+        assert await adapter._inst_id_code("ETH-USDT-SWAP") == "654321"
+        # Second call is served from cache — no extra _request round-trip.
+        assert await adapter._inst_id_code("ETH-USDT-SWAP") == "654321"
+        adapter._rest._request.assert_called_once()
+
+    async def test_inst_id_code_returns_none_when_field_absent(self):
+        """_inst_id_code returns None if no recognised code field is present."""
+        adapter = _make_adapter()
+        adapter._rest._request = AsyncMock(
+            return_value={"code": "0", "data": [{"instId": "ETH-USDT-SWAP", "tickSz": "0.01"}]}
+        )
+        assert await adapter._inst_id_code("ETH-USDT-SWAP") is None
+
+    async def test_inst_id_code_returns_none_on_error(self):
+        """_inst_id_code swallows request errors and returns None."""
+        adapter = _make_adapter()
+        adapter._rest._request = AsyncMock(side_effect=RuntimeError("network down"))
+        assert await adapter._inst_id_code("ETH-USDT-SWAP") is None
+
+    async def test_place_order_injects_inst_id_code(self):
+        """place_order adds instIdCode to the order args when resolvable."""
+        adapter = self._make_connected_adapter()
+        adapter._rest._prepare_order = AsyncMock(
+            return_value=({"instId": "BTC-USDT", "sz": "1"}, None, 1.0)
+        )
+        captured = {}
+
+        async def fake_send_op(op, args, timeout=5.0):
+            captured["args"] = args
+            return {"id": "x", "op": op, "code": "0", "data": [{"ordId": "WS1", "sCode": "0"}]}
+
+        adapter._send_op = fake_send_op
+        await adapter.place_order("BTC-USDT", "buy", "LIMIT", 0.01, price=50000.0)
+        assert captured["args"][0]["instIdCode"] == "111222"
+
+    async def test_cancel_order_injects_inst_id_code(self):
+        """cancel_order adds instIdCode to the cancel args when resolvable."""
+        adapter = self._make_connected_adapter()
+        captured = {}
+
+        async def fake_send_op(op, args, timeout=5.0):
+            captured["args"] = args
+            return {"id": "x", "op": op, "code": "0", "data": []}
+
+        adapter._send_op = fake_send_op
+        await adapter.cancel_order("BTC-USDT", "ORD_1")
+        assert captured["args"][0]["instIdCode"] == "111222"
+
+    async def test_amend_order_injects_inst_id_code(self):
+        """amend_order adds instIdCode to the amend args when resolvable."""
+        adapter = self._make_connected_adapter()
+        adapter._rest.get_symbol_info = AsyncMock(return_value={"price_precision": 2})
+        captured = {}
+
+        async def fake_send_op(op, args, timeout=5.0):
+            captured["args"] = args
+            return {"id": "x", "op": op, "code": "0", "data": []}
+
+        adapter._send_op = fake_send_op
+        await adapter.amend_order("BTC-USDT", "ORD_1", new_price=50000.0)
+        assert captured["args"][0]["instIdCode"] == "111222"

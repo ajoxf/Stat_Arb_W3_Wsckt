@@ -27,16 +27,15 @@ from typing import Any, Callable, Dict, List, Optional
 import aiohttp
 
 from adapters.base import ExchangeAdapter, is_derivative
-from adapters.okx_adapter import OKXAdapter
+from adapters.okx_adapter import OKXAdapter, _detect_inst_type
 from models import AccountInfo, MarketTick, OrderResult, Position
 
 logger = logging.getLogger(__name__)
 
-# Both URLs are the live WS infrastructure.  Simulated trading is activated
-# by the x-simulated-trading: 1 header; demo API keys cannot touch real positions.
-# wspap.okx.com is the legacy paper-trading host; it has a broken instrument-code
-# lookup that rejects all WS order ops with sCode 50014 "instIdCode empty".
-_TESTNET_PRIVATE_URL = "wss://ws.okx.com:8443/ws/v5/private"
+# Demo-trading WS keys authenticate ONLY against wspap.okx.com; the live host
+# (ws.okx.com) rejects them with code 50101 "APIKey does not match current
+# environment", even with the x-simulated-trading header.
+_TESTNET_PRIVATE_URL = "wss://wspap.okx.com:8443/ws/v5/private"
 _LIVE_PRIVATE_URL = "wss://ws.okx.com:8443/ws/v5/private"
 
 # Exponential backoff delays (seconds) for reconnect; last value is the cap.
@@ -156,6 +155,12 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         # Pending WS operation futures: op_id → asyncio.Future[Dict]
         self._pending_ops: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
 
+        # instId → numeric instIdCode, resolved once per symbol and cached.
+        # OKX is migrating WS trade ops from the string instId to the numeric
+        # instIdCode; the demo endpoint already enforces it (sCode 50014 otherwise).
+        self._inst_code_cache: Dict[str, str] = {}
+        self._inst_code_logged: bool = False  # log raw instrument keys once
+
     # ------------------------------------------------------------------
     # ExchangeAdapter: connect / disconnect
     # ------------------------------------------------------------------
@@ -216,7 +221,66 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         return await self._rest.get_instruments(inst_type)
 
     # ------------------------------------------------------------------
-    # ExchangeAdapter: order placement — delegated to REST (Milestone 2)
+    # instIdCode resolution
+    # ------------------------------------------------------------------
+
+    # Candidate field names for the numeric instrument code in the OKX
+    # public/instruments response.  OKX docs call it instIdCode; we try a few
+    # spellings defensively and log the raw keys on first miss so the exact
+    # field can be confirmed without another code change.
+    _INST_CODE_FIELDS = ("instIdCode", "instIdCd", "instCode", "instIdNum", "instNum")
+
+    async def _inst_id_code(self, symbol: str) -> Optional[str]:
+        """
+        Resolve the numeric instIdCode for a symbol (cached for the session).
+
+        OKX is migrating WS trade ops from the string instId to the numeric
+        instIdCode; the demo endpoint already rejects orders without it
+        (sCode 50014 "Parameter instIdCode can not be empty").  Returns None
+        if the instrument record has no recognised code field — the caller
+        then sends instId only (still valid on the live endpoint).
+        """
+        cached = self._inst_code_cache.get(symbol)
+        if cached is not None:
+            return cached
+
+        inst_type = _detect_inst_type(symbol)
+        try:
+            result = await self._rest._request(
+                "GET",
+                "/api/v5/public/instruments",
+                params={"instType": inst_type, "instId": symbol},
+            )
+        except Exception as e:
+            logger.error("[ws_adapter] instIdCode lookup failed for %s: %s", symbol, e)
+            return None
+
+        data = (result or {}).get("data") or []
+        if not data:
+            logger.warning("[ws_adapter] no instrument record for %s (instType=%s)", symbol, inst_type)
+            return None
+
+        rec = data[0]
+        if not self._inst_code_logged:
+            logger.info("[ws_adapter] instrument record keys for %s: %s", symbol, sorted(rec.keys()))
+            self._inst_code_logged = True
+
+        for field in self._INST_CODE_FIELDS:
+            val = rec.get(field)
+            if val not in (None, ""):
+                code = str(val)
+                self._inst_code_cache[symbol] = code
+                logger.info("[ws_adapter] resolved instIdCode for %s via '%s' = %s", symbol, field, code)
+                return code
+
+        logger.warning(
+            "[ws_adapter] no instIdCode field found for %s; available keys=%s",
+            symbol, sorted(rec.keys()),
+        )
+        return None
+
+    # ------------------------------------------------------------------
+    # ExchangeAdapter: order placement — WS trade-op with REST fallback
     # ------------------------------------------------------------------
 
     async def place_order(
@@ -249,6 +313,13 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             )
             if error:
                 return OrderResult(success=False, error=error)
+
+            # OKX WS trade ops are migrating to the numeric instIdCode; the demo
+            # endpoint rejects orders without it (sCode 50014).  Add it when
+            # resolvable, keeping instId for the live endpoint during transition.
+            code = await self._inst_id_code(symbol)
+            if code:
+                order_data["instIdCode"] = code
 
             resp = await self._send_op("order", [order_data])
 
@@ -319,7 +390,11 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             return await self._rest.cancel_order(symbol, order_id)
 
         try:
-            resp = await self._send_op("cancel-order", [{"instId": symbol, "ordId": order_id}])
+            args = {"instId": symbol, "ordId": order_id}
+            code = await self._inst_id_code(symbol)
+            if code:
+                args["instIdCode"] = code
+            resp = await self._send_op("cancel-order", [args])
             if resp.get("code") == "0":
                 return True
             logger.warning(
@@ -357,10 +432,11 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         px_str = f"{round(new_price, price_decimals):.{price_decimals}f}"
 
         try:
-            resp = await self._send_op(
-                "amend-order",
-                [{"instId": symbol, "ordId": order_id, "newPx": px_str}],
-            )
+            args = {"instId": symbol, "ordId": order_id, "newPx": px_str}
+            code = await self._inst_id_code(symbol)
+            if code:
+                args["instIdCode"] = code
+            resp = await self._send_op("amend-order", [args])
             if resp.get("code") == "0":
                 logger.debug("[ws_adapter] amend_order ok: ordId=%s newPx=%s", order_id, px_str)
                 return True
