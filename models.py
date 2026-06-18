@@ -275,6 +275,17 @@ class Trade:
     pnl_percent: float = 0.0
     fees_usd: float = 0.0      # realized round-trip fees from OKX (4 leg-fills)
     pnl_gross_usd: float = 0.0 # P&L before fees (audit trail: pnl_gross - fees = pnl_usd)
+    # ── Capital metrics (return-on-margin tracking) ──────────────────────────
+    # Actually-locked capital at trade open: per-leg margin + M2M buffer. This
+    # is what the user can't deploy elsewhere while the trade is open — the
+    # honest denominator for "% return on what I actually risked".
+    capital_locked_usd: float = 0.0
+    # Return on locked capital (pnl_usd / capital_locked_usd × 100). The
+    # existing pnl_percent reports return on Leg A notional, which understates
+    # actual return-on-capital by ~3-5× at typical leverage. Both kept so the
+    # operator can see the strategy edge (notional %) and the operator's
+    # personal return (capital %).
+    pnl_pct_on_capital: float = 0.0
 
     # Order IDs
     spot_order_id: str = ""
@@ -319,6 +330,8 @@ class Trade:
             'pnl_percent': self.pnl_percent,
             'pnl_gross_usd': self.pnl_gross_usd,
             'fees_usd': self.fees_usd,
+            'capital_locked_usd': self.capital_locked_usd,
+            'pnl_pct_on_capital': self.pnl_pct_on_capital,
             'spot_order_id': self.spot_order_id,
             'futures_order_id': self.futures_order_id,
             'entry_placed_at': self.entry_placed_at.isoformat() if self.entry_placed_at else None,

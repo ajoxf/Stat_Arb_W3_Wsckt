@@ -2129,7 +2129,10 @@ function updateFilterStatus(elementId, passed, value) {
             <td>${(trade.entry_zscore || 0).toFixed(1)}</td>
             <td style="font-size:0.65rem;">${spotDisplay}</td>
             <td style="font-size:0.65rem;">${futDisplay}</td>
-            <td class="${pnlClass}">${trade.is_open ? '-' : '$' + (trade.pnl_usd || 0).toFixed(2)}</td>
+            <td class="${pnlClass}" title="${trade.is_open ? '' : `notional ${(trade.pnl_percent || 0).toFixed(2)}% / capital ${(trade.pnl_pct_on_capital || 0).toFixed(2)}% on $${(trade.capital_locked_usd || 0).toFixed(0)}`}">
+                ${trade.is_open ? '-' : '$' + (trade.pnl_usd || 0).toFixed(2)}
+                ${trade.is_open ? '' : `<br><span style="font-size:0.6rem;" class="text-secondary">${(trade.pnl_pct_on_capital || 0).toFixed(2)}%</span>`}
+            </td>
         `;
 
         tbody.insertBefore(row, tbody.firstChild);

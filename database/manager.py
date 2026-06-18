@@ -130,6 +130,8 @@ class DatabaseManager:
                     pnl_percent REAL DEFAULT 0,
                     pnl_gross_usd REAL DEFAULT 0,
                     fees_usd REAL DEFAULT 0,
+                    capital_locked_usd REAL DEFAULT 0,
+                    pnl_pct_on_capital REAL DEFAULT 0,
                     spot_order_id TEXT,
                     futures_order_id TEXT,
                     is_open INTEGER DEFAULT 1,
@@ -349,6 +351,10 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trades ADD COLUMN pnl_gross_usd REAL DEFAULT 0")
             if 'fees_usd' not in trade_cols:
                 cursor.execute("ALTER TABLE trades ADD COLUMN fees_usd REAL DEFAULT 0")
+            if 'capital_locked_usd' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN capital_locked_usd REAL DEFAULT 0")
+            if 'pnl_pct_on_capital' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN pnl_pct_on_capital REAL DEFAULT 0")
 
             logger.info("Database initialized: %s", self.db_path)
 
@@ -671,6 +677,8 @@ class DatabaseManager:
                         pnl_percent = ?,
                         pnl_gross_usd = ?,
                         fees_usd = ?,
+                        capital_locked_usd = ?,
+                        pnl_pct_on_capital = ?,
                         is_open = ?
                     WHERE id = ?
                 """, (
@@ -684,6 +692,8 @@ class DatabaseManager:
                     trade.pnl_percent,
                     trade.pnl_gross_usd,
                     trade.fees_usd,
+                    trade.capital_locked_usd,
+                    trade.pnl_pct_on_capital,
                     int(trade.is_open),
                     trade.id,
                 ))
@@ -768,6 +778,10 @@ class DatabaseManager:
             notional_usd=row["notional_usd"] or 0,
             pnl_usd=row["pnl_usd"] or 0,
             pnl_percent=row["pnl_percent"] or 0,
+            pnl_gross_usd=row["pnl_gross_usd"] or 0,
+            fees_usd=row["fees_usd"] or 0,
+            capital_locked_usd=row["capital_locked_usd"] or 0,
+            pnl_pct_on_capital=row["pnl_pct_on_capital"] or 0,
             spot_order_id=row["spot_order_id"] or "",
             futures_order_id=row["futures_order_id"] or "",
             is_open=bool(row["is_open"]),

@@ -50,6 +50,13 @@ class LegOrder:
     filled_price: float = 0.0
     last_update: Optional[datetime] = None
     pos_side: Optional[str] = None  # For OKX long_short_mode: "long" or "short"
+    # Price of the order currently resting on the exchange. Distinct from
+    # target_price (which is the *desired* price; updated on every re-quote
+    # cycle). Used by the amend-drift check so we compare the live order
+    # against the current target, not previous-cycle-target vs new-target —
+    # without it the drift threshold can be evaded by slow market moves where
+    # each cycle is under the threshold but cumulative drift is large.
+    placed_price: float = 0.0
 
 
 @dataclass
@@ -569,16 +576,27 @@ class OrderExecutor:
             if not new_spot_tick or not new_futures_tick:
                 continue
 
-            old_spot_price = spread_order.spot_leg.target_price
-            old_futures_price = spread_order.futures_leg.target_price
-
             self._update_target_prices(spread_order, new_spot_tick, new_futures_tick)
 
-            # Amend orders if prices changed by more than 1 bps
-            # 5 bps was too coarse: on BTC that's ~$32, causing orders to sit
-            # unfilled for 60s when market trends away from the limit price
-            spot_change_pct = abs(spread_order.spot_leg.target_price - old_spot_price) / old_spot_price if old_spot_price else 0
-            futures_change_pct = abs(spread_order.futures_leg.target_price - old_futures_price) / old_futures_price if old_futures_price else 0
+            # Amend orders if the *current target* has drifted more than 1 bp
+            # from the price actually resting on the exchange (placed_price).
+            # Previously this compared the previous CYCLE's target to the new
+            # target — which a slow market move could evade entirely: each
+            # 2-second cycle's drift stays under threshold while cumulative
+            # drift across 50 seconds is large. The result was an order
+            # sitting unfilled the whole way to timeout, then leg-risk on
+            # entry. Using placed_price as the anchor catches that cumulative
+            # drift the moment it crosses the threshold.
+            spot_placed = spread_order.spot_leg.placed_price
+            fut_placed  = spread_order.futures_leg.placed_price
+            spot_change_pct = (
+                abs(spread_order.spot_leg.target_price - spot_placed) / spot_placed
+                if spot_placed else 0
+            )
+            futures_change_pct = (
+                abs(spread_order.futures_leg.target_price - fut_placed) / fut_placed
+                if fut_placed else 0
+            )
             amend_threshold = 0.0001  # 0.01% = 1 basis point (~$6.50 on BTC)
 
             if spot_change_pct > amend_threshold or futures_change_pct > amend_threshold:
@@ -704,6 +722,7 @@ class OrderExecutor:
 
             if spot_result.success:
                 spread_order.spot_leg.order_id = spot_result.order_id
+                spread_order.spot_leg.placed_price = spread_order.spot_leg.target_price
                 spread_order.spot_leg.status = LegStatus.OPEN
                 logger.info("Placed spot LIMIT order: %s @ %.2f",
                            spread_order.spot_leg.side, spread_order.spot_leg.target_price)
@@ -734,6 +753,7 @@ class OrderExecutor:
 
         if futures_result.success:
             spread_order.futures_leg.order_id = futures_result.order_id
+            spread_order.futures_leg.placed_price = spread_order.futures_leg.target_price
             spread_order.futures_leg.status = LegStatus.OPEN
             logger.info("Placed futures LIMIT order: %s @ %.2f",
                        spread_order.futures_leg.side, spread_order.futures_leg.target_price)
@@ -806,6 +826,7 @@ class OrderExecutor:
                             )
                             if result.success:
                                 spread_order.spot_leg.order_id = result.order_id
+                                spread_order.spot_leg.placed_price = spread_order.spot_leg.target_price
                                 logger.debug("Spot order amended: new_id=%s, price=%.2f",
                                            result.order_id, spread_order.spot_leg.target_price)
                             else:
@@ -848,6 +869,7 @@ class OrderExecutor:
                             )
                             if result.success:
                                 spread_order.futures_leg.order_id = result.order_id
+                                spread_order.futures_leg.placed_price = spread_order.futures_leg.target_price
                                 logger.debug("Futures order amended: new_id=%s, price=%.2f",
                                            result.order_id, spread_order.futures_leg.target_price)
                             else:

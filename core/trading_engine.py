@@ -887,10 +887,24 @@ class TradingEngine:
         pnl = pnl_gross - fees_usd
         pnl_percent = (pnl / trade.notional_usd) * 100 if trade.notional_usd > 0 else 0
 
+        # Return on actually-locked capital (margin per leg + M2M buffer). Spot
+        # legs at 1× lev use full notional; derivative legs use notional/leverage.
+        leg_a_notional = abs(trade.entry_spot_price * spot_qty)
+        leg_b_notional = abs(trade.entry_futures_price * trade.quantity)
+        leg_a_lev = max(self.config.spot_leverage    if leg_a_deriv else 1, 1)
+        leg_b_lev = max(self.config.futures_leverage if leg_b_deriv else 1, 1)
+        margin_a = leg_a_notional / leg_a_lev
+        margin_b = leg_b_notional / leg_b_lev
+        buffer_pct = getattr(self.config, 'm2m_buffer_pct', 0.0) or 0.0
+        capital_locked = (margin_a + margin_b) * (1 + buffer_pct / 100.0)
+        pnl_pct_on_capital = (pnl / capital_locked) * 100 if capital_locked > 0 else 0
+
         trade.pnl_usd = pnl
         trade.pnl_percent = pnl_percent
         trade.pnl_gross_usd = pnl_gross
         trade.fees_usd = fees_usd
+        trade.capital_locked_usd = capital_locked
+        trade.pnl_pct_on_capital = pnl_pct_on_capital
         # Audit trail: store fill-derived spreads so the DB matches OKX
         trade.entry_spread = entry_spread_fills
         trade.exit_spread  = exit_spread_fills
@@ -899,10 +913,10 @@ class TradingEngine:
         self._daily_loss_usd += pnl
 
         logger.info(
-            "Closed %s position: net=$%.2f (%.2f%%) = gross $%.2f − fees $%.2f, "
-            "reason=%s, zscore=%.4f",
-            trade.position_type, pnl, pnl_percent, pnl_gross, fees_usd,
-            signal.signal_type, signal.zscore,
+            "Closed %s position: net=$%.2f (notional %.2f%% / capital %.2f%% on $%.2f) "
+            "= gross $%.2f − fees $%.2f, reason=%s, zscore=%.4f",
+            trade.position_type, pnl, pnl_percent, pnl_pct_on_capital, capital_locked,
+            pnl_gross, fees_usd, signal.signal_type, signal.zscore,
         )
 
         get_notifier().notify_trade_exit(trade)
