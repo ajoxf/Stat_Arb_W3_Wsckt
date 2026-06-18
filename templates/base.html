@@ -393,6 +393,26 @@
         </div>
     </nav>
 
+    <!-- Algo Enable Confirmation Modal -->
+    <div class="modal fade" id="algoEnableModal" tabindex="-1" aria-labelledby="algoEnableModalLabel" aria-modal="true" role="dialog">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow">
+                <div class="modal-header py-3" id="algoEnableModalHeader">
+                    <div class="d-flex align-items-center gap-2">
+                        <i id="algoEnableModalIcon" class="bi fs-5"></i>
+                        <h6 class="modal-title mb-0 fw-semibold" id="algoEnableModalLabel"></h6>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Cancel"></button>
+                </div>
+                <div class="modal-body px-4 py-3" id="algoEnableModalBody"></div>
+                <div class="modal-footer border-top-0 pt-0 px-4 pb-3 gap-2">
+                    <button type="button" class="btn btn-sm btn-secondary px-3" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm px-3 fw-semibold" id="algoEnableModalConfirm"></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <main class="container-fluid py-3">
         {% block content %}{% endblock %}
     </main>
@@ -431,44 +451,110 @@
         // Algo toggle
         document.getElementById('algoSwitch').addEventListener('change', function() {
             const enabled = this.checked;
+            const switchEl = this;
 
             if (enabled) {
-                // Determine trading mode from the mode badge
-                const modeBadge = document.getElementById('paper-mode');
-                const modeText = modeBadge ? modeBadge.textContent.trim() : 'PAPER';
-                const isLive = modeText === 'LIVE';
-                const isDemo = modeText === 'DEMO SERVER';
+                const modeBadge = document.querySelector('.mode-pill');
+                const modeText = modeBadge ? modeBadge.textContent.trim().replace(/[^\w\s]/g, '').trim() : 'PAPER';
+                const isLive = modeText.includes('LIVE');
+                const isDemo = modeText.includes('DEMO');
 
-                let confirmMsg;
-                if (isLive) {
-                    confirmMsg = '⚠️ LIVE TRADING\n\nThis will send REAL orders to the OKX exchange with real funds.\n\nVerify:\n• Position size and leverage are correct\n• Stop-loss threshold is set\n• API key has Trade permission\n\nEnable algo?';
-                } else if (isDemo) {
-                    confirmMsg = 'Enable algo trading?\n\nOrders will go to the OKX Demo exchange (simulated fills, no real funds).';
-                } else {
-                    confirmMsg = 'Enable algo trading?\n\nRunning in Paper Trading mode — no real orders will be placed.';
-                }
-
-                if (!confirm(confirmMsg)) {
-                    this.checked = false;
-                    return;
-                }
+                showAlgoEnableModal(isLive, isDemo, function(confirmed) {
+                    if (!confirmed) { switchEl.checked = false; return; }
+                    doAlgoToggle(true, switchEl);
+                });
+            } else {
+                doAlgoToggle(false, switchEl);
             }
+        });
 
+        function doAlgoToggle(enabled, switchEl) {
             fetch('/api/engine/toggle-algo', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({enabled: enabled})
             })
-            .then(response => response.json())
-            .then(data => {
-                showToast(enabled ? 'Algo trading enabled' : 'Algo trading disabled', 'success');
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                this.checked = !enabled;
-                showToast('Failed to toggle algo: ' + error.message, 'danger');
+            .then(r => r.json())
+            .then(() => showToast(enabled ? 'Algo trading enabled' : 'Algo trading disabled', 'success'))
+            .catch(err => {
+                console.error('Error:', err);
+                switchEl.checked = !enabled;
+                showToast('Failed to toggle algo: ' + err.message, 'danger');
             });
-        });
+        }
+
+        function showAlgoEnableModal(isLive, isDemo, callback) {
+            const modal  = document.getElementById('algoEnableModal');
+            const header = document.getElementById('algoEnableModalHeader');
+            const icon   = document.getElementById('algoEnableModalIcon');
+            const title  = document.getElementById('algoEnableModalLabel');
+            const body   = document.getElementById('algoEnableModalBody');
+            const btn    = document.getElementById('algoEnableModalConfirm');
+            const closeBtns = modal.querySelectorAll('[data-bs-dismiss="modal"]');
+
+            if (isLive) {
+                header.className = 'modal-header py-3 bg-danger text-white';
+                icon.className   = 'bi bi-exclamation-triangle-fill fs-5';
+                title.textContent = 'LIVE TRADING — REAL FUNDS';
+                btn.className    = 'btn btn-sm btn-light px-3 fw-semibold text-danger';
+                btn.textContent  = 'Enable Algo';
+                body.innerHTML   = `
+                    <p class="mb-3 text-body-secondary" style="font-size:0.9rem;">
+                        This will send <strong>real orders</strong> to the OKX exchange using real funds.
+                        Orders cannot be recalled once placed.
+                    </p>
+                    <div class="rounded border border-danger-subtle bg-danger-subtle px-3 py-2 mb-1" style="font-size:0.85rem;">
+                        <p class="fw-semibold text-danger mb-2"><i class="bi bi-check2-circle me-1"></i>Verify before continuing</p>
+                        <ul class="mb-0 ps-3 text-danger-emphasis" style="line-height:1.8;">
+                            <li>Position size and leverage are correct</li>
+                            <li>Stop-loss threshold is set</li>
+                            <li>API key has <strong>Trade</strong> permission enabled</li>
+                        </ul>
+                    </div>`;
+            } else if (isDemo) {
+                header.className = 'modal-header py-3 bg-primary text-white';
+                icon.className   = 'bi bi-robot fs-5';
+                title.textContent = 'Enable Algo — Demo Mode';
+                btn.className    = 'btn btn-sm btn-primary px-3 fw-semibold';
+                btn.textContent  = 'Enable Algo';
+                body.innerHTML   = `
+                    <p class="mb-2 text-body-secondary" style="font-size:0.9rem;">
+                        Orders will be routed to the <strong>OKX Demo exchange</strong>.
+                        Fills are simulated — no real funds are at risk.
+                    </p>`;
+            } else {
+                header.className = 'modal-header py-3 bg-secondary text-white';
+                icon.className   = 'bi bi-file-earmark-text fs-5';
+                title.textContent = 'Enable Algo — Paper Mode';
+                btn.className    = 'btn btn-sm btn-secondary px-3 fw-semibold';
+                btn.textContent  = 'Enable Algo';
+                body.innerHTML   = `
+                    <p class="mb-2 text-body-secondary" style="font-size:0.9rem;">
+                        Running in <strong>Paper Trading</strong> mode — no orders will be sent to any exchange.
+                        All trades are simulated locally.
+                    </p>`;
+            }
+
+            const bsModal = new bootstrap.Modal(modal, {backdrop: 'static', keyboard: false});
+
+            function onConfirm() {
+                cleanup();
+                bsModal.hide();
+                callback(true);
+            }
+            function onCancel() {
+                cleanup();
+                callback(false);
+            }
+            function cleanup() {
+                btn.removeEventListener('click', onConfirm);
+                closeBtns.forEach(b => b.removeEventListener('click', onCancel));
+            }
+
+            btn.addEventListener('click', onConfirm);
+            closeBtns.forEach(b => b.addEventListener('click', onCancel));
+            bsModal.show();
+        }
 
         function updateConnectionStatus(status) {
             const el = document.getElementById('connection-status');
