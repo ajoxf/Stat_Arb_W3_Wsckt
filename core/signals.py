@@ -97,6 +97,13 @@ class SignalGenerator:
         self.config = config
         self.stats_update_interval = config.stats_update_interval
 
+        # Clear stale blocked-signal records whose filter has just been disabled
+        # so the dashboard doesn't show a ghost block for a filter that's now off.
+        if self.last_blocked_signal:
+            reason = self.last_blocked_signal.get('reason') or ''
+            if 'Trend filter' in reason and not config.trend_direction_filter:
+                self.last_blocked_signal = None
+
         # 1. Pair changed — drop everything; the ticks aren't comparable
         pair_changed = (
             old_spot_sym != config.spot_symbol or
