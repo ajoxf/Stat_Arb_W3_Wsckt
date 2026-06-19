@@ -2157,6 +2157,7 @@ function updateFilterStatus(elementId, passed, value) {
         if (emptyRow) emptyRow.parentElement.remove();
 
         const row = document.createElement('tr');
+        row.dataset.tradeId = (trade.id != null) ? trade.id : '';
         const pnlClass = trade.pnl_usd > 0 ? 'price-up' : trade.pnl_usd < 0 ? 'price-down' : '';
 
         // Format prices - show entry price, and if closed show "entry → exit"
@@ -2170,6 +2171,10 @@ function updateFilterStatus(elementId, passed, value) {
             futDisplay = `${formatPrice(trade.entry_futures_price)}<br><span class="text-secondary">→${formatPrice(trade.exit_futures_price)}</span>`;
         }
 
+        const delBtn = (trade.id != null)
+            ? `<button class="btn btn-link btn-sm p-0 ms-1 text-secondary" title="Delete this trade record" onclick="deleteTrade(${trade.id}, this)" style="font-size:0.6rem;line-height:1;vertical-align:middle;"><i class="bi bi-x-circle"></i></button>`
+            : '';
+
         row.innerHTML = `
             <td>${trade.entry_time ? new Date(trade.entry_time).toLocaleTimeString() : '-'}</td>
             <td><span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}" style="font-size:0.6rem;">${trade.position_type}</span></td>
@@ -2177,7 +2182,7 @@ function updateFilterStatus(elementId, passed, value) {
             <td style="font-size:0.65rem;">${spotDisplay}</td>
             <td style="font-size:0.65rem;">${futDisplay}</td>
             <td class="${pnlClass}" title="${trade.is_open ? '' : `notional ${(trade.pnl_percent || 0).toFixed(2)}% / capital ${(trade.pnl_pct_on_capital || 0).toFixed(2)}% on $${(trade.capital_locked_usd || 0).toFixed(0)}`}">
-                ${trade.is_open ? '-' : '$' + (trade.pnl_usd || 0).toFixed(2)}
+                ${trade.is_open ? '-' : '$' + (trade.pnl_usd || 0).toFixed(2)}${delBtn}
                 ${trade.is_open ? '' : `<br><span style="font-size:0.6rem;" class="text-secondary">${(trade.pnl_pct_on_capital || 0).toFixed(2)}%</span>`}
             </td>
         `;
@@ -2809,6 +2814,28 @@ function updateFilterStatus(elementId, passed, value) {
             }
         })
         .catch(err => showToast('Error: ' + err, 'danger'));
+    }
+
+    function deleteTrade(id, btn) {
+        if (!confirm('Delete this trade record? This cannot be undone.')) return;
+        if (btn) btn.disabled = true;
+        fetch(`/api/trades/${id}`, { method: 'DELETE' })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast('Trade deleted', 'success');
+                const row = btn ? btn.closest('tr') : null;
+                if (row) row.remove();
+                const tbody = document.getElementById('trades-table');
+                if (tbody && tbody.children.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary">No trades</td></tr>';
+                }
+            } else {
+                showToast(data.error || 'Delete failed', 'danger');
+                if (btn) btn.disabled = false;
+            }
+        })
+        .catch(err => { showToast('Error: ' + err, 'danger'); if (btn) btn.disabled = false; });
     }
 
     function showBalanceDebug(ev) {
