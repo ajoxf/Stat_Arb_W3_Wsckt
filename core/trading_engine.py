@@ -91,6 +91,10 @@ class TradingEngine:
         # General entry cooldown: prevent rapid re-entry after any trade
         self._entry_cooldown_until: Optional[datetime] = None
 
+        # Set by _check_override_exit when a fast-exit override fires, read once
+        # by _close_position to stamp the granular reason onto the trade record.
+        self._override_exit_reason: Optional[str] = None
+
         # Small cache for the live balance check so a stream of fast signals
         # doesn't hammer the exchange's account endpoint. 3s is short enough
         # that withdrawals / external trades won't go undetected for long.
@@ -464,6 +468,18 @@ class TradingEngine:
         signal = self.signal_generator.generate_signal()
         self.state.last_signal = signal
 
+        # Engine-level fast-exit overrides (profit target / max hold / dollar
+        # stop). These are dollar/time based and independent of the z-score, so
+        # they must be evaluated even when the generator returns NONE. Skipped
+        # while an order is already in flight to avoid double-firing.
+        if (self.state.algo_enabled and self.open_trade
+                and self.state.current_position != "NONE"
+                and not self._executing_trade):
+            override = self._check_override_exit(signal)
+            if override is not None:
+                signal = override
+                self.state.last_signal = signal
+
         # Notify signal callback
         if self.on_signal:
             self.on_signal(signal)
@@ -550,6 +566,106 @@ class TradingEngine:
             last=price,
             volume_24h=random.uniform(1000000, 10000000),
             timestamp=datetime.utcnow(),
+        )
+
+    def _live_net_pnl(self, trade: Trade) -> Optional[float]:
+        """Estimate the open trade's current NET P&L (USD) from live mid prices,
+        minus the same round-trip fee estimate used at the realized close.
+
+        Mirrors the realized-P&L formula in _close_position exactly, but uses
+        current mids for the exit legs instead of fills. Returns None when ticks
+        aren't available yet.
+        """
+        if not trade or not self.spot_tick or not self.futures_tick:
+            return None
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        cur_spot = self.spot_tick.mid
+        cur_fut = self.futures_tick.mid
+        entry_spread = trade.entry_futures_price - beta * trade.entry_spot_price
+        cur_spread = cur_fut - beta * cur_spot
+        if trade.position_type == "LONG":
+            spread_change = entry_spread - cur_spread
+        else:
+            spread_change = cur_spread - entry_spread
+        pnl_gross = spread_change * trade.quantity
+
+        # Per-leg fee bps from the same schedule the STD filter and realized
+        # close use, so live and realized P&L can never silently diverge.
+        spot_maker = getattr(self.config, 'spot_maker_fee_bps', self.config.maker_fee_bps)
+        spot_taker = getattr(self.config, 'spot_taker_fee_bps', self.config.taker_fee_bps)
+        fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
+        fut_taker  = getattr(self.config, 'futures_taker_fee_bps', self.config.taker_fee_bps)
+        entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
+        exit_mode  = getattr(self.config, 'exit_execution_mode',  self.config.order_execution_mode)
+        leg_a_deriv = is_derivative(self.config.spot_symbol)
+        leg_b_deriv = is_derivative(self.config.futures_symbol)
+        def _bps(deriv, mode):
+            if mode == "LIMIT":
+                return fut_maker if deriv else spot_maker
+            return fut_taker if deriv else spot_taker
+        a_entry, b_entry = _bps(leg_a_deriv, entry_mode), _bps(leg_b_deriv, entry_mode)
+        a_exit,  b_exit  = _bps(leg_a_deriv, exit_mode),  _bps(leg_b_deriv, exit_mode)
+        spot_qty = trade.quantity * beta
+        fees_usd = (
+            a_entry / 10000.0 * spot_qty       * trade.entry_spot_price +
+            b_entry / 10000.0 * trade.quantity * trade.entry_futures_price +
+            a_exit  / 10000.0 * spot_qty       * cur_spot +
+            b_exit  / 10000.0 * trade.quantity * cur_fut
+        )
+        return pnl_gross - fees_usd
+
+    def _check_override_exit(self, signal: Signal) -> Optional[Signal]:
+        """Return a synthesized EXIT/STOP_LOSS Signal if a fast-exit override
+        (dollar stop / profit target / max hold) fires for the open trade, else
+        None. Dollar stop is checked first (risk before reward).
+        """
+        # Clear any stale reason first so a value left over from a throttled
+        # close attempt can't get stamped onto a later unrelated exit.
+        self._override_exit_reason = None
+        trade = self.open_trade
+        if not trade:
+            return None
+        cfg = self.config
+        profit_target = getattr(cfg, 'profit_target_usd', 0.0) or 0.0
+        max_hold_min  = getattr(cfg, 'max_hold_minutes', 0.0) or 0.0
+        max_loss      = getattr(cfg, 'max_loss_usd', 0.0) or 0.0
+        if profit_target <= 0 and max_hold_min <= 0 and max_loss <= 0:
+            return None  # all overrides disabled — pure z-score behaviour
+
+        net_pnl = self._live_net_pnl(trade)
+        if net_pnl is None:
+            return None
+
+        exit_type = None
+        reason_tag = None
+        reason_detail = None
+        if max_loss > 0 and net_pnl <= -abs(max_loss):
+            exit_type, reason_tag = "STOP_LOSS", "DOLLAR_STOP"
+            reason_detail = f"net ${net_pnl:.2f} <= -${max_loss:.2f}"
+        elif profit_target > 0 and net_pnl >= profit_target:
+            exit_type, reason_tag = "EXIT", "PROFIT_TARGET"
+            reason_detail = f"net ${net_pnl:.2f} >= ${profit_target:.2f}"
+        elif max_hold_min > 0 and trade.entry_time:
+            held_min = (datetime.utcnow() - trade.entry_time).total_seconds() / 60.0
+            if held_min >= max_hold_min and net_pnl > 0:
+                exit_type, reason_tag = "EXIT", "MAX_HOLD"
+                reason_detail = f"{held_min:.0f}m >= {max_hold_min:.0f}m, net +${net_pnl:.2f}"
+
+        if not exit_type:
+            return None
+
+        self._override_exit_reason = reason_tag
+        logger.info("Fast-exit override fired: %s (%s)", reason_tag, reason_detail)
+        return Signal(
+            signal_type=exit_type,
+            zscore=signal.zscore,
+            spread=signal.spread,
+            spread_mean=signal.spread_mean,
+            spread_std=signal.spread_std,
+            hurst=signal.hurst,
+            regime=signal.regime,
+            timestamp=datetime.utcnow(),
+            current_position=self.state.current_position,
         )
 
     async def _process_signal(self, signal: Signal) -> None:
@@ -840,6 +956,11 @@ class TradingEngine:
         trade.exit_futures_price = futures_price
         trade.exit_zscore = signal.zscore
         trade.exit_reason = signal.signal_type
+        # A fast-exit override (PROFIT_TARGET / MAX_HOLD / DOLLAR_STOP) carries a
+        # more specific reason than the bare EXIT/STOP_LOSS signal type.
+        if self._override_exit_reason:
+            trade.exit_reason = self._override_exit_reason
+            self._override_exit_reason = None
 
         # Execute orders BEFORE marking closed — if orders fail we leave the
         # position open so the engine retries on the next tick rather than
@@ -1834,6 +1955,19 @@ class TradingEngine:
         if self._stop_loss_cooldown_until and datetime.utcnow() < self._stop_loss_cooldown_until:
             sl_cooldown_remaining = round((self._stop_loss_cooldown_until - datetime.utcnow()).total_seconds())
 
+        # Enrich the open trade with live NET P&L (same formula the fast-exit
+        # overrides use) and held-minutes so the dashboard position panel can
+        # show the take-home number and progress toward the time/dollar targets.
+        open_trade_dict = None
+        if self.open_trade:
+            open_trade_dict = self.open_trade.to_dict()
+            live_pnl = self._live_net_pnl(self.open_trade)
+            if live_pnl is not None:
+                open_trade_dict['unrealized_pnl'] = round(live_pnl, 2)
+            if self.open_trade.entry_time:
+                held_min = (datetime.utcnow() - self.open_trade.entry_time).total_seconds() / 60.0
+                open_trade_dict['held_minutes'] = round(held_min, 1)
+
         return {
             'is_running': self.state.is_running,
             'algo_enabled': self.state.algo_enabled,
@@ -1847,7 +1981,7 @@ class TradingEngine:
             'signal': signal_state,
             'spot_tick': self.spot_tick.to_dict() if self.spot_tick else None,
             'futures_tick': self.futures_tick.to_dict() if self.futures_tick else None,
-            'open_trade': self.open_trade.to_dict() if self.open_trade else None,
+            'open_trade': open_trade_dict,
             'sl_cooldown_remaining': sl_cooldown_remaining,
             'sl_cooldown_sec': self._stop_loss_cooldown_sec,
             'executing_trade': self._executing_trade,

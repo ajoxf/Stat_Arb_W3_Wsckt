@@ -61,6 +61,9 @@ class DatabaseManager:
                     entry_threshold REAL DEFAULT 2.0,
                     exit_threshold REAL DEFAULT 0.5,
                     stop_loss_threshold REAL DEFAULT 4.0,
+                    profit_target_usd REAL DEFAULT 0.0,
+                    max_hold_minutes REAL DEFAULT 0.0,
+                    max_loss_usd REAL DEFAULT 0.0,
                     exit_signal_mode TEXT DEFAULT 'zscore',
                     lookback_period INTEGER DEFAULT 100,
                     stats_update_interval INTEGER DEFAULT 300,
@@ -336,6 +339,12 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN entry_slice_interval_sec REAL DEFAULT 5.0")
             if 'min_fill_ratio' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN min_fill_ratio REAL DEFAULT 0.95")
+            if 'profit_target_usd' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_usd REAL DEFAULT 0.0")
+            if 'max_hold_minutes' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_minutes REAL DEFAULT 0.0")
+            if 'max_loss_usd' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN max_loss_usd REAL DEFAULT 0.0")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -429,6 +438,9 @@ class DatabaseManager:
                     entry_slices=row["entry_slices"] if "entry_slices" in row.keys() else 1,
                     entry_slice_interval_sec=row["entry_slice_interval_sec"] if "entry_slice_interval_sec" in row.keys() else 5.0,
                     min_fill_ratio=row["min_fill_ratio"] if "min_fill_ratio" in row.keys() else 0.95,
+                    profit_target_usd=row["profit_target_usd"] if "profit_target_usd" in row.keys() else 0.0,
+                    max_hold_minutes=row["max_hold_minutes"] if "max_hold_minutes" in row.keys() else 0.0,
+                    max_loss_usd=row["max_loss_usd"] if "max_loss_usd" in row.keys() else 0.0,
                 )
 
             return TradingConfig()
@@ -486,7 +498,10 @@ class DatabaseManager:
                     telegram_notify_errors = ?,
                     entry_slices = ?,
                     entry_slice_interval_sec = ?,
-                    min_fill_ratio = ?
+                    min_fill_ratio = ?,
+                    profit_target_usd = ?,
+                    max_hold_minutes = ?,
+                    max_loss_usd = ?
                 WHERE id = 1
             """, (
                 config.asset,
@@ -537,6 +552,9 @@ class DatabaseManager:
                 config.entry_slices,
                 config.entry_slice_interval_sec,
                 config.min_fill_ratio,
+                config.profit_target_usd,
+                config.max_hold_minutes,
+                config.max_loss_usd,
             ))
             logger.info("Config saved")
 

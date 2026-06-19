@@ -64,6 +64,17 @@ class TradingConfig:
     exit_threshold: float = 0.5
     stop_loss_threshold: float = 4.0
 
+    # ── Fast-exit overrides (trending-market protection) ─────────────────────
+    # These let a position exit on dollars/time instead of waiting for the
+    # z-score to fully revert to ±exit_threshold — important in trending
+    # markets where the rolling mean drifts and profit erodes before z hits 0.5.
+    # All default 0 = DISABLED, preserving the pure z-score exit behaviour.
+    # "Net" P&L means gross minus the same round-trip fee estimate used at the
+    # realized close, so these fire on take-home dollars, not gross.
+    profit_target_usd: float = 0.0   # >0: exit as soon as live NET P&L >= this
+    max_hold_minutes: float = 0.0    # >0: exit after N minutes IF net P&L > 0
+    max_loss_usd: float = 0.0        # >0: exit when live NET P&L <= -this (dollar stop)
+
     # Exit-signal mode. The default ("zscore") matches the original behaviour:
     # exit when the rolling z-score reverts to ±exit_threshold. The problem is
     # that the rolling mean drifts during the hold — z can revert to ~0 without
@@ -174,6 +185,9 @@ class TradingConfig:
             'entry_threshold': self.entry_threshold,
             'exit_threshold': self.exit_threshold,
             'stop_loss_threshold': self.stop_loss_threshold,
+            'profit_target_usd': self.profit_target_usd,
+            'max_hold_minutes': self.max_hold_minutes,
+            'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,
             'lookback_period': self.lookback_period,
             'stats_update_interval': self.stats_update_interval,

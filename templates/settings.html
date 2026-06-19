@@ -107,6 +107,29 @@
                         </div>
                     </div>
 
+                    <!-- Fast-Exit Overrides (trending-market protection) -->
+                    <div class="row mb-3">
+                        <div class="col-12 mb-2">
+                            <h6 class="text-secondary mb-1"><i class="bi bi-lightning-charge me-2"></i>Fast-Exit Overrides</h6>
+                            <small class="text-secondary">Exit on dollars/time instead of waiting for Z to fully revert &mdash; protects profit in trending markets. All values are <strong>NET</strong> (after round-trip fees). Set to <strong>0</strong> to disable. Z-score exit/stop-loss remain active as backstops.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Target (USD)</label>
+                            <input type="number" class="form-control" id="profit_target_usd" name="profit_target_usd" value="{{ config.profit_target_usd }}" step="0.5" min="0">
+                            <small class="text-secondary">Exit once net P&L &ge; this</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Hold (minutes)</label>
+                            <input type="number" class="form-control" id="max_hold_minutes" name="max_hold_minutes" value="{{ config.max_hold_minutes }}" step="1" min="0">
+                            <small class="text-secondary">Exit after N min <em>if</em> net P&L &gt; 0</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Dollar Stop (USD)</label>
+                            <input type="number" class="form-control" id="max_loss_usd" name="max_loss_usd" value="{{ config.max_loss_usd }}" step="0.5" min="0">
+                            <small class="text-secondary">Exit when net P&L &le; &minus;this</small>
+                        </div>
+                    </div>
+
                     <div class="row mb-4">
                         <div class="col-md-12">
                             <label class="form-label">Exit Signal Mode</label>
@@ -1331,6 +1354,9 @@
             entry_threshold: parseFloat(document.getElementById('entry_threshold').value),
             exit_threshold: parseFloat(document.getElementById('exit_threshold').value),
             stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
+            profit_target_usd: parseFloat(document.getElementById('profit_target_usd').value) || 0,
+            max_hold_minutes: parseFloat(document.getElementById('max_hold_minutes').value) || 0,
+            max_loss_usd: parseFloat(document.getElementById('max_loss_usd').value) || 0,
             exit_signal_mode: document.getElementById('exit_signal_mode').value,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
@@ -1462,6 +1488,9 @@
                 document.getElementById('entry_threshold').value = config.entry_threshold;
                 document.getElementById('exit_threshold').value = config.exit_threshold;
                 document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;
+                document.getElementById('profit_target_usd').value = config.profit_target_usd || 0;
+                document.getElementById('max_hold_minutes').value = config.max_hold_minutes || 0;
+                document.getElementById('max_loss_usd').value = config.max_loss_usd || 0;
                 document.getElementById('exit_signal_mode').value = config.exit_signal_mode || 'zscore';
                 document.getElementById('lookback_period').value = config.lookback_period;
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
