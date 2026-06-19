@@ -1587,8 +1587,10 @@ class TradingEngine:
                 # Use VWAP-blended prices (for 1-slice these equal the single fill price).
                 trade.entry_spot_price = vwap_spot_price
                 trade.entry_futures_price = vwap_fut_price
-                # Update actual filled quantity (may be less than target with partial slices)
-                trade.quantity = fut_filled_qty
+                # DO NOT override trade.quantity here. filled_qty from the adapter is in
+                # OKX contract units (1 contract for BTC-USDT-SWAP), not underlying BTC.
+                # trade.quantity was correctly set in underlying units at trade creation and
+                # must stay that way so reconcile, P&L, and position sizing all stay correct.
                 _beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
                 trade.entry_spread = (
                     trade.entry_futures_price - _beta * trade.entry_spot_price
