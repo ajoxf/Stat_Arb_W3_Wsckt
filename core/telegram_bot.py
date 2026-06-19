@@ -299,21 +299,17 @@ class TelegramNotifier:
                 (exit_spread - entry_spread) if direction == "SHORT"
                 else (entry_spread - exit_spread)
             )
-            # Gross PnL = signal-spread move × qty. Same formula as
-            # trading_engine uses for `trade.pnl_usd`, which is itself gross
-            # of fees (the field name is historical and misleading).
+            # Gross PnL = spread move × qty (fee-free).
             gross_pnl = spread_change * trade.quantity
+            # trade.pnl_usd is the engine's NET P&L (gross − fees). Use it as
+            # the authoritative figure; the fee estimate here is for reference.
             est_fees, fee_bps_total = self._estimate_round_trip_fees(trade.notional_usd)
             net_pnl_est = gross_pnl - est_fees
             net_pct_est = (
                 (net_pnl_est / trade.notional_usd) * 100
                 if trade.notional_usd > 0 else 0.0
             )
-            # Verdict is based on fee-aware net, not the engine's gross PnL
-            # field — otherwise a "PROFIT" badge would print on trades that
-            # bleed once fees are paid (e.g. the recent +$15 logged trades
-            # that actually cost ~$250 in OKX UAE Regular fees).
-            result = "PROFIT" if net_pnl_est >= 0 else "LOSS"
+            result = "PROFIT" if trade.pnl_usd >= 0 else "LOSS"
 
             fee_mode_label = (
                 f"{self._entry_mode.lower()}→{self._exit_mode.lower()}, "
@@ -342,7 +338,7 @@ class TelegramNotifier:
                 R("Gross PnL", f"${gross_pnl:+.4f}"),
                 R("Est. Fees", f"-${est_fees:,.4f}  ({fee_mode_label})"),
                 R("Net PnL (est)", f"${net_pnl_est:+.4f}  ({net_pct_est:+.4f}%)"),
-                R("Engine PnL", f"${trade.pnl_usd:+.4f}  (gross, no fees)"),
+                R("Engine Net PnL", f"${trade.pnl_usd:+.4f}"),
             ]
             parts = [
                 f"<b>TRADE EXIT  ·  {direction} {trade.asset}  ·  {result}</b>",
@@ -704,13 +700,19 @@ class TelegramNotifier:
         R = self._R
         parts = [f"<b>RECENT TRADES  ·  {ts}</b>"]
         for t in closed:
-            gross = t.get("pnl_usd", 0) or 0.0
+            # pnl_usd is engine's NET (gross − fees); pnl_gross_usd is before fees.
+            net_pnl  = t.get("pnl_usd", 0) or 0.0
             notional = t.get("notional_usd", 0) or 0.0
-            fee_usd, _bps = self._estimate_round_trip_fees(notional)
-            net_pnl = gross - fee_usd
-            net_pct = (net_pnl / notional * 100) if notional > 0 else 0.0
-            # Verdict reflects what actually hit the wallet
-            result = "PROFIT" if net_pnl >= 0 else "LOSS"
+            net_pct  = (net_pnl / notional * 100) if notional > 0 else 0.0
+            result   = "PROFIT" if net_pnl >= 0 else "LOSS"
+
+            gross    = t.get("pnl_gross_usd") or 0.0
+            fee_usd  = t.get("fees_usd") or 0.0
+            # Older / paper trades may lack pnl_gross_usd; fall back to estimate.
+            if not gross:
+                fee_est, _ = self._estimate_round_trip_fees(notional)
+                gross   = net_pnl + fee_est
+                fee_usd = fee_est
 
             duration_str = "—"
             entry_t = t.get("entry_time")
@@ -815,23 +817,32 @@ class TelegramNotifier:
 
         closed = [t for t in trades if not t.get("is_open", True)]
 
-        def _gross(t):
+        # pnl_usd is engine's NET (gross − fees already deducted).
+        # pnl_gross_usd / fees_usd are stored on the trade for the breakdown.
+        def _net(t):
             return t.get("pnl_usd", 0) or 0.0
 
-        def _fee(t):
+        def _gross(t):
+            g = t.get("pnl_gross_usd") or 0.0
+            if g:
+                return g
+            # Older/paper trades: back-calculate from net + estimated fees
             notional = t.get("notional_usd", 0) or 0.0
-            fee_usd, _bps = self._estimate_round_trip_fees(notional)
-            return fee_usd
+            fee_est, _ = self._estimate_round_trip_fees(notional)
+            return _net(t) + fee_est
 
-        def _net(t):
-            return _gross(t) - _fee(t)
+        def _fee(t):
+            stored = t.get("fees_usd") or 0.0
+            if stored:
+                return stored
+            notional = t.get("notional_usd", 0) or 0.0
+            fee_est, _ = self._estimate_round_trip_fees(notional)
+            return fee_est
 
+        total_net   = sum(_net(t) for t in closed)
         total_gross = sum(_gross(t) for t in closed)
         total_fees  = sum(_fee(t) for t in closed)
-        total_net   = total_gross - total_fees
 
-        # Winners/losers gauged on NET so the win-rate matches what actually
-        # hit the wallet, not what the engine logged before fees.
         winners = [t for t in closed if _net(t) > 0]
         losers = [t for t in closed if _net(t) <= 0]
 
@@ -841,9 +852,9 @@ class TelegramNotifier:
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         today_trades = [t for t in closed if (t.get("exit_time") or "").startswith(today)]
+        today_net   = sum(_net(t) for t in today_trades)
         today_gross = sum(_gross(t) for t in today_trades)
         today_fees  = sum(_fee(t) for t in today_trades)
-        today_net   = today_gross - today_fees
         upnl = balance_data.get("unrealized_pnl", 0)
 
         R = self._R
@@ -891,7 +902,7 @@ class TelegramNotifier:
         R = self._R
         rows = [
             R("Trades", f"{len(today_closed)}  ({today_wins} wins)"),
-            R("PnL", f"${today_pnl:+.2f}"),
+            R("Net PnL", f"${today_pnl:+.2f}"),
             "",
             R("Equity", f"${equity:,.2f}"),
             R("Unrealized", f"${upnl:+.2f}"),
