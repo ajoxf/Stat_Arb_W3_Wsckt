@@ -173,6 +173,18 @@
                             <input type="number" class="form-control" id="min_std_multiple" name="min_std_multiple" value="{{ config.min_std_multiple }}" step="0.1" min="1" max="5">
                             <small class="text-secondary">STD must be &gt; costs * this multiple</small>
                         </div>
+                        <div class="col-md-6 mt-3">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="trend_direction_filter" name="trend_direction_filter" {% if config.trend_direction_filter %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="trend_direction_filter">Trend Direction Filter</label>
+                            </div>
+                            <small class="text-secondary d-block">
+                                When <strong>ON</strong>: only takes signals aligned with the current spread slope —
+                                rising spread (Leg B outperforming) allows SHORT only;
+                                falling spread allows LONG only.
+                                Useful when Hurst is high and mean-reversion is unreliable.
+                            </small>
+                        </div>
                     </div>
 
                     <hr class="my-4" style="border-color: var(--border-color);">
@@ -1294,6 +1306,7 @@
             hurst_enabled: document.getElementById('hurst_enabled').checked,
             hurst_threshold: parseFloat(document.getElementById('hurst_threshold').value),
             std_filter_enabled: document.getElementById('std_filter_enabled').checked,
+            trend_direction_filter: document.getElementById('trend_direction_filter').checked,
             min_std_multiple: parseFloat(document.getElementById('min_std_multiple').value),
             position_size_usd: parseFloat(document.getElementById('position_size_usd').value),
             max_position_size_usd: parseFloat(document.getElementById('max_position_size_usd').value),
@@ -1421,6 +1434,7 @@
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
                 document.getElementById('hurst_threshold').value = config.hurst_threshold;
                 document.getElementById('std_filter_enabled').checked = config.std_filter_enabled;
+                document.getElementById('trend_direction_filter').checked = config.trend_direction_filter || false;
                 document.getElementById('min_std_multiple').value = config.min_std_multiple;
                 document.getElementById('position_size_usd').value = config.position_size_usd;
                 document.getElementById('max_position_size_usd').value = config.max_position_size_usd;

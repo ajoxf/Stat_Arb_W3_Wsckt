@@ -84,6 +84,7 @@ class TradingConfig:
     hurst_threshold: float = 0.5  # H < 0.5 = mean reverting
     std_filter_enabled: bool = True
     min_std_multiple: float = 0.9  # STD must be > costs * multiple (0.9 = just above break-even)
+    trend_direction_filter: bool = False  # Only take signals aligned with spread slope direction
 
     # Position sizing
     position_size_usd: float = 1000.0
@@ -175,6 +176,7 @@ class TradingConfig:
             'hurst_threshold': self.hurst_threshold,
             'std_filter_enabled': self.std_filter_enabled,
             'min_std_multiple': self.min_std_multiple,
+            'trend_direction_filter': self.trend_direction_filter,
             'position_size_usd': self.position_size_usd,
             'max_position_size_usd': self.max_position_size_usd,
             'daily_max_loss_usd': self.daily_max_loss_usd,

@@ -227,6 +227,21 @@ class SignalGenerator:
         else:
             self.current_zscore = 0.0
 
+    def _spread_slope(self) -> float:
+        """Linear slope of the spread over the last ~500 ticks (or 1/4 of the lookback).
+
+        Positive slope → spread trending up (Leg B outperforming Leg A) → SHORT-favourable.
+        Negative slope → spread trending down (Leg A outperforming Leg B) → LONG-favourable.
+        Returns 0.0 when there is insufficient data.
+        """
+        n = min(500, max(20, len(self.spread_history) // 4))
+        if len(self.spread_history) < n:
+            return 0.0
+        recent = np.array(list(self.spread_history)[-n:])
+        x = np.arange(n, dtype=float)
+        slope, _ = np.polyfit(x, recent, 1)
+        return float(slope)
+
     def _calculate_hurst(self, series: np.ndarray) -> float:
         """
         Calculate Hurst exponent using R/S (Rescaled Range) analysis.
@@ -532,6 +547,21 @@ class SignalGenerator:
                 elif z_triggers_short and self.current_zscore <= -self.config.stop_loss_threshold:
                     blocked_reason = "Z-score at stop-loss level ({:.2f} <= -{:.2f})".format(
                         self.current_zscore, self.config.stop_loss_threshold)
+                elif getattr(self.config, 'trend_direction_filter', False):
+                    # Trend direction filter: only allow signals aligned with the
+                    # slope of the spread.  Positive slope = Leg B outperforming →
+                    # SHORT only.  Negative slope = Leg A outperforming → LONG only.
+                    slope = self._spread_slope()
+                    if slope > 0 and z_triggers_long:
+                        blocked_reason = (
+                            "Trend filter: spread rising (slope={:.5f}), SHORT signals only"
+                            .format(slope))
+                    elif slope < 0 and z_triggers_short:
+                        blocked_reason = (
+                            "Trend filter: spread falling (slope={:.5f}), LONG signals only"
+                            .format(slope))
+                    else:
+                        signal_type = "LONG" if z_triggers_long else "SHORT"
                 else:
                     # All filters pass - generate signal
                     if z_triggers_long:
