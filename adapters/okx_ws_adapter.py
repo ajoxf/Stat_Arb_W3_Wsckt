@@ -72,11 +72,12 @@ def _normalise_order(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
     sz = _to_float(raw.get("sz"))
     fill_sz = _to_float(raw.get("accFillSz")) or _to_float(raw.get("fillSz"))
-    fill_px_v = _to_float(raw.get("fillPx"))
     avg_px_v = _to_float(raw.get("avgPx"))
-    # Prefer fillPx when non-zero; fall back to avgPx for market fills where
-    # OKX may send fillPx="0" before the last-chunk record arrives.
-    fill_px = fill_px_v if fill_px_v > 0 else avg_px_v
+    fill_px_v = _to_float(raw.get("fillPx"))
+    # Prefer avgPx (cumulative average) over fillPx (last-chunk only).
+    # fillPx reflects only the most recent chunk price; avgPx is the true
+    # VWAP across all chunks so entry_price is accurate for multi-chunk fills.
+    fill_px = avg_px_v if avg_px_v > 0 else fill_px_v
     return {
         "order_id": raw.get("ordId", ""),
         "symbol": raw.get("instId", ""),

@@ -447,6 +447,29 @@
                         <strong>Recommended:</strong> Limit for entries (save fees), Market for exits (avoid slippage).
                     </div>
 
+                    <!-- Institutional Order Slicing (Synchronized Pair TWAP) -->
+                    <div class="row mb-3 mt-3">
+                        <div class="col-12 mb-2">
+                            <h6 class="text-secondary mb-1"><i class="bi bi-layers me-2"></i>Order Slicing (TWAP Entry)</h6>
+                            <small class="text-secondary">Splits each entry into N equal child orders placed simultaneously on both legs. Prices are VWAP-blended across slices. Use 1 to disable (default).</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Entry Slices</label>
+                            <input type="number" class="form-control" id="entry_slices" name="entry_slices" value="{{ config.entry_slices }}" min="1" max="10" step="1">
+                            <small class="text-secondary">1 = no slicing, 2-10 = TWAP</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Slice Interval (sec)</label>
+                            <input type="number" class="form-control" id="entry_slice_interval_sec" name="entry_slice_interval_sec" value="{{ config.entry_slice_interval_sec }}" min="0" max="60" step="0.5">
+                            <small class="text-secondary">Seconds between child orders</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Min Fill Ratio</label>
+                            <input type="number" class="form-control" id="min_fill_ratio" name="min_fill_ratio" value="{{ config.min_fill_ratio }}" min="0.5" max="1.0" step="0.01">
+                            <small class="text-secondary">Reject entry if fills &lt; this fraction (e.g. 0.95)</small>
+                        </div>
+                    </div>
+
                     <hr class="my-4" style="border-color: var(--border-color);">
 
                     <!-- Safety Settings -->
@@ -1331,6 +1354,9 @@
             exit_execution_mode: document.getElementById('exit_execution_mode').value,
             limit_order_timeout_sec: parseInt(document.getElementById('limit_order_timeout_sec').value),
             limit_order_price_offset_bps: parseFloat(document.getElementById('limit_order_price_offset_bps').value),
+            entry_slices: parseInt(document.getElementById('entry_slices').value) || 1,
+            entry_slice_interval_sec: parseFloat(document.getElementById('entry_slice_interval_sec').value) || 5.0,
+            min_fill_ratio: parseFloat(document.getElementById('min_fill_ratio').value) || 0.95,
             entry_cooldown_seconds: parseInt(document.getElementById('entry_cooldown_seconds').value),
             verify_exchange_position: document.getElementById('verify_exchange_position').checked,
             orphan_recovery_timeout_sec: parseInt(document.getElementById('orphan_recovery_timeout_sec').value),

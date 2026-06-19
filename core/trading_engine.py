@@ -1421,7 +1421,13 @@ class TradingEngine:
             return True  # Don't block trading on verification error
 
     async def _execute_entry_orders(self, trade: Trade, signal: Signal) -> bool:
-        """Execute entry orders on exchanges using the order executor."""
+        """Execute entry orders on exchanges using the order executor.
+
+        When entry_slices > 1, splits the entry into N equal child slices
+        placed synchronously on both legs together (synchronized pair TWAP).
+        Entry prices are blended via VWAP across all slices. If total fills
+        fall below min_fill_ratio the entry is rejected.
+        """
         if not self.order_executor:
             logger.error("Order executor not configured for live trading")
             return False
@@ -1438,15 +1444,81 @@ class TradingEngine:
         self._futures_order_attempts += 1
 
         try:
-            # Spot leg is scaled by the hedge ratio; futures leg = trade.quantity.
             beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
-            spread_order = await self.order_executor.execute_entry(
-                position_type=signal.signal_type,
-                spot_tick=self.spot_tick,
-                futures_tick=self.futures_tick,
-                quantity=trade.quantity * beta,   # spot leg quantity
-                futures_quantity=trade.quantity,  # futures leg quantity
-            )
+            n_slices = max(1, getattr(self.config, 'entry_slices', 1))
+            slice_interval = max(0.0, getattr(self.config, 'entry_slice_interval_sec', 5.0))
+            min_fill_ratio = getattr(self.config, 'min_fill_ratio', 0.95)
+
+            target_spot_qty = trade.quantity * beta
+            target_fut_qty = trade.quantity
+            slice_spot_qty = target_spot_qty / n_slices
+            slice_fut_qty = target_fut_qty / n_slices
+
+            # VWAP accumulators
+            spot_filled_qty = 0.0
+            spot_filled_notional = 0.0
+            fut_filled_qty = 0.0
+            fut_filled_notional = 0.0
+            last_spot_order_id = ""
+            last_fut_order_id = ""
+            last_spread_order = None
+
+            for slice_i in range(n_slices):
+                if slice_i > 0 and slice_interval > 0:
+                    await asyncio.sleep(slice_interval)
+
+                spread_order = await self.order_executor.execute_entry(
+                    position_type=signal.signal_type,
+                    spot_tick=self.spot_tick,
+                    futures_tick=self.futures_tick,
+                    quantity=slice_spot_qty,
+                    futures_quantity=slice_fut_qty,
+                )
+                last_spread_order = spread_order
+
+                if spread_order and (spread_order.is_complete or (
+                    spread_order.spot_leg.status.name == 'FILLED'
+                    and spread_order.futures_leg.status.name == 'FILLED'
+                    and spread_order.spot_leg.filled_qty > 0
+                    and spread_order.futures_leg.filled_qty > 0
+                )):
+                    sq = spread_order.spot_leg.filled_qty
+                    sp = spread_order.spot_leg.filled_price
+                    fq = spread_order.futures_leg.filled_qty
+                    fp = spread_order.futures_leg.filled_price
+                    spot_filled_qty += sq
+                    spot_filled_notional += sq * sp
+                    fut_filled_qty += fq
+                    fut_filled_notional += fq * fp
+                    last_spot_order_id = spread_order.spot_leg.order_id
+                    last_fut_order_id = spread_order.futures_leg.order_id
+                    logger.info(
+                        "TWAP slice %d/%d filled: spot %.6f @ %.2f | fut %.6f @ %.2f",
+                        slice_i + 1, n_slices, sq, sp, fq, fp,
+                    )
+                else:
+                    logger.warning(
+                        "TWAP slice %d/%d failed — accepting fills so far and stopping",
+                        slice_i + 1, n_slices,
+                    )
+                    break
+
+            # Check min fill ratio
+            if target_spot_qty > 0 and (spot_filled_qty / target_spot_qty) < min_fill_ratio:
+                logger.error(
+                    "Entry fill ratio %.1f%% below min_fill_ratio %.1f%% — rejecting entry",
+                    100.0 * spot_filled_qty / target_spot_qty,
+                    100.0 * min_fill_ratio,
+                )
+                return False
+            if spot_filled_qty == 0 or fut_filled_qty == 0:
+                logger.error("No fills received across all slices")
+                return False
+
+            # Blended VWAP prices across all completed slices
+            vwap_spot_price = spot_filled_notional / spot_filled_qty
+            vwap_fut_price = fut_filled_notional / fut_filled_qty
+            spread_order = last_spread_order
 
             # Defensive: log the executor's final state so we can audit when
             # is_complete disagrees with the underlying leg statuses. The
@@ -1487,7 +1559,10 @@ class TradingEngine:
                             "to avoid destructive auto-close loop"
                         )
 
-            if spread_order and (
+            # Success: we already verified fill ratio above; vwap prices are ready.
+            # Also accept the 1-slice path where is_complete/both-filled is the gate.
+            _sliced_ok = spot_filled_qty > 0 and fut_filled_qty > 0
+            if _sliced_ok or (spread_order and (
                 spread_order.is_complete
                 or (
                     spread_order.spot_leg.status.name == 'FILLED'
@@ -1495,26 +1570,28 @@ class TradingEngine:
                     and spread_order.spot_leg.filled_qty > 0
                     and spread_order.futures_leg.filled_qty > 0
                 )
-            ):
-                trade.spot_order_id = spread_order.spot_leg.order_id
-                trade.futures_order_id = spread_order.futures_leg.order_id
-                # Update actual fill prices + re-stamp entry_spread from FILLS
-                # (it was provisionally set from the mid-derived signal.spread
-                # at trade creation; now we have the real fills and β to
-                # recompute it). The dashboard's open-position Entry Spread
-                # display reads this field, so it'll be accurate during the
-                # life of the trade and not just at close.
-                trade.entry_spot_price = spread_order.spot_leg.filled_price
-                trade.entry_futures_price = spread_order.futures_leg.filled_price
+            )):
+                trade.spot_order_id = last_spot_order_id or (
+                    spread_order.spot_leg.order_id if spread_order else "")
+                trade.futures_order_id = last_fut_order_id or (
+                    spread_order.futures_leg.order_id if spread_order else "")
+                # Use VWAP-blended prices (for 1-slice these equal the single fill price).
+                trade.entry_spot_price = vwap_spot_price
+                trade.entry_futures_price = vwap_fut_price
+                # Update actual filled quantity (may be less than target with partial slices)
+                trade.quantity = fut_filled_qty
                 _beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
                 trade.entry_spread = (
                     trade.entry_futures_price - _beta * trade.entry_spot_price
                 )
-                # Execution timing
-                trade.entry_placed_at = spread_order.created_at
-                fill_ts = (spread_order.spot_leg.last_update or
-                           spread_order.futures_leg.last_update)
-                if fill_ts and spread_order.created_at:
+                # Execution timing (spread_order may be last failed slice when slicing)
+                if spread_order:
+                    trade.entry_placed_at = spread_order.created_at
+                fill_ts = (
+                    (spread_order.spot_leg.last_update or spread_order.futures_leg.last_update)
+                    if spread_order else None
+                )
+                if fill_ts and spread_order and spread_order.created_at:
                     trade.entry_filled_at = fill_ts
                     trade.entry_latency_ms = round(
                         (fill_ts - spread_order.created_at).total_seconds() * 1000, 1

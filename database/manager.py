@@ -86,6 +86,9 @@ class DatabaseManager:
                     entry_cooldown_seconds INTEGER DEFAULT 60,
                     verify_exchange_position INTEGER DEFAULT 1,
                     orphan_recovery_timeout_sec INTEGER DEFAULT 60,
+                    entry_slices INTEGER DEFAULT 1,
+                    entry_slice_interval_sec REAL DEFAULT 5.0,
+                    min_fill_ratio REAL DEFAULT 0.95,
                     CHECK (id = 1)
                 )
             """)
@@ -327,6 +330,12 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN m2m_buffer_pct REAL DEFAULT 10.0")
             if 'exit_signal_mode' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_signal_mode TEXT DEFAULT 'zscore'")
+            if 'entry_slices' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN entry_slices INTEGER DEFAULT 1")
+            if 'entry_slice_interval_sec' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN entry_slice_interval_sec REAL DEFAULT 5.0")
+            if 'min_fill_ratio' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN min_fill_ratio REAL DEFAULT 0.95")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -417,6 +426,9 @@ class DatabaseManager:
                     telegram_notify_trades=bool(row["telegram_notify_trades"]) if "telegram_notify_trades" in row.keys() else True,
                     telegram_notify_signals=bool(row["telegram_notify_signals"]) if "telegram_notify_signals" in row.keys() else False,
                     telegram_notify_errors=bool(row["telegram_notify_errors"]) if "telegram_notify_errors" in row.keys() else True,
+                    entry_slices=row["entry_slices"] if "entry_slices" in row.keys() else 1,
+                    entry_slice_interval_sec=row["entry_slice_interval_sec"] if "entry_slice_interval_sec" in row.keys() else 5.0,
+                    min_fill_ratio=row["min_fill_ratio"] if "min_fill_ratio" in row.keys() else 0.95,
                 )
 
             return TradingConfig()
@@ -471,7 +483,10 @@ class DatabaseManager:
                     telegram_chat_id = ?,
                     telegram_notify_trades = ?,
                     telegram_notify_signals = ?,
-                    telegram_notify_errors = ?
+                    telegram_notify_errors = ?,
+                    entry_slices = ?,
+                    entry_slice_interval_sec = ?,
+                    min_fill_ratio = ?
                 WHERE id = 1
             """, (
                 config.asset,
@@ -519,6 +534,9 @@ class DatabaseManager:
                 int(config.telegram_notify_trades),
                 int(config.telegram_notify_signals),
                 int(config.telegram_notify_errors),
+                config.entry_slices,
+                config.entry_slice_interval_sec,
+                config.min_fill_ratio,
             ))
             logger.info("Config saved")
 

@@ -483,14 +483,15 @@ class OKXAdapter(ExchangeAdapter):
                             filled_price=confirmed_fill["filled_price"],
                         )
                     logger.warning(
-                        "MARKET order %s fill not confirmed in polling window — using estimated qty/price",
+                        "MARKET order %s fill not confirmed in 900ms polling window — "
+                        "returning filled_qty=0 so executor polls for confirmation",
                         order_id,
                     )
                     return OrderResult(
                         success=True,
                         order_id=order_id,
-                        filled_qty=quantity,
-                        filled_price=price or 0,
+                        filled_qty=0,
+                        filled_price=0,
                     )
                 else:
                     # Limit/post_only order - don't assume fill, let caller check status
@@ -559,7 +560,7 @@ class OKXAdapter(ExchangeAdapter):
                 o = result["data"][0]
                 sz = float(o.get("sz", 0) or 0)
                 fill_sz = float(o.get("accFillSz", 0) or o.get("fillSz", 0) or 0)
-                fill_px = float(o.get("fillPx", 0) or o.get("avgPx", 0) or 0)
+                fill_px = float(o.get("avgPx", 0) or o.get("fillPx", 0) or 0)
                 state = o.get("state", "")
 
                 return {

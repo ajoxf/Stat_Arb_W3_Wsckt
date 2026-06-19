@@ -121,6 +121,11 @@ class TradingConfig:
     limit_order_timeout_sec: int = 30  # Max time to wait for fill
     limit_order_price_offset_bps: float = 1.0  # Offset from best bid/ask in basis points
 
+    # Institutional order slicing (synchronized pair TWAP entry)
+    entry_slices: int = 1             # N child orders per entry leg (1 = no slicing)
+    entry_slice_interval_sec: float = 5.0  # Seconds between slices
+    min_fill_ratio: float = 0.95      # Reject entry if total fills < this fraction of target qty
+
     # Fee estimates for STD filter (per side, in basis points)
     # Spot and Futures have different fee structures on OKX
     # Spot (non-VIP): Maker 8 bps, Taker 10 bps
@@ -191,6 +196,9 @@ class TradingConfig:
             'exit_execution_mode': self.exit_execution_mode,
             'limit_order_timeout_sec': self.limit_order_timeout_sec,
             'limit_order_price_offset_bps': self.limit_order_price_offset_bps,
+            'entry_slices': self.entry_slices,
+            'entry_slice_interval_sec': self.entry_slice_interval_sec,
+            'min_fill_ratio': self.min_fill_ratio,
             'spot_maker_fee_bps': self.spot_maker_fee_bps,
             'spot_taker_fee_bps': self.spot_taker_fee_bps,
             'futures_maker_fee_bps': self.futures_maker_fee_bps,
