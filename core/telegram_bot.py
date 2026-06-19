@@ -95,6 +95,7 @@ class TelegramNotifier:
         self.get_status_cb: Optional[Callable[[], Dict[str, Any]]] = None
         self.get_trades_cb: Optional[Callable[[], list]] = None
         self.get_balance_cb: Optional[Callable[[], Dict[str, Any]]] = None
+        self.get_config_cb: Optional[Callable[[], Dict[str, Any]]] = None
         self.close_all_cb: Optional[Callable[[], Dict[str, Any]]] = None
         # Returns result of SignalGenerator.optimize_parameters()
         self.optimize_cb: Optional[Callable[[], Dict[str, Any]]] = None
@@ -416,6 +417,7 @@ class TelegramNotifier:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         C = 13
         cmd_rows = [
+            f"{'/dashboard':<{C}}full system snapshot",
             f"{'/ping':<{C}}alive check (always responds)",
             f"{'/status':<{C}}engine &amp; algo state",
             f"{'/positions':<{C}}open positions",
@@ -504,6 +506,7 @@ class TelegramNotifier:
             "/start": self._cmd_start,
             "/help": self._cmd_start,
             "/ping": self._cmd_ping,
+            "/dashboard": self._cmd_dashboard,
             "/status": self._cmd_status,
             "/positions": self._cmd_positions,
             "/trades": self._cmd_trades,
@@ -554,6 +557,7 @@ class TelegramNotifier:
         """Handle /start and /help commands."""
         C = 13
         cmd_rows = [
+            f"{'/dashboard':<{C}}full system snapshot",
             f"{'/status':<{C}}engine &amp; algo state",
             f"{'/positions':<{C}}open positions",
             f"{'/trades':<{C}}recent closed trades",
@@ -570,6 +574,227 @@ class TelegramNotifier:
             "Notifications active.\n"
             "<pre>" + "\n".join(cmd_rows) + "</pre>"
         )
+
+    def _cmd_dashboard(self) -> None:
+        """Handle /dashboard command — full system snapshot in one message."""
+        status       = self.get_status_cb()   if self.get_status_cb   else {}
+        balance_data = self.get_balance_cb()  if self.get_balance_cb  else {}
+        trades       = self.get_trades_cb()   if self.get_trades_cb   else []
+        cfg          = self.get_config_cb()   if self.get_config_cb   else {}
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+
+        # Engine
+        is_running   = status.get("is_running", False)
+        algo_enabled = status.get("algo_enabled", False)
+        paper        = status.get("paper_trading", True)
+        asset        = status.get("asset", "N/A")
+        position     = status.get("position", "NONE")
+        error        = status.get("error", "")
+
+        # Signal / spread state
+        sig         = status.get("signal") or {}
+        zscore      = sig.get("zscore", 0.0)
+        spread      = sig.get("spread", 0.0)
+        s_mean      = sig.get("spread_mean", 0.0)
+        s_std       = sig.get("spread_std", 0.0)
+        hurst       = sig.get("hurst", 0.0)
+        hurst_ok    = sig.get("hurst_ok")
+        std_ok      = sig.get("std_filter_ok")
+        std_ratio   = sig.get("std_ratio")
+        std_req     = sig.get("std_ratio_required", 0.0)
+        regime      = sig.get("regime", "N/A")
+        hl          = sig.get("half_life")
+        sugg_lb     = sig.get("suggested_lookback")
+        data_pts    = sig.get("data_points", 0)
+        lookback    = sig.get("lookback", 0)
+        data_ready  = sig.get("data_ready", False)
+        last_block  = sig.get("last_blocked_signal") or {}
+
+        # Ticks
+        spot_tick   = status.get("spot_tick") or {}
+        fut_tick    = status.get("futures_tick") or {}
+        spot_last   = spot_tick.get("last", 0.0)
+        fut_last    = fut_tick.get("last", 0.0)
+
+        # Config
+        spot_sym  = cfg.get("spot_symbol") or "Leg A"
+        fut_sym   = cfg.get("futures_symbol") or "Leg B"
+        notional  = cfg.get("position_size_usd") or 0
+        entry_thr = cfg.get("entry_threshold") or 0
+        exit_thr  = cfg.get("exit_threshold") or 0
+        sl_thr    = cfg.get("stop_loss_threshold") or 0
+        hurst_en  = cfg.get("hurst_enabled", False)
+        std_en    = cfg.get("std_filter_enabled", False)
+        trend_en  = cfg.get("trend_direction_filter", False)
+        lb        = cfg.get("lookback_period") or lookback
+        hedge_r   = cfg.get("hedge_ratio") or 1.0
+        mode_lbl  = "PAPER" if paper else "LIVE"
+
+        # Open trade
+        open_trade = status.get("open_trade") or {}
+
+        # Account
+        equity    = balance_data.get("total_equity") or 0
+        available = balance_data.get("available_margin") or 0
+        upnl      = balance_data.get("unrealized_pnl") or 0
+        exchange  = balance_data.get("exchange") or "N/A"
+        is_demo   = balance_data.get("is_demo", paper)
+        connected = balance_data.get("connected", False)
+        acct_mode = "Demo" if is_demo else ("Paper" if paper else "Live")
+
+        # Today's P&L (from closed trades)
+        closed    = [t for t in trades if not t.get("is_open", True)]
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_t   = [t for t in closed if (t.get("exit_time") or "").startswith(today_str)]
+        today_net = sum(t.get("pnl_usd", 0) or 0 for t in today_t)
+        today_w   = sum(1 for t in today_t if (t.get("pnl_usd", 0) or 0) > 0)
+        today_l   = len(today_t) - today_w
+
+        R   = self._R
+        D   = "─" * 20
+        rows = []
+
+        # ── Header ──────────────────────────────────────────────
+        engine_state = "Running" if is_running else "STOPPED"
+        algo_state   = "ON" if algo_enabled else "OFF"
+        rows += [
+            R("Engine", f"{engine_state}  ·  Algo {algo_state}  ·  {mode_lbl}"),
+            R("Pair", f"{spot_sym} / {fut_sym}"),
+        ]
+        if error:
+            rows.append(R("Error", error[:100]))
+
+        # ── Market prices ────────────────────────────────────────
+        rows += [f"<code>{D}</code>"]
+        rows.append(R("Leg A now", f"${spot_last:,.4f}") if spot_last else R("Leg A now", "—"))
+        rows.append(R("Leg B now", f"${fut_last:,.4f}") if fut_last else R("Leg B now", "—"))
+
+        # ── Signal / stats ───────────────────────────────────────
+        data_str = f"{data_pts}/{lookback}  ({'READY' if data_ready else 'COLLECTING'})"
+        hl_str   = f"{hl:.1f} periods" if hl is not None else "—"
+        if sugg_lb:
+            hl_str += f"  (suggest LB {sugg_lb})"
+        rows += [
+            f"<code>{D}</code>",
+            R("Data", data_str),
+            R("Z-Score", f"{zscore:+.4f}"),
+            R("Spread", f"{spread:+.6f}"),
+            R("Mean", f"{s_mean:+.6f}"),
+            R("Std Dev", f"{s_std:.6f}"),
+            R("Regime", regime),
+            R("Hurst", f"{hurst:.4f}"),
+            R("Half-Life", hl_str),
+        ]
+        if last_block.get("reason"):
+            blk_sig = last_block.get("would_be_signal", "?")
+            blk_z   = last_block.get("zscore", 0.0)
+            blk_ts  = (last_block.get("timestamp") or "")[:16].replace("T", " ")
+            rows.append(R("Last Blocked",
+                          f"{blk_sig} Z={blk_z:+.4f}  {blk_ts}"))
+            rows.append(R("Block Reason", last_block["reason"][:80]))
+
+        # ── Filters ──────────────────────────────────────────────
+        def _fstr(enabled, ok):
+            if not enabled:
+                return "DISABLED"
+            if ok is None:
+                return "COLLECTING"
+            return "PASS" if ok else "FAIL"
+
+        hurst_f = _fstr(hurst_en, hurst_ok)
+        std_f   = _fstr(std_en, std_ok)
+        if std_en and std_ok is not None and std_ratio is not None:
+            std_f += f"  ({std_ratio:.1f}x ≥ {std_req:.1f}x)"
+
+        rows += [
+            f"<code>{D}</code>",
+            R("Hurst Filter", hurst_f),
+            R("STD Filter", std_f),
+            R("Trend Filter", "ON" if trend_en else "OFF"),
+        ]
+
+        # ── Position ─────────────────────────────────────────────
+        rows.append(f"<code>{D}</code>")
+        if position == "NONE" or not open_trade:
+            rows.append(R("Position", "Flat"))
+        else:
+            ot_qty    = open_trade.get("quantity") or 0
+            ot_notl   = open_trade.get("notional_usd") or 0
+            ot_espot  = open_trade.get("entry_spot_price") or 0
+            ot_efut   = open_trade.get("entry_futures_price") or 0
+            ot_esprn  = open_trade.get("entry_spread") or 0
+            ot_ez     = open_trade.get("entry_zscore") or 0
+            ot_margin = open_trade.get("margin_usd") or 0
+            ot_time   = open_trade.get("entry_time") or ""
+            lev_x     = round(ot_notl / ot_margin) if ot_margin > 0 else 0
+
+            # Estimate live PnL from spread delta
+            spr_delta = spread - ot_esprn
+            est_pnl   = (-spr_delta if position == "LONG" else spr_delta) * ot_qty
+
+            age_str = "—"
+            if ot_time:
+                try:
+                    entry_dt = datetime.fromisoformat(ot_time.replace("Z", "+00:00"))
+                    if entry_dt.tzinfo is None:
+                        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                    sec = int((datetime.now(timezone.utc) - entry_dt).total_seconds())
+                    age_str = (
+                        f"{sec//86400}d {(sec%86400)//3600}h" if sec >= 86400 else
+                        f"{sec//3600}h {(sec%3600)//60}m"     if sec >= 3600  else
+                        f"{sec//60}m {sec%60}s"
+                    )
+                except Exception:
+                    pass
+
+            notl_str = f"${ot_notl:,.2f}"
+            if lev_x > 0:
+                notl_str += f"  (margin ${ot_margin:,.2f} @ {lev_x}x)"
+
+            rows += [
+                R("Position", f"{position} {asset}"),
+                R("Entry Z", f"{ot_ez:+.4f}  →  Now {zscore:+.4f}"),
+                R("Entry Spot", f"${ot_espot:,.4f}  →  Now ${spot_last:,.4f}"),
+                R("Entry Fut", f"${ot_efut:,.4f}  →  Now ${fut_last:,.4f}"),
+                R("Entry Spread", f"{ot_esprn:+.6f}  →  Now {spread:+.6f}"),
+                R("Spread Δ", f"{spr_delta:+.6f}"),
+                R("Est. PnL", f"${est_pnl:+.4f}"),
+                R("Notional", notl_str),
+                R("Age", age_str),
+            ]
+
+        # ── Account ──────────────────────────────────────────────
+        rows.append(f"<code>{D}</code>")
+        if connected and equity:
+            rows += [
+                R("Exchange", f"{exchange}  ({acct_mode})"),
+                R("Equity", f"${equity:,.2f}"),
+                R("Available", f"${available:,.2f}"),
+                R("Unrealized", f"${upnl:+.2f}"),
+            ]
+        else:
+            rows.append(R("Account", "Not connected"))
+
+        # ── Today ─────────────────────────────────────────────────
+        rows += [
+            f"<code>{D}</code>",
+            R("Today Trades", f"{len(today_t)}  ({today_w}W / {today_l}L)"),
+            R("Today Net PnL", f"${today_net:+.2f}"),
+        ]
+
+        # ── Config snapshot ───────────────────────────────────────
+        if cfg:
+            rows += [
+                f"<code>{D}</code>",
+                R("Notional", f"${notional:,.0f}"),
+                R("Hedge Ratio β", f"{hedge_r:.4f}"),
+                R("Entry ±Z", f"{entry_thr}"),
+                R("Exit ±Z", f"{exit_thr}"),
+                R("Stop ±Z", f"{sl_thr}"),
+                R("Lookback", f"{lb}"),
+            ]
+
+        self._send(f"<b>DASHBOARD  ·  {ts}</b>\n" + "\n".join(rows))
 
     def _cmd_status(self) -> None:
         """Handle /status command."""

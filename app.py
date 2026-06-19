@@ -275,6 +275,7 @@ def start_engine_loop():
     _telegram.get_status_cb = lambda: engine.get_status()
     _telegram.get_trades_cb = lambda: [t.to_dict() for t in db.get_trades(limit=20)]
     _telegram.get_balance_cb = _get_balance_for_telegram
+    _telegram.get_config_cb = lambda: engine.config.to_dict()
     _telegram.optimize_cb = lambda: engine.signal_generator.optimize_parameters()
 
     def _toggle_algo_from_telegram(enabled: bool) -> bool:
