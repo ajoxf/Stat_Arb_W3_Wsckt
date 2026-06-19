@@ -710,7 +710,7 @@ class TelegramNotifier:
         rows += [
             f"<code>{D}</code>",
             R("Hurst Filter", hurst_f),
-            R("STD Filter", std_f),
+            R("Edge Filter", std_f),
             R("Trend Filter", "ON" if trend_en else "OFF"),
         ]
 

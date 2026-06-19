@@ -36,7 +36,9 @@ class ReplayConfig:
 
     # Filters
     std_filter_enabled: bool = True
-    min_std_multiple: float = 1.0
+    min_std_multiple: float = 1.0           # min edge ratio (capture ÷ cost)
+    profit_target_sigma_frac: float = 0.0   # f for the capture estimate / floor coherence
+    profit_target_min_cost_mult: float = 0.0
     hurst_enabled: bool = False
     hurst_threshold: float = 0.5
     hurst_window: int = 100
@@ -144,10 +146,22 @@ def replay_pair(spot_df: pd.DataFrame,
     entry_mean: float = 0.0
     entry_std: float = 0.0
 
-    # Pre-compute STD filter passes: ratio = std / (round_trip_bps/10000 * spot_price)
+    # Pre-compute edge-filter passes — mirror of signals._check_std_filter:
+    # edge_ratio = expected capturable move / round-trip cost, in spread units.
+    #   capture = f*|z|*std            (when a sigma-fraction target is set)
+    #           = (|z|-exit)*std       (else: full z-reversion distance)
+    # Required multiple is floored at the exit cost-floor multiple so entry can
+    # never be looser than the exit (the E >= cost_mult coherence condition).
     cost_in_price = (round_trip_bps / 10000.0) * spot_arr
-    std_ratio = rolling_std.to_numpy() / np.where(cost_in_price > 0, cost_in_price, np.nan)
-    std_pass = (~cfg.std_filter_enabled) | (std_ratio >= cfg.min_std_multiple)
+    z_abs = np.abs(zscore.to_numpy())
+    std_np = rolling_std.to_numpy()
+    if (cfg.profit_target_sigma_frac or 0.0) > 0:
+        capture = cfg.profit_target_sigma_frac * z_abs * std_np
+    else:
+        capture = np.maximum(z_abs - cfg.exit_threshold, 0.0) * std_np
+    edge_ratio = capture / np.where(cost_in_price > 0, cost_in_price, np.nan)
+    required = max(cfg.min_std_multiple, cfg.profit_target_min_cost_mult or 0.0)
+    std_pass = (~cfg.std_filter_enabled) | (edge_ratio >= required)
 
     # Pre-compute Hurst on a sliding window if enabled (expensive — skip if disabled)
     hurst_pass = np.ones(len(merged), dtype=bool)

@@ -490,7 +490,7 @@
                     </div>
                     <div class="col-3 text-center">
                         <span id="std-status" class="badge bg-secondary" style="font-size: 0.65rem;">-</span>
-                        <div style="font-size: 0.6rem;" class="text-secondary">STD</div>
+                        <div style="font-size: 0.6rem;" class="text-secondary">Edge</div>
                     </div>
                     <div class="col-3 text-center">
                         <span id="regime-filter-status" class="badge bg-secondary" style="font-size: 0.65rem;">-</span>
@@ -2118,7 +2118,7 @@ function updateFilterStatus(elementId, passed, value) {
                 statusText.className = 'fw-bold text-danger';
                 let blockedBy = [];
                 if (hurstOk === false) blockedBy.push('Hurst');
-                if (stdOk === false) blockedBy.push('STD');
+                if (stdOk === false) blockedBy.push('Edge');
                 statusDetail.textContent = 'Blocked by: ' + blockedBy.join(', ');
                 progressBar.className = 'progress-bar bg-danger';
             }

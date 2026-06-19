@@ -416,24 +416,32 @@ class SignalGenerator:
 
     def _check_std_filter(self) -> Tuple[bool, float]:
         """
-        Check if spread STD is sufficient to cover trading costs.
+        Cost-based entry gate: admit a trade only if its *expected capturable
+        move* clears the round-trip cost by the required multiple.
 
-        Uses separate spot and futures fees since they differ significantly:
-          Spot (non-VIP):    Maker 8 bps, Taker 10 bps
-          Futures (non-VIP): Maker 2 bps, Taker  5 bps
+        This is the entry-side mirror of the exit profit-target cost floor
+        (trading_engine._effective_exit_targets). Both reduce to one
+        dimensionless test — expected profit ÷ round-trip cost — so a trade we
+        admit is one whose profit target both clears costs *and* is reachable
+        within the move. The required multiple is floored at the exit cost-floor
+        multiple (``profit_target_min_cost_mult``) so entry can never be looser
+        than the exit demands; that single inequality (E ≥ cost_mult) keeps the
+        two gates coherent.
 
-        Round-trip cost = entry (spot + futures) + exit (spot + futures) + slippage × 4.
+        Expected capturable move, in spread-price units:
+          * sigma-fraction target set (f > 0): ``f × |Z_entry| × σ`` — the exact
+            distance the profit target aims for, so entry and exit chase the
+            same number.
+          * else (pure z-score / fixed-$ exit): ``(|Z_entry| − exit_threshold) ×
+            σ`` — the full mean-reversion distance to the exit band.
 
-        The comparison must be in *spread units*, not dollar-per-leg units.
-        Spread = futures - beta*spot, so a $1 spread move translates to
-        ``futures_qty`` dollars of PnL, where ``futures_qty = position_size /
-        (beta * spot_price)`` (engine's sizing rule). Breakeven spread move is
-        therefore ``rt_bps/10000 * beta * spot_price`` — note the beta factor.
-        For the classic basis trade (beta = 1) this reduces to the original
-        ``rt_bps/10000 * spot_price``; for cross pairs (beta != 1) it correctly
-        scales cost up to the futures-price magnitude.
+        Round-trip cost = fees (4 legs) + slippage (4 legs), converted to spread
+        units: ``rt_bps/10000 × beta × spot_price``. The beta factor scales cost
+        to the futures-price magnitude for cross pairs (beta = 1 → classic basis
+        trade). Uses the same per-leg fee schedule as the realized close and the
+        engine's live P&L, so the three can never silently diverge.
 
-        Returns (passed, profitability_ratio)
+        Returns (passed, edge_ratio) where edge_ratio = expected_move / cost.
         """
         if not self.config.std_filter_enabled:
             return True, float('inf')
@@ -448,12 +456,29 @@ class SignalGenerator:
         total_cost_bps = self._compute_round_trip_cost()['round_trip_bps']
         beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
         costs_price = (total_cost_bps / 10000) * beta * spot_price
+        if costs_price <= 0:
+            return True, float('inf')
 
-        # Profitability ratio: how many times STD covers the costs
-        profitability_ratio = self.current_std / costs_price if costs_price > 0 else float('inf')
+        # Expected capturable move in spread-price units (see docstring).
+        abs_z = abs(self.current_zscore)
+        f = getattr(self.config, 'profit_target_sigma_frac', 0.0) or 0.0
+        if f > 0:
+            capture_price = f * abs_z * self.current_std
+        else:
+            exit_z = getattr(self.config, 'exit_threshold', 0.0) or 0.0
+            capture_price = max(abs_z - exit_z, 0.0) * self.current_std
 
-        passed = profitability_ratio >= self.config.min_std_multiple
-        return passed, profitability_ratio
+        # Edge ratio: how many times the capturable move covers the cost.
+        edge_ratio = capture_price / costs_price
+
+        # Coherence: the entry edge multiple must be at least the exit cost-floor
+        # multiple, so every admitted trade's profit target clears its own floor.
+        required = max(
+            getattr(self.config, 'min_std_multiple', 0.0) or 0.0,
+            getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0,
+        )
+        passed = edge_ratio >= required
+        return passed, edge_ratio
 
     def _track_sd_touch(self, zscore: float, spot_price: float, futures_price: float) -> Optional[SDTouchEvent]:
         """Track when Z-score crosses SD levels."""
@@ -554,7 +579,11 @@ class SignalGenerator:
                     blocked_reason = "Hurst filter (H={:.3f} > {:.2f})".format(
                         self.current_hurst, self.config.hurst_threshold)
                 elif not std_ok:
-                    blocked_reason = "STD filter (volatility too low)"
+                    _, _edge = self._check_std_filter()
+                    _req = max(self.config.min_std_multiple,
+                               getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0)
+                    blocked_reason = ("Edge filter: expected move {:.2f}x cost < {:.2f}x required"
+                                      .format(_edge, _req))
                 elif z_triggers_long and self.current_zscore >= self.config.stop_loss_threshold:
                     blocked_reason = "Z-score at stop-loss level ({:.2f} >= {:.2f})".format(
                         self.current_zscore, self.config.stop_loss_threshold)
@@ -735,7 +764,12 @@ class SignalGenerator:
             'hurst_ok': hurst_ok if data_ready else None,
             'std_filter_ok': std_ok if data_ready else None,
             'std_ratio': round(std_ratio, 2) if std_ratio != float('inf') else None,
-            'std_ratio_required': self.config.min_std_multiple,
+            # Effective required multiple = max(min_std_multiple, exit cost-floor
+            # multiple) — the coherence floor the entry gate actually applies.
+            'std_ratio_required': round(max(
+                self.config.min_std_multiple,
+                getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0,
+            ), 2),
             'std_filter_enabled': self.config.std_filter_enabled,
             'order_mode': cost['entry_mode'],
             'fee_bps_used': round(cost['entry_cost_bps'], 2),
