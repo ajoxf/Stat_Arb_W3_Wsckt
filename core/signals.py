@@ -228,13 +228,14 @@ class SignalGenerator:
             self.current_zscore = 0.0
 
     def _spread_slope(self) -> float:
-        """Linear slope of the spread over the last ~500 ticks (or 1/4 of the lookback).
+        """Linear slope of the spread over the last 20% of the lookback window
+        (~1440 ticks at the default 7200-tick lookback ≈ 24 minutes at 1 tick/s).
 
         Positive slope → spread trending up (Leg B outperforming Leg A) → SHORT-favourable.
         Negative slope → spread trending down (Leg A outperforming Leg B) → LONG-favourable.
         Returns 0.0 when there is insufficient data.
         """
-        n = min(500, max(20, len(self.spread_history) // 4))
+        n = max(20, self.lookback // 5)
         if len(self.spread_history) < n:
             return 0.0
         recent = np.array(list(self.spread_history)[-n:])
