@@ -774,9 +774,18 @@ class TradingEngine:
             try:
                 success = await self._execute_entry_orders(trade, signal)
                 if not success:
-                    # Apply cooldown after any failed order to prevent rapid retry
-                    # This is critical: without this, the engine retries on every tick
-                    cooldown_sec = max(30, getattr(self.config, 'entry_cooldown_seconds', 60))
+                    # OKX order-flow throttle (cancelSource=31) needs a much longer
+                    # backoff than the standard entry cooldown — retrying quickly just
+                    # makes the throttle worse and pushes the cancel ratio even higher.
+                    throttled = getattr(last_spread_order, 'throttled', False) if last_spread_order else False
+                    if throttled:
+                        cooldown_sec = 300  # 5 minutes for throttle recovery
+                        logger.warning(
+                            "OKX order-flow throttle detected — applying %ds cooldown "
+                            "to allow cancel ratio to recover", cooldown_sec,
+                        )
+                    else:
+                        cooldown_sec = max(30, getattr(self.config, 'entry_cooldown_seconds', 60))
                     self._entry_cooldown_until = datetime.utcnow() + timedelta(seconds=cooldown_sec)
                     logger.warning("Entry orders failed - applying %ds cooldown to prevent rapid retry",
                                    cooldown_sec)

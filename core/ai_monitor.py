@@ -136,6 +136,14 @@ class AIMonitor:
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:
+            err_str = str(exc)
+            if "credit balance" in err_str.lower() or "insufficient" in err_str.lower():
+                logger.warning(
+                    "AI monitor: Anthropic API credits exhausted — disabling monitor. "
+                    "Add credits at console.anthropic.com to re-enable (requires restart)."
+                )
+                self._stop = True
+                return
             logger.warning("AI monitor: API call failed: %s", exc)
             return
 

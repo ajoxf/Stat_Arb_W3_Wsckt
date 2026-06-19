@@ -68,6 +68,7 @@ class SpreadOrder:
     timeout_at: datetime = None
     is_entry: bool = True  # True for entry, False for exit
     position_type: str = ""  # LONG or SHORT
+    throttled: bool = False  # True if OKX order-flow throttle (cancelSource=31) fired
 
     def __post_init__(self):
         if self.created_at is None:
@@ -1011,10 +1012,10 @@ class OrderExecutor:
                         )
                     elif status["state"] == "canceled":
                         spread_order.spot_leg.status = LegStatus.CANCELLED
-                        logger.warning(
-                            "Spot leg cancelled: %s",
-                            self._explain_cancel(status),
-                        )
+                        cancel_reason = self._explain_cancel(status)
+                        logger.warning("Spot leg cancelled: %s", cancel_reason)
+                        if str(status.get("cancel_source") or "") == "31":
+                            spread_order.throttled = True
             except Exception as e:
                 logger.error("Error checking spot order status: %s", e)
 
@@ -1043,10 +1044,10 @@ class OrderExecutor:
                         spread_order.futures_leg.filled_price = status["filled_price"]
                     elif status["state"] == "canceled":
                         spread_order.futures_leg.status = LegStatus.CANCELLED
-                        logger.warning(
-                            "Futures leg cancelled: %s",
-                            self._explain_cancel(status),
-                        )
+                        cancel_reason = self._explain_cancel(status)
+                        logger.warning("Futures leg cancelled: %s", cancel_reason)
+                        if str(status.get("cancel_source") or "") == "31":
+                            spread_order.throttled = True
             except Exception as e:
                 logger.error("Error checking futures order status: %s", e)
 
