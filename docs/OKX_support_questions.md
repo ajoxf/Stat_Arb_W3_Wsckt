@@ -104,6 +104,27 @@ Our core risk is one leg filling while the other doesn't.
 26. Any guidance on **funding-rate scheduling** that materially affects holding a
     delta-neutral perp/perp spread across funding windows.
 
+## Priority 8 — Order history P&L semantics
+
+When reconciling our internal engine P&L against the OKX Order Log (UI and
+`GET /api/v5/trade/fills`), we observe large per-leg figures (+$1.50 / −$1.03 for a
+~$1,400 notional trade) that differ significantly from our combined net P&L. We need
+to understand the exact definition to reconcile correctly.
+
+27. In the Order History UI and the `fills` API response, is the **`pnl` field on a
+    closing order**:
+    - **Gross** (price-difference gain/loss only, before fees) — i.e. `(exit_price −
+      avg_entry_price) × qty`; or
+    - **Net** (after the fees shown in the same record's `fee` field)?
+28. Does the `pnl` field cover **only the exit-side fees**, or does it also include the
+    **entry fees** paid when the position was originally opened? Our order log shows a
+    `fee` column (e.g. −$0.0504) alongside a `pnl` column (e.g. −$1.027) — are these
+    additive to get true net, or is fee already baked into pnl?
+29. For a **two-leg delta-neutral pair** (e.g. long BTC-USDT-SWAP + short
+    ETH-USDT-SWAP), each leg shows an independent `pnl`. Is there any OKX endpoint or
+    report that presents the **combined net P&L across both legs of a hedged position**,
+    rather than requiring us to sum and net them ourselves?
+
 ---
 
 ### Our current mitigations (for context)
@@ -111,5 +132,8 @@ Our core risk is one leg filling while the other doesn't.
 - Treat unconfirmed MARKET fills as unfilled (poll rather than assume).
 - Apply a 5-minute cooldown after a `cancelSource=31` event.
 - Synchronized two-leg execution with optional TWAP slicing and a minimum-fill-ratio guard.
+- Compute combined net P&L internally as: `(spread_change × qty) − all four legs' fees
+  (entry + exit for both instruments)`, since the OKX order log shows per-leg figures
+  only.
 
 We'd value a short call with your technical team on Priorities 1–2. Thank you.
