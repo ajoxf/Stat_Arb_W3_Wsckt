@@ -95,6 +95,11 @@ class TradingEngine:
         # by _close_position to stamp the granular reason onto the trade record.
         self._override_exit_reason: Optional[str] = None
 
+        # signal_generator.total_ticks at the moment the open trade was entered.
+        # Lets the half-life-multiple max-hold measure periods-held in the same
+        # unit as the half-life. None = no open trade (or reset after restart).
+        self._entry_tick_count: Optional[int] = None
+
         # Small cache for the live balance check so a stream of fast signals
         # doesn't hammer the exchange's account endpoint. 3s is short enough
         # that withdrawals / external trades won't go undetected for long.
@@ -614,10 +619,62 @@ class TradingEngine:
         )
         return pnl_gross - fees_usd
 
+    def _capital_at_risk(self, trade: Trade) -> float:
+        """Capital actually locked by the open trade: per-leg margin + M2M
+        buffer, computed from entry fills. Same formula as the realized close,
+        used as the denominator for the %-of-capital dollar stop."""
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        spot_qty = trade.quantity * beta
+        leg_a_deriv = is_derivative(self.config.spot_symbol)
+        leg_b_deriv = is_derivative(self.config.futures_symbol)
+        leg_a_notional = abs(trade.entry_spot_price * spot_qty)
+        leg_b_notional = abs(trade.entry_futures_price * trade.quantity)
+        leg_a_lev = max(self.config.spot_leverage    if leg_a_deriv else 1, 1)
+        leg_b_lev = max(self.config.futures_leverage if leg_b_deriv else 1, 1)
+        margin = leg_a_notional / leg_a_lev + leg_b_notional / leg_b_lev
+        buf = getattr(self.config, 'm2m_buffer_pct', 0.0) or 0.0
+        return margin * (1 + buf / 100.0)
+
+    def _effective_exit_targets(self, trade: Trade) -> Dict[str, Any]:
+        """Resolve the active profit-target $, dollar-stop $, and max-hold
+        periods for the open trade, preferring the scale-invariant config form
+        (sigma fraction / capital % / half-life multiple) and falling back to
+        the fixed-dollar/minute form. Values <= 0 mean that override is off.
+        """
+        cfg = self.config
+        # Profit target $
+        sigma_frac = getattr(cfg, 'profit_target_sigma_frac', 0.0) or 0.0
+        if sigma_frac > 0:
+            target_usd = (sigma_frac * abs(trade.entry_zscore)
+                          * trade.entry_spread_std * trade.quantity)
+        else:
+            target_usd = getattr(cfg, 'profit_target_usd', 0.0) or 0.0
+        # Dollar stop $
+        cap_pct = getattr(cfg, 'stop_loss_capital_pct', 0.0) or 0.0
+        if cap_pct > 0:
+            stop_usd = cap_pct / 100.0 * self._capital_at_risk(trade)
+        else:
+            stop_usd = getattr(cfg, 'max_loss_usd', 0.0) or 0.0
+        # Max hold (in periods; half-life is measured in periods)
+        hl_mult = getattr(cfg, 'max_hold_halflife_mult', 0.0) or 0.0
+        max_hold_periods = 0.0
+        max_hold_minutes = getattr(cfg, 'max_hold_minutes', 0.0) or 0.0
+        if hl_mult > 0:
+            hl = self.signal_generator.current_half_life
+            if hl and hl != float('inf'):
+                max_hold_periods = hl_mult * hl
+        return {
+            'target_usd': target_usd,
+            'stop_usd': stop_usd,
+            'max_hold_periods': max_hold_periods,   # 0 = half-life form off/unavailable
+            'max_hold_minutes': max_hold_minutes,   # fixed-minutes fallback
+        }
+
     def _check_override_exit(self, signal: Signal) -> Optional[Signal]:
         """Return a synthesized EXIT/STOP_LOSS Signal if a fast-exit override
         (dollar stop / profit target / max hold) fires for the open trade, else
-        None. Dollar stop is checked first (risk before reward).
+        None. Dollar stop is checked first (risk before reward). Each override
+        uses its scale-invariant form when set, else the fixed-$ fallback.
         """
         # Clear any stale reason first so a value left over from a throttled
         # close attempt can't get stamped onto a later unrelated exit.
@@ -625,11 +682,14 @@ class TradingEngine:
         trade = self.open_trade
         if not trade:
             return None
-        cfg = self.config
-        profit_target = getattr(cfg, 'profit_target_usd', 0.0) or 0.0
-        max_hold_min  = getattr(cfg, 'max_hold_minutes', 0.0) or 0.0
-        max_loss      = getattr(cfg, 'max_loss_usd', 0.0) or 0.0
-        if profit_target <= 0 and max_hold_min <= 0 and max_loss <= 0:
+
+        t = self._effective_exit_targets(trade)
+        target_usd = t['target_usd']
+        stop_usd = t['stop_usd']
+        max_hold_periods = t['max_hold_periods']
+        max_hold_minutes = t['max_hold_minutes']
+        if (target_usd <= 0 and stop_usd <= 0
+                and max_hold_periods <= 0 and max_hold_minutes <= 0):
             return None  # all overrides disabled — pure z-score behaviour
 
         net_pnl = self._live_net_pnl(trade)
@@ -639,17 +699,26 @@ class TradingEngine:
         exit_type = None
         reason_tag = None
         reason_detail = None
-        if max_loss > 0 and net_pnl <= -abs(max_loss):
+        if stop_usd > 0 and net_pnl <= -abs(stop_usd):
             exit_type, reason_tag = "STOP_LOSS", "DOLLAR_STOP"
-            reason_detail = f"net ${net_pnl:.2f} <= -${max_loss:.2f}"
-        elif profit_target > 0 and net_pnl >= profit_target:
+            reason_detail = f"net ${net_pnl:.2f} <= -${stop_usd:.2f}"
+        elif target_usd > 0 and net_pnl >= target_usd:
             exit_type, reason_tag = "EXIT", "PROFIT_TARGET"
-            reason_detail = f"net ${net_pnl:.2f} >= ${profit_target:.2f}"
-        elif max_hold_min > 0 and trade.entry_time:
-            held_min = (datetime.utcnow() - trade.entry_time).total_seconds() / 60.0
-            if held_min >= max_hold_min and net_pnl > 0:
-                exit_type, reason_tag = "EXIT", "MAX_HOLD"
-                reason_detail = f"{held_min:.0f}m >= {max_hold_min:.0f}m, net +${net_pnl:.2f}"
+            reason_detail = f"net ${net_pnl:.2f} >= ${target_usd:.2f}"
+        elif net_pnl > 0:
+            # Max hold only fires when already profitable (lock in decaying edge).
+            if max_hold_periods > 0 and self._entry_tick_count is not None:
+                periods_held = self.signal_generator.total_ticks - self._entry_tick_count
+                if periods_held >= max_hold_periods:
+                    exit_type, reason_tag = "EXIT", "MAX_HOLD"
+                    reason_detail = (f"{periods_held} periods >= "
+                                     f"{max_hold_periods:.0f} (={ getattr(self.config,'max_hold_halflife_mult',0) }×half-life), "
+                                     f"net +${net_pnl:.2f}")
+            elif max_hold_minutes > 0 and trade.entry_time:
+                held_min = (datetime.utcnow() - trade.entry_time).total_seconds() / 60.0
+                if held_min >= max_hold_minutes:
+                    exit_type, reason_tag = "EXIT", "MAX_HOLD"
+                    reason_detail = f"{held_min:.0f}m >= {max_hold_minutes:.0f}m, net +${net_pnl:.2f}"
 
         if not exit_type:
             return None
@@ -910,6 +979,7 @@ class TradingEngine:
                 self._executing_trade = False
 
         self.open_trade = trade
+        self._entry_tick_count = self.signal_generator.total_ticks
         self.state.current_position = position_type
         self.signal_generator.set_position(
             position_type,
@@ -1067,6 +1137,7 @@ class TradingEngine:
         self.state.current_position = "NONE"
         self.signal_generator.set_position("NONE")
         self.open_trade = None
+        self._entry_tick_count = None
 
         # Apply post-stop-loss cooldown to prevent immediate re-entry
         if signal.signal_type == "STOP_LOSS":
@@ -1355,6 +1426,7 @@ class TradingEngine:
                         self.open_trade.exit_reason = "MISMATCH_AUTO_CLEAR"
                     self.state.current_position = "NONE"
                     self.open_trade = None
+                    self._entry_tick_count = None
                     self._last_exit_attempt = None
                     self._orphan_mismatch_count = 0
                     get_notifier().notify_error(
@@ -1967,6 +2039,18 @@ class TradingEngine:
             if self.open_trade.entry_time:
                 held_min = (datetime.utcnow() - self.open_trade.entry_time).total_seconds() / 60.0
                 open_trade_dict['held_minutes'] = round(held_min, 1)
+            # Resolve the active fast-exit targets so the dashboard can show what
+            # the scale-invariant settings translate to in live dollars/periods.
+            try:
+                tg = self._effective_exit_targets(self.open_trade)
+                open_trade_dict['exit_target_usd'] = round(tg['target_usd'], 2) if tg['target_usd'] > 0 else 0.0
+                open_trade_dict['exit_stop_usd'] = round(tg['stop_usd'], 2) if tg['stop_usd'] > 0 else 0.0
+                if tg['max_hold_periods'] > 0 and self._entry_tick_count is not None:
+                    periods_held = self.signal_generator.total_ticks - self._entry_tick_count
+                    open_trade_dict['max_hold_periods'] = round(tg['max_hold_periods'])
+                    open_trade_dict['periods_held'] = periods_held
+            except Exception:
+                pass
 
         return {
             'is_running': self.state.is_running,
@@ -2014,6 +2098,7 @@ class TradingEngine:
         self.state.algo_enabled = algo_was_enabled
 
         self.open_trade = None
+        self._entry_tick_count = None
         self.spot_tick = None
         self.futures_tick = None
         self._stop_loss_cooldown_until = None

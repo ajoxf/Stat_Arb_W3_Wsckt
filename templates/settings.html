@@ -108,10 +108,31 @@
                     </div>
 
                     <!-- Fast-Exit Overrides (trending-market protection) -->
-                    <div class="row mb-3">
+                    <div class="row mb-2">
                         <div class="col-12 mb-2">
                             <h6 class="text-secondary mb-1"><i class="bi bi-lightning-charge me-2"></i>Fast-Exit Overrides</h6>
-                            <small class="text-secondary">Exit on dollars/time instead of waiting for Z to fully revert &mdash; protects profit in trending markets. All values are <strong>NET</strong> (after round-trip fees). Set to <strong>0</strong> to disable. Z-score exit/stop-loss remain active as backstops.</small>
+                            <small class="text-secondary">Exit on dollars/time instead of waiting for Z to fully revert &mdash; protects profit in trending markets. All P&L is <strong>NET</strong> (after round-trip fees). Set to <strong>0</strong> to disable. Z-score exit/stop-loss remain active as backstops.
+                            <br><strong>Scale-invariant (recommended)</strong> &mdash; these auto-adjust to position size, volatility and the pair, so they keep working unchanged as you scale up. They take precedence over the fixed-$ fields below when set.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Target (&sigma;-fraction)</label>
+                            <input type="number" class="form-control" id="profit_target_sigma_frac" name="profit_target_sigma_frac" value="{{ config.profit_target_sigma_frac }}" step="0.05" min="0" max="2">
+                            <small class="text-secondary">Fraction of expected reversion. <strong>0.6&ndash;0.7</strong> recommended (target = f &times; |Z<sub>entry</sub>| &times; &sigma; &times; qty)</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Hold (&times; half-life)</label>
+                            <input type="number" class="form-control" id="max_hold_halflife_mult" name="max_hold_halflife_mult" value="{{ config.max_hold_halflife_mult }}" step="0.5" min="0" max="20">
+                            <small class="text-secondary">Multiple of measured half-life. <strong>1.5&ndash;2.0</strong> recommended. Exits only if net P&L &gt; 0</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Dollar Stop (% capital)</label>
+                            <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.1" min="0" max="20">
+                            <small class="text-secondary">% of capital-at-risk per trade. <strong>0.5&ndash;1.0</strong> recommended</small>
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-12 mb-1">
+                            <small class="text-secondary"><i class="bi bi-sliders me-1"></i><strong>Fixed-$ fallback</strong> (optional hard caps) &mdash; used only when the matching scale-invariant field above is 0.</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Profit Target (USD)</label>
@@ -1354,8 +1375,11 @@
             entry_threshold: parseFloat(document.getElementById('entry_threshold').value),
             exit_threshold: parseFloat(document.getElementById('exit_threshold').value),
             stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
+            profit_target_sigma_frac: parseFloat(document.getElementById('profit_target_sigma_frac').value) || 0,
             profit_target_usd: parseFloat(document.getElementById('profit_target_usd').value) || 0,
+            max_hold_halflife_mult: parseFloat(document.getElementById('max_hold_halflife_mult').value) || 0,
             max_hold_minutes: parseFloat(document.getElementById('max_hold_minutes').value) || 0,
+            stop_loss_capital_pct: parseFloat(document.getElementById('stop_loss_capital_pct').value) || 0,
             max_loss_usd: parseFloat(document.getElementById('max_loss_usd').value) || 0,
             exit_signal_mode: document.getElementById('exit_signal_mode').value,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
@@ -1488,8 +1512,11 @@
                 document.getElementById('entry_threshold').value = config.entry_threshold;
                 document.getElementById('exit_threshold').value = config.exit_threshold;
                 document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;
+                document.getElementById('profit_target_sigma_frac').value = config.profit_target_sigma_frac || 0;
                 document.getElementById('profit_target_usd').value = config.profit_target_usd || 0;
+                document.getElementById('max_hold_halflife_mult').value = config.max_hold_halflife_mult || 0;
                 document.getElementById('max_hold_minutes').value = config.max_hold_minutes || 0;
+                document.getElementById('stop_loss_capital_pct').value = config.stop_loss_capital_pct || 0;
                 document.getElementById('max_loss_usd').value = config.max_loss_usd || 0;
                 document.getElementById('exit_signal_mode').value = config.exit_signal_mode || 'zscore';
                 document.getElementById('lookback_period').value = config.lookback_period;

@@ -71,9 +71,32 @@ class TradingConfig:
     # All default 0 = DISABLED, preserving the pure z-score exit behaviour.
     # "Net" P&L means gross minus the same round-trip fee estimate used at the
     # realized close, so these fire on take-home dollars, not gross.
-    profit_target_usd: float = 0.0   # >0: exit as soon as live NET P&L >= this
-    max_hold_minutes: float = 0.0    # >0: exit after N minutes IF net P&L > 0
-    max_loss_usd: float = 0.0        # >0: exit when live NET P&L <= -this (dollar stop)
+    #
+    # Two flavours per override: a SCALE-INVARIANT form (recommended — keeps
+    # working unchanged across position sizes and pairs) and a fixed-DOLLAR
+    # form (simple hard cap). The scale-invariant form takes precedence when
+    # set (>0); otherwise the dollar form is used; if both 0 the override is off.
+    #
+    # Profit target:
+    #   scale-invariant = fraction of the expected full reversion in dollars:
+    #     target$ = sigma_frac × |entry_zscore| × entry_spread_std × quantity
+    #   recommended sigma_frac ≈ 0.6–0.7 (capture ~two-thirds of the move).
+    profit_target_sigma_frac: float = 0.0
+    profit_target_usd: float = 0.0   # fixed-$ fallback
+    #
+    # Max hold:
+    #   scale-invariant = multiple of the measured mean-reversion half-life:
+    #     exit when periods_held >= halflife_mult × half_life (and net P&L > 0)
+    #   recommended halflife_mult ≈ 1.5–2.0.
+    max_hold_halflife_mult: float = 0.0
+    max_hold_minutes: float = 0.0    # fixed-minutes fallback
+    #
+    # Dollar stop:
+    #   scale-invariant = percent of capital-at-risk (per-leg margin + buffer):
+    #     stop$ = capital_pct/100 × capital_at_risk
+    #   recommended capital_pct ≈ 0.5–1.0 (% of locked capital per trade).
+    stop_loss_capital_pct: float = 0.0
+    max_loss_usd: float = 0.0        # fixed-$ fallback
 
     # Exit-signal mode. The default ("zscore") matches the original behaviour:
     # exit when the rolling z-score reverts to ±exit_threshold. The problem is
@@ -185,8 +208,11 @@ class TradingConfig:
             'entry_threshold': self.entry_threshold,
             'exit_threshold': self.exit_threshold,
             'stop_loss_threshold': self.stop_loss_threshold,
+            'profit_target_sigma_frac': self.profit_target_sigma_frac,
             'profit_target_usd': self.profit_target_usd,
+            'max_hold_halflife_mult': self.max_hold_halflife_mult,
             'max_hold_minutes': self.max_hold_minutes,
+            'stop_loss_capital_pct': self.stop_loss_capital_pct,
             'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,
             'lookback_period': self.lookback_period,

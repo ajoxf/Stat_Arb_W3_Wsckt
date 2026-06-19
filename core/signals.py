@@ -59,6 +59,11 @@ class SignalGenerator:
         self.last_stats_update: Optional[datetime] = None
         self._stats_initialized: bool = False
 
+        # Monotonic count of spread samples ever added. Unlike len(spread_history)
+        # (capped by the deque maxlen) this keeps counting, so the engine can
+        # measure how many periods a trade has been held vs the half-life.
+        self.total_ticks: int = 0
+
         # SD touch tracking
         self.last_sd_level: float = 0.0
         self.sd_touch_events: List[SDTouchEvent] = []
@@ -185,6 +190,7 @@ class SignalGenerator:
         self.spot_prices.append(spot_price)
         self.futures_prices.append(futures_price)
         self.spread_history.append(spread)
+        self.total_ticks += 1
 
         self.current_spread = spread
         self._update_statistics()
@@ -929,3 +935,4 @@ class SignalGenerator:
         self.last_stats_update = None
         self._stats_initialized = False
         self.last_blocked_signal = None
+        self.total_ticks = 0

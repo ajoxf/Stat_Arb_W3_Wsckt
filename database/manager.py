@@ -61,8 +61,11 @@ class DatabaseManager:
                     entry_threshold REAL DEFAULT 2.0,
                     exit_threshold REAL DEFAULT 0.5,
                     stop_loss_threshold REAL DEFAULT 4.0,
+                    profit_target_sigma_frac REAL DEFAULT 0.0,
                     profit_target_usd REAL DEFAULT 0.0,
+                    max_hold_halflife_mult REAL DEFAULT 0.0,
                     max_hold_minutes REAL DEFAULT 0.0,
+                    stop_loss_capital_pct REAL DEFAULT 0.0,
                     max_loss_usd REAL DEFAULT 0.0,
                     exit_signal_mode TEXT DEFAULT 'zscore',
                     lookback_period INTEGER DEFAULT 100,
@@ -345,6 +348,12 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_minutes REAL DEFAULT 0.0")
             if 'max_loss_usd' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_loss_usd REAL DEFAULT 0.0")
+            if 'profit_target_sigma_frac' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_sigma_frac REAL DEFAULT 0.0")
+            if 'max_hold_halflife_mult' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_halflife_mult REAL DEFAULT 0.0")
+            if 'stop_loss_capital_pct' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN stop_loss_capital_pct REAL DEFAULT 0.0")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -438,8 +447,11 @@ class DatabaseManager:
                     entry_slices=row["entry_slices"] if "entry_slices" in row.keys() else 1,
                     entry_slice_interval_sec=row["entry_slice_interval_sec"] if "entry_slice_interval_sec" in row.keys() else 5.0,
                     min_fill_ratio=row["min_fill_ratio"] if "min_fill_ratio" in row.keys() else 0.95,
+                    profit_target_sigma_frac=row["profit_target_sigma_frac"] if "profit_target_sigma_frac" in row.keys() else 0.0,
                     profit_target_usd=row["profit_target_usd"] if "profit_target_usd" in row.keys() else 0.0,
+                    max_hold_halflife_mult=row["max_hold_halflife_mult"] if "max_hold_halflife_mult" in row.keys() else 0.0,
                     max_hold_minutes=row["max_hold_minutes"] if "max_hold_minutes" in row.keys() else 0.0,
+                    stop_loss_capital_pct=row["stop_loss_capital_pct"] if "stop_loss_capital_pct" in row.keys() else 0.0,
                     max_loss_usd=row["max_loss_usd"] if "max_loss_usd" in row.keys() else 0.0,
                 )
 
@@ -499,8 +511,11 @@ class DatabaseManager:
                     entry_slices = ?,
                     entry_slice_interval_sec = ?,
                     min_fill_ratio = ?,
+                    profit_target_sigma_frac = ?,
                     profit_target_usd = ?,
+                    max_hold_halflife_mult = ?,
                     max_hold_minutes = ?,
+                    stop_loss_capital_pct = ?,
                     max_loss_usd = ?
                 WHERE id = 1
             """, (
@@ -552,8 +567,11 @@ class DatabaseManager:
                 config.entry_slices,
                 config.entry_slice_interval_sec,
                 config.min_fill_ratio,
+                config.profit_target_sigma_frac,
                 config.profit_target_usd,
+                config.max_hold_halflife_mult,
                 config.max_hold_minutes,
+                config.stop_loss_capital_pct,
                 config.max_loss_usd,
             ))
             logger.info("Config saved")
