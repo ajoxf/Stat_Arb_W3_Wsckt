@@ -131,6 +131,16 @@
                         </div>
                     </div>
                     <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Cost Floor (&times; fees)</label>
+                            <input type="number" class="form-control" id="profit_target_min_cost_mult" name="profit_target_min_cost_mult" value="{{ config.profit_target_min_cost_mult }}" step="0.25" min="0" max="10">
+                            <small class="text-secondary"><strong>1.0</strong> recommended. <strong>0</strong> = off</small>
+                        </div>
+                        <div class="col-md-8 d-flex align-items-end">
+                            <small class="text-secondary mb-1">Safety floor on the profit target &mdash; it can never fire below this multiple of the trade's round-trip fees. Live P&L is measured at the <em>mid</em>, but a real exit <em>crosses the spread</em>, so without this a statistically-small target could &ldquo;hit&rdquo; yet fill at a net loss. At <strong>1.0</strong> a profit-target exit always nets at least its own fees back; at <strong>1.5</strong> it clears fees plus a 50% margin. Applies to both the &sigma;-fraction and fixed-$ targets.</small>
+                        </div>
+                    </div>
+                    <div class="row mb-3">
                         <div class="col-12 mb-1">
                             <small class="text-secondary"><i class="bi bi-sliders me-1"></i><strong>Fixed-$ fallback</strong> (optional hard caps) &mdash; used only when the matching scale-invariant field above is 0.</small>
                         </div>
@@ -1377,6 +1387,7 @@
             stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
             profit_target_sigma_frac: parseFloat(document.getElementById('profit_target_sigma_frac').value) || 0,
             profit_target_usd: parseFloat(document.getElementById('profit_target_usd').value) || 0,
+            profit_target_min_cost_mult: parseFloat(document.getElementById('profit_target_min_cost_mult').value) || 0,
             max_hold_halflife_mult: parseFloat(document.getElementById('max_hold_halflife_mult').value) || 0,
             max_hold_minutes: parseFloat(document.getElementById('max_hold_minutes').value) || 0,
             stop_loss_capital_pct: parseFloat(document.getElementById('stop_loss_capital_pct').value) || 0,
@@ -1514,6 +1525,7 @@
                 document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;
                 document.getElementById('profit_target_sigma_frac').value = config.profit_target_sigma_frac || 0;
                 document.getElementById('profit_target_usd').value = config.profit_target_usd || 0;
+                document.getElementById('profit_target_min_cost_mult').value = config.profit_target_min_cost_mult || 0;
                 document.getElementById('max_hold_halflife_mult').value = config.max_hold_halflife_mult || 0;
                 document.getElementById('max_hold_minutes').value = config.max_hold_minutes || 0;
                 document.getElementById('stop_loss_capital_pct').value = config.stop_loss_capital_pct || 0;

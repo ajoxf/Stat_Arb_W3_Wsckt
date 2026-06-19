@@ -593,9 +593,26 @@ class TradingEngine:
         else:
             spread_change = cur_spread - entry_spread
         pnl_gross = spread_change * trade.quantity
+        fees_usd = self._round_trip_fees(trade, cur_spot, cur_fut)
+        return pnl_gross - fees_usd
 
-        # Per-leg fee bps from the same schedule the STD filter and realized
-        # close use, so live and realized P&L can never silently diverge.
+    def _round_trip_fees(self, trade: Trade,
+                         exit_spot: Optional[float] = None,
+                         exit_fut: Optional[float] = None) -> float:
+        """Total entry+exit fees (USD) for the trade's full round trip, using
+        current mids for the exit legs by default.
+
+        Single source of truth for both the live NET P&L and the profit-target
+        cost floor, so the dollar target we exit on can never be cheaper than
+        the fees that exit actually pays. Per-leg bps come from the same
+        schedule the STD filter and realized close use, so live and realized
+        P&L can never silently diverge.
+        """
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        if exit_spot is None:
+            exit_spot = self.spot_tick.mid if self.spot_tick else trade.entry_spot_price
+        if exit_fut is None:
+            exit_fut = self.futures_tick.mid if self.futures_tick else trade.entry_futures_price
         spot_maker = getattr(self.config, 'spot_maker_fee_bps', self.config.maker_fee_bps)
         spot_taker = getattr(self.config, 'spot_taker_fee_bps', self.config.taker_fee_bps)
         fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
@@ -611,13 +628,12 @@ class TradingEngine:
         a_entry, b_entry = _bps(leg_a_deriv, entry_mode), _bps(leg_b_deriv, entry_mode)
         a_exit,  b_exit  = _bps(leg_a_deriv, exit_mode),  _bps(leg_b_deriv, exit_mode)
         spot_qty = trade.quantity * beta
-        fees_usd = (
+        return (
             a_entry / 10000.0 * spot_qty       * trade.entry_spot_price +
             b_entry / 10000.0 * trade.quantity * trade.entry_futures_price +
-            a_exit  / 10000.0 * spot_qty       * cur_spot +
-            b_exit  / 10000.0 * trade.quantity * cur_fut
+            a_exit  / 10000.0 * spot_qty       * exit_spot +
+            b_exit  / 10000.0 * trade.quantity * exit_fut
         )
-        return pnl_gross - fees_usd
 
     def _capital_at_risk(self, trade: Trade) -> float:
         """Capital actually locked by the open trade: per-leg margin + M2M
@@ -649,6 +665,17 @@ class TradingEngine:
                           * trade.entry_spread_std * trade.quantity)
         else:
             target_usd = getattr(cfg, 'profit_target_usd', 0.0) or 0.0
+        # Cost floor: an active profit target must clear the round-trip fees by
+        # a safety margin. _live_net_pnl is computed off mids, but a real exit
+        # crosses the spread — so a statistically-small target could "hit" on
+        # paper yet fill at an actual net loss. Raise the target to the floor so
+        # a profit-target exit is always +ve after costs with margin to spare.
+        rt_fees = 0.0
+        if target_usd > 0:
+            cost_mult = getattr(cfg, 'profit_target_min_cost_mult', 0.0) or 0.0
+            if cost_mult > 0:
+                rt_fees = self._round_trip_fees(trade)
+                target_usd = max(target_usd, cost_mult * rt_fees)
         # Dollar stop $
         cap_pct = getattr(cfg, 'stop_loss_capital_pct', 0.0) or 0.0
         if cap_pct > 0:
@@ -668,6 +695,7 @@ class TradingEngine:
             'stop_usd': stop_usd,
             'max_hold_periods': max_hold_periods,   # 0 = half-life form off/unavailable
             'max_hold_minutes': max_hold_minutes,   # fixed-minutes fallback
+            'round_trip_fees': rt_fees,             # 0 when cost floor inactive
         }
 
     def _check_override_exit(self, signal: Signal) -> Optional[Signal]:
@@ -2045,6 +2073,8 @@ class TradingEngine:
                 tg = self._effective_exit_targets(self.open_trade)
                 open_trade_dict['exit_target_usd'] = round(tg['target_usd'], 2) if tg['target_usd'] > 0 else 0.0
                 open_trade_dict['exit_stop_usd'] = round(tg['stop_usd'], 2) if tg['stop_usd'] > 0 else 0.0
+                if tg.get('round_trip_fees', 0) > 0:
+                    open_trade_dict['round_trip_fees'] = round(tg['round_trip_fees'], 2)
                 if tg['max_hold_periods'] > 0 and self._entry_tick_count is not None:
                     periods_held = self.signal_generator.total_ticks - self._entry_tick_count
                     open_trade_dict['max_hold_periods'] = round(tg['max_hold_periods'])

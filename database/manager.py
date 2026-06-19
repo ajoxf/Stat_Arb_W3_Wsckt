@@ -63,6 +63,7 @@ class DatabaseManager:
                     stop_loss_threshold REAL DEFAULT 4.0,
                     profit_target_sigma_frac REAL DEFAULT 0.0,
                     profit_target_usd REAL DEFAULT 0.0,
+                    profit_target_min_cost_mult REAL DEFAULT 0.0,
                     max_hold_halflife_mult REAL DEFAULT 0.0,
                     max_hold_minutes REAL DEFAULT 0.0,
                     stop_loss_capital_pct REAL DEFAULT 0.0,
@@ -354,6 +355,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_halflife_mult REAL DEFAULT 0.0")
             if 'stop_loss_capital_pct' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN stop_loss_capital_pct REAL DEFAULT 0.0")
+            if 'profit_target_min_cost_mult' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_min_cost_mult REAL DEFAULT 0.0")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -449,6 +452,7 @@ class DatabaseManager:
                     min_fill_ratio=row["min_fill_ratio"] if "min_fill_ratio" in row.keys() else 0.95,
                     profit_target_sigma_frac=row["profit_target_sigma_frac"] if "profit_target_sigma_frac" in row.keys() else 0.0,
                     profit_target_usd=row["profit_target_usd"] if "profit_target_usd" in row.keys() else 0.0,
+                    profit_target_min_cost_mult=row["profit_target_min_cost_mult"] if "profit_target_min_cost_mult" in row.keys() else 0.0,
                     max_hold_halflife_mult=row["max_hold_halflife_mult"] if "max_hold_halflife_mult" in row.keys() else 0.0,
                     max_hold_minutes=row["max_hold_minutes"] if "max_hold_minutes" in row.keys() else 0.0,
                     stop_loss_capital_pct=row["stop_loss_capital_pct"] if "stop_loss_capital_pct" in row.keys() else 0.0,
@@ -513,6 +517,7 @@ class DatabaseManager:
                     min_fill_ratio = ?,
                     profit_target_sigma_frac = ?,
                     profit_target_usd = ?,
+                    profit_target_min_cost_mult = ?,
                     max_hold_halflife_mult = ?,
                     max_hold_minutes = ?,
                     stop_loss_capital_pct = ?,
@@ -569,6 +574,7 @@ class DatabaseManager:
                 config.min_fill_ratio,
                 config.profit_target_sigma_frac,
                 config.profit_target_usd,
+                config.profit_target_min_cost_mult,
                 config.max_hold_halflife_mult,
                 config.max_hold_minutes,
                 config.stop_loss_capital_pct,

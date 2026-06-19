@@ -83,6 +83,12 @@ class TradingConfig:
     #   recommended sigma_frac ≈ 0.6–0.7 (capture ~two-thirds of the move).
     profit_target_sigma_frac: float = 0.0
     profit_target_usd: float = 0.0   # fixed-$ fallback
+    # Cost floor: an active profit target must clear the round-trip fees by this
+    # multiple before it can fire, so a statistically-small target can never
+    # exit at a net loss once the exit crosses the spread.
+    #     target$ = max(target$, profit_target_min_cost_mult × round_trip_fees)
+    #   recommended ≈ 1.0 (net profit at least equal to total fees paid).
+    profit_target_min_cost_mult: float = 0.0
     #
     # Max hold:
     #   scale-invariant = multiple of the measured mean-reversion half-life:
@@ -210,6 +216,7 @@ class TradingConfig:
             'stop_loss_threshold': self.stop_loss_threshold,
             'profit_target_sigma_frac': self.profit_target_sigma_frac,
             'profit_target_usd': self.profit_target_usd,
+            'profit_target_min_cost_mult': self.profit_target_min_cost_mult,
             'max_hold_halflife_mult': self.max_hold_halflife_mult,
             'max_hold_minutes': self.max_hold_minutes,
             'stop_loss_capital_pct': self.stop_loss_capital_pct,
