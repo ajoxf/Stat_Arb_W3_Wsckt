@@ -223,9 +223,9 @@
                                 <input class="form-check-input" type="checkbox" id="std_filter_enabled" name="std_filter_enabled" {% if config.std_filter_enabled %}checked{% endif %}>
                                 <label class="form-check-label" for="std_filter_enabled">Enable Edge Filter</label>
                             </div>
-                            <label class="form-label">Min Edge Multiple (capture &divide; cost)</label>
+                            <label class="form-label">Min Net P&L / Cost Ratio</label>
                             <input type="number" class="form-control" id="min_std_multiple" name="min_std_multiple" value="{{ config.min_std_multiple }}" step="0.1" min="1" max="5">
-                            <small class="text-secondary">Only enter when the <strong>expected capturable move</strong> (f &times; |Z| &times; &sigma;, or the z-reversion distance) is &ge; this &times; round-trip cost (fees + slippage). <strong>1.5&ndash;2.0</strong> recommended. Auto-floored at the Profit Cost Floor so entry can never be looser than the exit.</small>
+                            <small class="text-secondary">Only enter when the trade's <strong>net profit target</strong> (f &times; |Z| &times; &sigma; &times; qty &mdash; the same number the exit aims for) is &ge; this &times; round-trip cost (fees + slippage). <strong>1.5&ndash;2.0</strong> recommended. Auto-floored at the Profit Cost Floor so entry can never be looser than the exit.</small>
                         </div>
                         <div class="col-md-6 mt-3">
                             <div class="form-check form-switch mb-2">

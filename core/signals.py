@@ -582,7 +582,7 @@ class SignalGenerator:
                     _, _edge = self._check_std_filter()
                     _req = max(self.config.min_std_multiple,
                                getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0)
-                    blocked_reason = ("Edge filter: expected move {:.2f}x cost < {:.2f}x required"
+                    blocked_reason = ("Edge filter: net P&L target {:.2f}x cost < {:.2f}x required"
                                       .format(_edge, _req))
                 elif z_triggers_long and self.current_zscore >= self.config.stop_loss_threshold:
                     blocked_reason = "Z-score at stop-loss level ({:.2f} >= {:.2f})".format(
