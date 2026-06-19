@@ -605,6 +605,7 @@ class TelegramNotifier:
         regime      = sig.get("regime", "N/A")
         hl          = sig.get("half_life")
         sugg_lb     = sig.get("suggested_lookback")
+        spread_slope = sig.get("spread_slope", 0.0)
         data_pts    = sig.get("data_points", 0)
         lookback    = sig.get("lookback", 0)
         data_ready  = sig.get("data_ready", False)
@@ -681,7 +682,7 @@ class TelegramNotifier:
             R("Spread", f"{spread:+.6f}"),
             R("Mean", f"{s_mean:+.6f}"),
             R("Std Dev", f"{s_std:.6f}"),
-            R("Regime", regime),
+            R("Regime", regime + (" ↑" if spread_slope > 0 else " ↓" if spread_slope < 0 else "")),
             R("Hurst", f"{hurst:.4f}"),
             R("Half-Life", hl_str),
         ]
@@ -810,8 +811,11 @@ class TelegramNotifier:
         sig = status.get("signal") or {}
         zscore = sig.get("zscore", 0.0)
         regime = sig.get("regime", "N/A")
+        slope  = sig.get("spread_slope", 0.0)
         hl = sig.get("half_life")
         suggested_lb = sig.get("suggested_lookback")
+
+        slope_arrow = " ↑" if slope > 0 else " ↓" if slope < 0 else ""
 
         R = self._R
         rows = [
@@ -821,7 +825,7 @@ class TelegramNotifier:
             R("Asset", asset),
             R("Position", position),
             R("Z-score", f"{zscore:+.4f}"),
-            R("Regime", regime),
+            R("Regime", regime + slope_arrow),
         ]
         if hl is not None:
             hl_str = f"{hl:.1f} periods"

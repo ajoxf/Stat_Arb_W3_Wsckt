@@ -1754,7 +1754,9 @@
                 regimeDisplayEl.textContent = 'MR';
                 regimeDisplayEl.className = 'fw-bold price-up';
             } else if (regime === 'TRENDING') {
-                regimeDisplayEl.textContent = 'Trend';
+                const slope = data.spread_slope || 0;
+                const arrow = slope > 0 ? ' ↑' : (slope < 0 ? ' ↓' : '');
+                regimeDisplayEl.textContent = 'Trend' + arrow;
                 regimeDisplayEl.className = 'fw-bold price-down';
             } else {
                 regimeDisplayEl.textContent = regime;

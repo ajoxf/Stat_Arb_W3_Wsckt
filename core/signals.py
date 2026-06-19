@@ -738,6 +738,7 @@ class SignalGenerator:
                 'exit_mode':      cost['exit_mode'],
             },
             'regime': regime if data_ready else "COLLECTING",
+            'spread_slope': round(self._spread_slope(), 8) if data_ready else 0.0,
             'data_points': len(self.spread_history),
             'lookback': self.lookback,
             'data_ready': data_ready,
