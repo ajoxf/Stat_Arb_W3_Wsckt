@@ -388,6 +388,27 @@
                             <span id="position-notional">-</span>
                         </div>
                     </div>
+                    <div class="row mt-1 mb-1" id="position-targets-row" style="display:none;">
+                        <div class="col-6">
+                            <span class="text-secondary"
+                                  title="Profit target: exit when net P&L reaches this level">Target:</span>
+                            <span id="position-target" class="price-up fw-semibold">-</span>
+                        </div>
+                        <div class="col-6">
+                            <span class="text-secondary"
+                                  title="Dollar stop: force-exit if net P&L falls to this level">Stop:</span>
+                            <span id="position-stop" class="price-down fw-semibold">-</span>
+                        </div>
+                    </div>
+                    <!-- P&L progress gauge: left=stop, centre=breakeven, right=target -->
+                    <div id="position-pnl-bar-row" style="display:none; padding: 2px 0 4px 0;">
+                        <div style="position:relative; height:7px; border-radius:4px; background:rgba(255,255,255,0.08); overflow:hidden;">
+                            <div id="position-pnl-bar"
+                                 style="position:absolute; left:0; top:0; height:100%; width:50%; border-radius:4px; transition: width 0.4s ease, background-color 0.4s ease;"></div>
+                            <div id="position-pnl-zero"
+                                 style="position:absolute; top:0; height:100%; width:2px; background:rgba(255,255,255,0.25);"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2050,6 +2071,33 @@ function updateFilterStatus(elementId, passed, value) {
 
                 const notionalEl = document.getElementById('position-notional');
                 if (notionalEl) notionalEl.textContent = t.notional_usd ? '$' + parseFloat(t.notional_usd).toFixed(0) : '-';
+
+                // Target & Stop levels
+                const targetUsd = t.exit_target_usd != null ? parseFloat(t.exit_target_usd) : 0;
+                const stopUsd   = t.exit_stop_usd   != null ? parseFloat(t.exit_stop_usd)   : 0;
+                const targetsRow  = document.getElementById('position-targets-row');
+                const targetEl2   = document.getElementById('position-target');
+                const stopEl2     = document.getElementById('position-stop');
+                const pnlBarRow   = document.getElementById('position-pnl-bar-row');
+                const pnlBar      = document.getElementById('position-pnl-bar');
+                const pnlZeroMark = document.getElementById('position-pnl-zero');
+                const pnl = t.unrealized_pnl != null ? parseFloat(t.unrealized_pnl) : null;
+
+                if (targetsRow) targetsRow.style.display = (targetUsd > 0 || stopUsd > 0) ? '' : 'none';
+                if (targetEl2)  targetEl2.textContent = targetUsd > 0 ? '+$' + targetUsd.toFixed(2) : '—';
+                if (stopEl2)    stopEl2.textContent   = stopUsd   > 0 ? '-$' + stopUsd.toFixed(2)   : '—';
+
+                if (pnlBarRow && pnlBar && pnlZeroMark && targetUsd > 0 && stopUsd > 0 && pnl !== null) {
+                    const span    = targetUsd + stopUsd;
+                    const zeroPct = stopUsd / span * 100;
+                    const pnlPct  = Math.max(0, Math.min(100, (pnl + stopUsd) / span * 100));
+                    pnlZeroMark.style.left      = zeroPct.toFixed(1) + '%';
+                    pnlBar.style.width           = pnlPct.toFixed(1) + '%';
+                    pnlBar.style.backgroundColor = pnl >= 0 ? '#198754' : '#dc3545';
+                    pnlBarRow.style.display = '';
+                } else if (pnlBarRow) {
+                    pnlBarRow.style.display = 'none';
+                }
 
                 // Store entry time for age ticker
                 _positionEntryTime = t.entry_time ? new Date(t.entry_time + 'Z') : null;
