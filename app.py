@@ -610,14 +610,12 @@ def save_config():
             if field not in data or data.get(field) == '***':
                 data[field] = getattr(existing, field)
 
-        # Validate leverage bounds before saving. OKX caps Expiry Futures
-        # at 20x; perpetual SWAPs go higher but we match the more conservative
-        # ceiling for the strategy this bot was built for.
+        # Validate leverage bounds. OKX BTC/ETH perpetual SWAPs support up to 50x.
         for lev_key in ('spot_leverage', 'futures_leverage'):
             if lev_key in data:
                 try:
                     v = int(float(data[lev_key]))
-                    data[lev_key] = max(1, min(v, 20))
+                    data[lev_key] = max(1, min(v, 50))
                 except (TypeError, ValueError):
                     data[lev_key] = 1
 

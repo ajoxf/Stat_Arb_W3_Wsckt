@@ -290,9 +290,13 @@
                                 <option value="5" {% if config.spot_leverage == 5 %}selected{% endif %}>5x</option>
                                 <option value="10" {% if config.spot_leverage == 10 %}selected{% endif %}>10x</option>
                                 <option value="15" {% if config.spot_leverage == 15 %}selected{% endif %}>15x</option>
-                                <option value="20" {% if config.spot_leverage == 20 %}selected{% endif %}>20x (OKX Expiry max)</option>
+                                <option value="20" {% if config.spot_leverage == 20 %}selected{% endif %}>20x</option>
+                                <option value="25" {% if config.spot_leverage == 25 %}selected{% endif %}>25x</option>
+                                <option value="30" {% if config.spot_leverage == 30 %}selected{% endif %}>30x</option>
+                                <option value="40" {% if config.spot_leverage == 40 %}selected{% endif %}>40x</option>
+                                <option value="50" {% if config.spot_leverage == 50 %}selected{% endif %}>50x (OKX BTC/ETH Perp max)</option>
                             </select>
-                            <small class="text-secondary">Applies when Leg A is a perpetual or dated future. Spot legs trade as cash regardless. OKX caps Expiry Futures at 20x.</small>
+                            <small class="text-secondary">Applies when Leg A is a perpetual or dated future. Spot legs trade as cash regardless.</small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Leg B Leverage</label>
@@ -303,9 +307,13 @@
                                 <option value="5" {% if config.futures_leverage == 5 %}selected{% endif %}>5x</option>
                                 <option value="10" {% if config.futures_leverage == 10 %}selected{% endif %}>10x</option>
                                 <option value="15" {% if config.futures_leverage == 15 %}selected{% endif %}>15x</option>
-                                <option value="20" {% if config.futures_leverage == 20 %}selected{% endif %}>20x (OKX Expiry max)</option>
+                                <option value="20" {% if config.futures_leverage == 20 %}selected{% endif %}>20x</option>
+                                <option value="25" {% if config.futures_leverage == 25 %}selected{% endif %}>25x</option>
+                                <option value="30" {% if config.futures_leverage == 30 %}selected{% endif %}>30x</option>
+                                <option value="40" {% if config.futures_leverage == 40 %}selected{% endif %}>40x</option>
+                                <option value="50" {% if config.futures_leverage == 50 %}selected{% endif %}>50x (OKX BTC/ETH Perp max)</option>
                             </select>
-                            <small class="text-secondary">Applies when Leg B is a derivative. OKX caps Expiry Futures at 20x; engine enforces the same.</small>
+                            <small class="text-secondary">Applies when Leg B is a derivative. OKX BTC/ETH perpetuals support up to 50x.</small>
                         </div>
                     </div>
 

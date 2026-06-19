@@ -92,8 +92,8 @@ class TradingConfig:
     daily_max_loss_usd: float = 0.0
 
     # Leverage settings
-    spot_leverage: int = 1      # 1 = no margin, 2-10 for spot margin trading
-    futures_leverage: int = 1   # 1-125 for futures (depends on exchange limits)
+    spot_leverage: int = 1      # 1 = no margin; up to 50x for BTC/ETH perps on OKX
+    futures_leverage: int = 1   # 1-50x for BTC/ETH perps on OKX
 
     # Hedge ratio (beta) between the two legs: spread = futures - hedge_ratio * spot.
     # 1.0 = classic basis trade (same underlying, e.g. BTC spot vs BTC-SWAP).
