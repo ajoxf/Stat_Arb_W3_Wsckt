@@ -631,6 +631,11 @@ def save_config():
             else:
                 data['asset'] = spot_base or fut_base
 
+        # algo_enabled is controlled via /api/algo/toggle, not the settings form.
+        # Preserve the live engine state so saving settings never turns the algo off.
+        if 'algo_enabled' not in data:
+            data['algo_enabled'] = engine.state.algo_enabled
+
         config = TradingConfig.from_dict(data)
         db.save_config(config)
 
