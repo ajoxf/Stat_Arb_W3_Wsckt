@@ -237,6 +237,7 @@ class OrderExecutor:
         futures_tick: MarketTick,
         quantity: float,
         futures_quantity: Optional[float] = None,
+        force_market: bool = False,
     ) -> Optional[SpreadOrder]:
         """
         Execute exit trade to close a spread position.
@@ -296,7 +297,8 @@ class OrderExecutor:
         # naked margin SHORT.
         await self._reconcile_exit_with_exchange(spread_order)
 
-        return await self._execute_spread(spread_order, spot_tick, futures_tick)
+        return await self._execute_spread(spread_order, spot_tick, futures_tick,
+                                           force_market=force_market)
 
     async def _reconcile_exit_with_exchange(self, spread_order: SpreadOrder) -> None:
         """
@@ -447,6 +449,7 @@ class OrderExecutor:
         spread_order: SpreadOrder,
         spot_tick: MarketTick,
         futures_tick: MarketTick,
+        force_market: bool = False,
     ) -> SpreadOrder:
         """Execute a spread order using configured mode (different for entry vs exit)."""
         self._executing = True
@@ -455,7 +458,9 @@ class OrderExecutor:
         try:
             # Use different execution modes for entries vs exits
             # This allows maker fees on entries and fast execution on exits
-            if spread_order.is_entry:
+            if force_market:
+                execution_mode = "MARKET"
+            elif spread_order.is_entry:
                 execution_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
             else:
                 execution_mode = getattr(self.config, 'exit_execution_mode', self.config.order_execution_mode)
