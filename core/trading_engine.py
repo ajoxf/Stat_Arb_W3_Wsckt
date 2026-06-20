@@ -768,19 +768,52 @@ class TradingEngine:
             exit_type, reason_tag = "EXIT", "PROFIT_TARGET"
             reason_detail = f"net ${net_pnl:.2f} >= ${target_usd:.2f}"
         elif net_pnl > 0:
-            # Max hold only fires when already profitable (lock in decaying edge).
+            # Max hold fires when already profitable AND the trade is not
+            # actively reverting. The Z-progress gate suppresses the exit
+            # while Z is more than halfway home — those trades should be left
+            # to reach the profit target rather than being cut short.
             if max_hold_periods > 0 and self._entry_tick_count is not None:
                 periods_held = self.signal_generator.total_ticks - self._entry_tick_count
                 if periods_held >= max_hold_periods:
-                    exit_type, reason_tag = "EXIT", "MAX_HOLD"
-                    reason_detail = (f"{periods_held} periods >= "
-                                     f"{max_hold_periods:.0f} (={ getattr(self.config,'max_hold_halflife_mult',0) }×half-life), "
-                                     f"net +${net_pnl:.2f}")
+                    z_progress_min = getattr(self.config, 'max_hold_z_progress_min', 0.5) or 0.0
+                    z_suppressed = False
+                    if z_progress_min > 0 and trade.entry_zscore:
+                        entry_abs = abs(trade.entry_zscore)
+                        cur_abs   = abs(signal.zscore)
+                        exit_abs  = abs(getattr(self.config, 'exit_threshold', 0.0) or 0.0)
+                        journey   = entry_abs - exit_abs
+                        if journey > 1e-6:
+                            z_progress = (entry_abs - cur_abs) / journey
+                            if z_progress >= z_progress_min:
+                                z_suppressed = True
+                                logger.debug(
+                                    "MAX_HOLD suppressed: Z progress %.0f%% >= %.0f%% gate "
+                                    "(entry |Z|=%.3f cur |Z|=%.3f), letting trade run to target",
+                                    z_progress * 100, z_progress_min * 100,
+                                    entry_abs, cur_abs,
+                                )
+                    if not z_suppressed:
+                        exit_type, reason_tag = "EXIT", "MAX_HOLD"
+                        reason_detail = (f"{periods_held} periods >= "
+                                         f"{max_hold_periods:.0f} (={ getattr(self.config,'max_hold_halflife_mult',0) }×half-life), "
+                                         f"net +${net_pnl:.2f}")
             elif max_hold_minutes > 0 and trade.entry_time:
                 held_min = (datetime.utcnow() - trade.entry_time).total_seconds() / 60.0
                 if held_min >= max_hold_minutes:
-                    exit_type, reason_tag = "EXIT", "MAX_HOLD"
-                    reason_detail = f"{held_min:.0f}m >= {max_hold_minutes:.0f}m, net +${net_pnl:.2f}"
+                    z_progress_min = getattr(self.config, 'max_hold_z_progress_min', 0.5) or 0.0
+                    z_suppressed = False
+                    if z_progress_min > 0 and trade.entry_zscore:
+                        entry_abs = abs(trade.entry_zscore)
+                        cur_abs   = abs(signal.zscore)
+                        exit_abs  = abs(getattr(self.config, 'exit_threshold', 0.0) or 0.0)
+                        journey   = entry_abs - exit_abs
+                        if journey > 1e-6:
+                            z_progress = (entry_abs - cur_abs) / journey
+                            if z_progress >= z_progress_min:
+                                z_suppressed = True
+                    if not z_suppressed:
+                        exit_type, reason_tag = "EXIT", "MAX_HOLD"
+                        reason_detail = f"{held_min:.0f}m >= {max_hold_minutes:.0f}m, net +${net_pnl:.2f}"
 
         if not exit_type:
             return None

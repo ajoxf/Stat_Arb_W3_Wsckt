@@ -66,6 +66,7 @@ class DatabaseManager:
                     profit_target_min_cost_mult REAL DEFAULT 0.0,
                     max_hold_halflife_mult REAL DEFAULT 0.0,
                     max_hold_minutes REAL DEFAULT 0.0,
+                    max_hold_z_progress_min REAL DEFAULT 0.5,
                     stop_loss_capital_pct REAL DEFAULT 0.0,
                     max_loss_usd REAL DEFAULT 0.0,
                     exit_signal_mode TEXT DEFAULT 'zscore',
@@ -347,6 +348,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_usd REAL DEFAULT 0.0")
             if 'max_hold_minutes' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_minutes REAL DEFAULT 0.0")
+            if 'max_hold_z_progress_min' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_z_progress_min REAL DEFAULT 0.5")
             if 'max_loss_usd' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_loss_usd REAL DEFAULT 0.0")
             if 'profit_target_sigma_frac' not in existing_columns:
@@ -455,6 +458,7 @@ class DatabaseManager:
                     profit_target_min_cost_mult=row["profit_target_min_cost_mult"] if "profit_target_min_cost_mult" in row.keys() else 0.0,
                     max_hold_halflife_mult=row["max_hold_halflife_mult"] if "max_hold_halflife_mult" in row.keys() else 0.0,
                     max_hold_minutes=row["max_hold_minutes"] if "max_hold_minutes" in row.keys() else 0.0,
+                    max_hold_z_progress_min=row["max_hold_z_progress_min"] if "max_hold_z_progress_min" in row.keys() else 0.5,
                     stop_loss_capital_pct=row["stop_loss_capital_pct"] if "stop_loss_capital_pct" in row.keys() else 0.0,
                     max_loss_usd=row["max_loss_usd"] if "max_loss_usd" in row.keys() else 0.0,
                 )
@@ -520,6 +524,7 @@ class DatabaseManager:
                     profit_target_min_cost_mult = ?,
                     max_hold_halflife_mult = ?,
                     max_hold_minutes = ?,
+                    max_hold_z_progress_min = ?,
                     stop_loss_capital_pct = ?,
                     max_loss_usd = ?
                 WHERE id = 1
@@ -577,6 +582,7 @@ class DatabaseManager:
                 config.profit_target_min_cost_mult,
                 config.max_hold_halflife_mult,
                 config.max_hold_minutes,
+                config.max_hold_z_progress_min,
                 config.stop_loss_capital_pct,
                 config.max_loss_usd,
             ))

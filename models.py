@@ -96,6 +96,12 @@ class TradingConfig:
     #   recommended halflife_mult ≈ 1.5–2.0.
     max_hold_halflife_mult: float = 0.0
     max_hold_minutes: float = 0.0    # fixed-minutes fallback
+    # Z-progress gate: MAX_HOLD is suppressed while the trade is actively
+    # reverting. If Z has already crossed this fraction of the entry→exit
+    # distance, skip the MAX_HOLD exit and let the profit target or Z-exit
+    # fire instead. 0 = no gate (always exit on time), 1 = never exit on time.
+    # Recommended: 0.5 (suppress MAX_HOLD once Z is more than halfway home).
+    max_hold_z_progress_min: float = 0.5
     #
     # Dollar stop:
     #   scale-invariant = percent of capital-at-risk (per-leg margin + buffer):
@@ -219,6 +225,7 @@ class TradingConfig:
             'profit_target_min_cost_mult': self.profit_target_min_cost_mult,
             'max_hold_halflife_mult': self.max_hold_halflife_mult,
             'max_hold_minutes': self.max_hold_minutes,
+            'max_hold_z_progress_min': self.max_hold_z_progress_min,
             'stop_loss_capital_pct': self.stop_loss_capital_pct,
             'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,

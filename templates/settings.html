@@ -122,7 +122,12 @@
                         <div class="col-md-4">
                             <label class="form-label">Max Hold (&times; half-life)</label>
                             <input type="number" class="form-control" id="max_hold_halflife_mult" name="max_hold_halflife_mult" value="{{ config.max_hold_halflife_mult }}" step="0.5" min="0" max="20">
-                            <small class="text-secondary">Multiple of measured half-life. <strong>1.5&ndash;2.0</strong> recommended. Exits only if net P&L &gt; 0</small>
+                            <small class="text-secondary">Multiple of measured half-life. <strong>4&ndash;6&times;</strong> recommended. Only exits if P&L &gt; 0 <em>and</em> Z-progress below gate</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Hold Z-Progress Gate</label>
+                            <input type="number" class="form-control" id="max_hold_z_progress_min" name="max_hold_z_progress_min" value="{{ config.max_hold_z_progress_min }}" step="0.05" min="0" max="1">
+                            <small class="text-secondary">Suppress MAX_HOLD while Z has reverted &ge; this fraction of the entry&rarr;exit journey. <strong>0.5</strong> = let trades &gt;50% home reach the profit target</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Dollar Stop (% capital)</label>
@@ -1390,6 +1395,7 @@
             profit_target_min_cost_mult: parseFloat(document.getElementById('profit_target_min_cost_mult').value) || 0,
             max_hold_halflife_mult: parseFloat(document.getElementById('max_hold_halflife_mult').value) || 0,
             max_hold_minutes: parseFloat(document.getElementById('max_hold_minutes').value) || 0,
+            max_hold_z_progress_min: parseFloat(document.getElementById('max_hold_z_progress_min').value) || 0,
             stop_loss_capital_pct: parseFloat(document.getElementById('stop_loss_capital_pct').value) || 0,
             max_loss_usd: parseFloat(document.getElementById('max_loss_usd').value) || 0,
             exit_signal_mode: document.getElementById('exit_signal_mode').value,
@@ -1528,6 +1534,7 @@
                 document.getElementById('profit_target_min_cost_mult').value = config.profit_target_min_cost_mult || 0;
                 document.getElementById('max_hold_halflife_mult').value = config.max_hold_halflife_mult || 0;
                 document.getElementById('max_hold_minutes').value = config.max_hold_minutes || 0;
+                document.getElementById('max_hold_z_progress_min').value = config.max_hold_z_progress_min ?? 0.5;
                 document.getElementById('stop_loss_capital_pct').value = config.stop_loss_capital_pct || 0;
                 document.getElementById('max_loss_usd').value = config.max_loss_usd || 0;
                 document.getElementById('exit_signal_mode').value = config.exit_signal_mode || 'zscore';
