@@ -114,6 +114,10 @@ class TradingEngine:
 
         # Execution lock to prevent new trades while one is being executed
         self._executing_trade = False
+        # Set True by _execute_entry_orders when a cancelSource=31 throttle was
+        # the reason for the entry failure; read by _open_position to choose the
+        # correct cooldown duration.  Reset to False at the start of each attempt.
+        self._last_entry_throttled: bool = False
 
         # Exit retry throttle — don't hammer the exchange on consecutive failures
         self._last_exit_attempt: Optional[datetime] = None
@@ -1014,14 +1018,14 @@ class TradingEngine:
         # Execute orders if not paper trading
         if not self.state.paper_trading:
             self._executing_trade = True
+            self._last_entry_throttled = False  # reset before each attempt
             try:
                 success = await self._execute_entry_orders(trade, signal)
                 if not success:
                     # OKX order-flow throttle (cancelSource=31) needs a much longer
                     # backoff than the standard entry cooldown — retrying quickly just
                     # makes the throttle worse and pushes the cancel ratio even higher.
-                    throttled = getattr(last_spread_order, 'throttled', False) if last_spread_order else False
-                    if throttled:
+                    if self._last_entry_throttled:
                         cooldown_sec = 300  # 5 minutes for throttle recovery
                         logger.warning(
                             "OKX order-flow throttle detected — applying %ds cooldown "
@@ -1770,9 +1774,11 @@ class TradingEngine:
                     100.0 * spot_filled_qty / target_spot_qty,
                     100.0 * min_fill_ratio,
                 )
+                self._last_entry_throttled = getattr(last_spread_order, 'throttled', False) if last_spread_order else False
                 return False
             if spot_filled_qty == 0 or fut_filled_qty == 0:
                 logger.error("No fills received across all slices")
+                self._last_entry_throttled = getattr(last_spread_order, 'throttled', False) if last_spread_order else False
                 return False
 
             # Blended VWAP prices across all completed slices
@@ -2163,5 +2169,6 @@ class TradingEngine:
         self.futures_tick = None
         self._stop_loss_cooldown_until = None
         self._executing_trade = False
+        self._last_entry_throttled = False
         self._tick_fail_count = 0  # Reset tick failure counter too
         logger.info("Engine reset (running=%s, algo=%s)", was_running, algo_was_enabled)
