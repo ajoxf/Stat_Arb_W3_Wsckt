@@ -145,6 +145,9 @@ class TradingEngine:
         self._velocity_exit_count: int = 0
         # Rolling window of recent spreads for velocity calc (maxlen=120 = 60s at 0.5s/tick)
         self._spread_velocity_window: deque = deque(maxlen=120)
+        # Peak P&L (net, USD) observed since the trade was opened — used by the
+        # trailing stop to measure how far the trade has pulled back from its high.
+        self._peak_pnl: float = 0.0
 
         # Optional callback invoked when the engine self-corrects config values
         # (e.g. leverage capped by exchange). Register in app.py to persist to DB.
@@ -790,6 +793,10 @@ class TradingEngine:
         if net_pnl is None:
             return None
 
+        # Always track the high-water mark so the trailing stop has an accurate peak.
+        if net_pnl > self._peak_pnl:
+            self._peak_pnl = net_pnl
+
         exit_type = None
         reason_tag = None
         reason_detail = None
@@ -847,7 +854,32 @@ class TradingEngine:
                         exit_type, reason_tag = "EXIT", "MAX_HOLD"
                         reason_detail = f"{held_min:.0f}m >= {max_hold_minutes:.0f}m, net +${net_pnl:.2f}"
 
-        # ── 3. Hurst regime-change exit ────────────────────────────────────
+        # ── 3. Trailing stop ───────────────────────────────────────────────
+        # Once P&L has reached trailing_stop_floor_pct % of the profit target,
+        # arm a trailing stop that fires when P&L drops trailing_stop_pct %
+        # below the peak. Protects profit that "almost reached target" from
+        # fully reverting before any other exit fires.
+        if not exit_type:
+            trail_pct   = getattr(self.config, 'trailing_stop_pct', 0.0) or 0.0
+            floor_pct   = getattr(self.config, 'trailing_stop_floor_pct', 0.0) or 0.0
+            if trail_pct > 0 and self._peak_pnl > 0:
+                # Floor gate: if floor_pct > 0 the trailing stop only arms once
+                # P&L has reached that fraction of the profit target.  This keeps
+                # the trailing stop from triggering on tiny early-trade wiggles.
+                floor_armed = True
+                if floor_pct > 0 and target_usd > 0:
+                    floor_armed = self._peak_pnl >= floor_pct / 100.0 * target_usd
+                if floor_armed:
+                    trail_trigger = self._peak_pnl * (1.0 - trail_pct / 100.0)
+                    if net_pnl < trail_trigger:
+                        exit_type   = "EXIT"
+                        reason_tag  = "TRAILING_STOP"
+                        reason_detail = (
+                            f"P&L ${net_pnl:.2f} pulled back {trail_pct:.0f}% from peak "
+                            f"${self._peak_pnl:.2f} (trigger=${trail_trigger:.2f})"
+                        )
+
+        # ── 4. Hurst regime-change exit ────────────────────────────────────
         # H rising above threshold for N consecutive ticks means the spread has
         # flipped from mean-reverting to trending — the core bet is structurally
         # wrong, exit before the dollar stop is hit.
@@ -869,7 +901,7 @@ class TradingEngine:
             else:
                 self._hurst_exit_count = 0
 
-        # ── 4. Spread velocity exit ────────────────────────────────────────
+        # ── 5. Spread velocity exit ────────────────────────────────────────
         # If the spread drifts adversely faster than velocity_exit_pts_per_min
         # for N consecutive ticks, the trend is accelerating — cut early.
         # Adverse = spread rising for SHORT position, falling for LONG.
@@ -1165,6 +1197,7 @@ class TradingEngine:
         self._hurst_exit_count = 0
         self._velocity_exit_count = 0
         self._spread_velocity_window.clear()
+        self._peak_pnl = 0.0
         self.state.current_position = position_type
         self.signal_generator.set_position(
             position_type,
@@ -1347,6 +1380,7 @@ class TradingEngine:
         self._hurst_exit_count = 0
         self._velocity_exit_count = 0
         self._spread_velocity_window.clear()
+        self._peak_pnl = 0.0
 
         # Apply post-stop-loss cooldown to prevent immediate re-entry
         if signal.signal_type == "STOP_LOSS":

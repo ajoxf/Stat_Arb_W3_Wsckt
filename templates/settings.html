@@ -298,6 +298,24 @@
                         </div>
                     </div>
 
+                    <!-- Trailing Stop -->
+                    <div class="row mb-3 mt-3">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-2">Trailing Stop</h6>
+                            <small class="text-secondary d-block mb-3">Once P&amp;L reaches Floor % of profit target, exit when P&amp;L retraces Pullback % from its peak. Example: Floor=70%, Pullback=20% → arms at $3.47 (70% of $4.95), fires if P&amp;L drops 20% from its high.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label mb-0">Pullback %</label>
+                            <input type="number" class="form-control form-control-sm" id="trailing_stop_pct" name="trailing_stop_pct" value="{{ config.trailing_stop_pct }}" step="5" min="0" max="100">
+                            <small class="text-secondary">% drop from peak P&amp;L (0 = disabled)</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label mb-0">Floor %</label>
+                            <input type="number" class="form-control form-control-sm" id="trailing_stop_floor_pct" name="trailing_stop_floor_pct" value="{{ config.trailing_stop_floor_pct }}" step="5" min="0" max="100">
+                            <small class="text-secondary">Arm when P&amp;L ≥ X% of target (0 = always armed)</small>
+                        </div>
+                    </div>
+
                     <hr class="my-4" style="border-color: var(--border-color);">
 
                     <!-- Self-Learning -->
@@ -1462,6 +1480,8 @@
             velocity_exit_pts_per_min: parseFloat(document.getElementById('velocity_exit_pts_per_min').value) || 2.0,
             velocity_exit_n_ticks: parseInt(document.getElementById('velocity_exit_n_ticks').value) || 5,
             velocity_exit_window_ticks: parseInt(document.getElementById('velocity_exit_window_ticks').value) || 20,
+            trailing_stop_pct: parseFloat(document.getElementById('trailing_stop_pct').value) || 0,
+            trailing_stop_floor_pct: parseFloat(document.getElementById('trailing_stop_floor_pct').value) || 0,
             std_filter_enabled: document.getElementById('std_filter_enabled').checked,
             trend_direction_filter: document.getElementById('trend_direction_filter').checked,
             min_std_multiple: parseFloat(document.getElementById('min_std_multiple').value),
@@ -1608,6 +1628,8 @@
                 document.getElementById('velocity_exit_pts_per_min').value = config.velocity_exit_pts_per_min || 2.0;
                 document.getElementById('velocity_exit_n_ticks').value = config.velocity_exit_n_ticks || 5;
                 document.getElementById('velocity_exit_window_ticks').value = config.velocity_exit_window_ticks || 20;
+                document.getElementById('trailing_stop_pct').value = config.trailing_stop_pct || 0;
+                document.getElementById('trailing_stop_floor_pct').value = config.trailing_stop_floor_pct || 0;
                 document.getElementById('std_filter_enabled').checked = config.std_filter_enabled;
                 document.getElementById('trend_direction_filter').checked = config.trend_direction_filter || false;
                 document.getElementById('min_std_multiple').value = config.min_std_multiple;

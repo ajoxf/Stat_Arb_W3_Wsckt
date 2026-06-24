@@ -217,6 +217,15 @@ class TradingConfig:
     velocity_exit_n_ticks: int = 5           # consecutive ticks above threshold
     velocity_exit_window_ticks: int = 20     # rolling window for velocity calc
 
+    # ── Trailing stop ──────────────────────────────────────────────────────
+    # Activates once P&L reaches trailing_stop_floor_pct % of the profit target
+    # (e.g. 70 = armed when P&L ≥ 70% of target). Once armed, fires when P&L
+    # drops trailing_stop_pct % below its peak (e.g. 20 = exit if P&L retraces
+    # 20% from the high). Both values = 0 disables trailing stop entirely.
+    # trailing_stop_floor_pct = 0 → trailing is armed from first profitable tick.
+    trailing_stop_pct: float = 0.0          # pullback % from peak to trigger (e.g. 20)
+    trailing_stop_floor_pct: float = 0.0    # activate only when P&L ≥ X% of target (e.g. 70)
+
     # RFQ / Block trading — OKX atomic multi-leg execution
     # When per-leg notional >= rfq_notional_threshold_usd the engine routes to
     # OKX RFQ instead of the live order book, eliminating legging risk entirely.
@@ -318,6 +327,8 @@ class TradingConfig:
             'velocity_exit_pts_per_min': self.velocity_exit_pts_per_min,
             'velocity_exit_n_ticks': self.velocity_exit_n_ticks,
             'velocity_exit_window_ticks': self.velocity_exit_window_ticks,
+            'trailing_stop_pct': self.trailing_stop_pct,
+            'trailing_stop_floor_pct': self.trailing_stop_floor_pct,
         }
 
     @classmethod
