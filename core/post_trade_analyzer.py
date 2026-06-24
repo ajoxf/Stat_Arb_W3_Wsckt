@@ -296,7 +296,9 @@ class PostTradeAnalyzer:
         # ── Avg hold time ──
         def _hold_min(t: "Trade") -> Optional[float]:
             if t.entry_time and t.exit_time:
-                return (t.exit_time - t.entry_time).total_seconds() / 60
+                et = t.entry_time.replace(tzinfo=None) if t.entry_time.tzinfo else t.entry_time
+                xt = t.exit_time.replace(tzinfo=None)  if t.exit_time.tzinfo  else t.exit_time
+                return (xt - et).total_seconds() / 60
             return None
 
         winner_holds = [_hold_min(t) for t in recent_trades if t.pnl_usd > 0 and _hold_min(t)]
