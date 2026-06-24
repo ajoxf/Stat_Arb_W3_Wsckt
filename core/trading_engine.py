@@ -2191,6 +2191,10 @@ class TradingEngine:
                     periods_held = self.signal_generator.total_ticks - self._entry_tick_count
                     open_trade_dict['max_hold_periods'] = round(tg['max_hold_periods'])
                     open_trade_dict['periods_held'] = periods_held
+                    # Resolved max hold in minutes for dashboard display (polling = 0.5s/tick)
+                    open_trade_dict['max_hold_minutes'] = round(tg['max_hold_periods'] * 0.5 / 60, 1)
+                elif tg.get('max_hold_minutes', 0) > 0:
+                    open_trade_dict['max_hold_minutes'] = round(tg['max_hold_minutes'], 1)
             except Exception:
                 pass
 

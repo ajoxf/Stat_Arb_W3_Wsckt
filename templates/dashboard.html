@@ -388,6 +388,17 @@
                             <span id="position-notional">-</span>
                         </div>
                     </div>
+                    <div class="row" id="position-max-hold-row" style="display:none;">
+                        <div class="col-6">
+                            <span class="text-secondary"
+                                  title="Maximum hold time — trade exits automatically when reached regardless of signal">Max Hold:</span>
+                            <span id="position-max-hold" class="font-monospace">-</span>
+                        </div>
+                        <div class="col-6">
+                            <span class="text-secondary">Remaining:</span>
+                            <span id="position-max-hold-remaining" class="font-monospace text-warning">-</span>
+                        </div>
+                    </div>
                     <div class="row mt-1 mb-1" id="position-targets-row" style="display:none;">
                         <div class="col-6">
                             <span class="text-secondary"
@@ -2024,6 +2035,9 @@ function updateFilterStatus(elementId, passed, value) {
             details.style.display = 'none';
             if (closeBtn) closeBtn.style.display = 'none';
             _positionEntryTime = null;
+            _maxHoldMs = 0;
+            const mhRowClear = document.getElementById('position-max-hold-row');
+            if (mhRowClear) mhRowClear.style.display = 'none';
         } else {
             badge.textContent = position;
             badge.className = 'badge ' + (position === 'LONG' ? 'badge-long' : 'badge-short');
@@ -2101,12 +2115,22 @@ function updateFilterStatus(elementId, passed, value) {
 
                 // Store entry time for age ticker
                 _positionEntryTime = t.entry_time ? new Date(t.entry_time + 'Z') : null;
+
+                // Max Hold display
+                const mhRow  = document.getElementById('position-max-hold-row');
+                const mhEl   = document.getElementById('position-max-hold');
+                const mhRemEl = document.getElementById('position-max-hold-remaining');
+                const mhMin  = t.max_hold_minutes ? parseFloat(t.max_hold_minutes) : 0;
+                _maxHoldMs = mhMin > 0 ? mhMin * 60 * 1000 : 0;
+                if (mhRow) mhRow.style.display = mhMin > 0 ? '' : 'none';
+                if (mhEl && mhMin > 0) mhEl.textContent = _formatAge(_maxHoldMs);
             }
         }
     }
 
     // Position age ticker state
     let _positionEntryTime = null;
+    let _maxHoldMs = 0;
     function _formatAge(ms) {
         const s = Math.floor(ms / 1000);
         if (s < 60) return s + 's';
@@ -2118,7 +2142,22 @@ function updateFilterStatus(elementId, passed, value) {
     setInterval(function() {
         const ageEl = document.getElementById('position-age');
         if (ageEl && _positionEntryTime) {
-            ageEl.textContent = _formatAge(Date.now() - _positionEntryTime.getTime());
+            const elapsedMs = Date.now() - _positionEntryTime.getTime();
+            ageEl.textContent = _formatAge(elapsedMs);
+            // Update remaining time
+            const remEl = document.getElementById('position-max-hold-remaining');
+            if (remEl && _maxHoldMs > 0) {
+                const remMs = _maxHoldMs - elapsedMs;
+                if (remMs <= 0) {
+                    remEl.textContent = 'EXPIRED';
+                    remEl.className = 'font-monospace text-danger fw-semibold';
+                } else {
+                    remEl.textContent = _formatAge(remMs);
+                    remEl.className = remMs < 10 * 60 * 1000
+                        ? 'font-monospace text-danger'
+                        : 'font-monospace text-warning';
+                }
+            }
         }
     }, 1000);
 
