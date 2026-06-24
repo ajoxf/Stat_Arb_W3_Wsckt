@@ -132,6 +132,9 @@ class TradingEngine:
         self._exit_postonly_reject_count: int = 0
         self._EXIT_POSTONLY_RETRY_SEC = 10       # retry quickly — no exchange cooldown needed
         self._EXIT_POSTONLY_MARKET_AFTER = 1     # fall back to MARKET after just 1 rejection
+        # Set True by _execute_exit_orders when the exit actually used MARKET (taker fee).
+        # Read by _close_position fee calc and _round_trip_fees for accurate fee accounting.
+        self._last_exit_was_market: bool = False
 
         # Optional callback invoked when the engine self-corrects config values
         # (e.g. leverage capped by exchange). Register in app.py to persist to DB.
@@ -614,20 +617,22 @@ class TradingEngine:
         else:
             spread_change = cur_spread - entry_spread
         pnl_gross = spread_change * trade.quantity
-        fees_usd = self._round_trip_fees(trade, cur_spot, cur_fut)
+        # If the exit will definitely be MARKET (already had a POST_ONLY rejection
+        # that exhausted the retry budget), use taker fee for the exit estimate.
+        exit_override = "MARKET" if self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER else None
+        fees_usd = self._round_trip_fees(trade, cur_spot, cur_fut, exit_mode_override=exit_override)
         return pnl_gross - fees_usd
 
     def _round_trip_fees(self, trade: Trade,
                          exit_spot: Optional[float] = None,
-                         exit_fut: Optional[float] = None) -> float:
+                         exit_fut: Optional[float] = None,
+                         exit_mode_override: Optional[str] = None) -> float:
         """Total entry+exit fees (USD) for the trade's full round trip, using
         current mids for the exit legs by default.
 
-        Single source of truth for both the live NET P&L and the profit-target
-        cost floor, so the dollar target we exit on can never be cheaper than
-        the fees that exit actually pays. Per-leg bps come from the same
-        schedule the STD filter and realized close use, so live and realized
-        P&L can never silently diverge.
+        exit_mode_override: pass "MARKET" when the next exit is known to use
+        taker (e.g. after a POST_ONLY rejection that will trigger MARKET retry)
+        so live P&L reflects the actual fee that will be charged.
         """
         beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
         if exit_spot is None:
@@ -639,7 +644,7 @@ class TradingEngine:
         fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
         fut_taker  = getattr(self.config, 'futures_taker_fee_bps', self.config.taker_fee_bps)
         entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
-        exit_mode  = getattr(self.config, 'exit_execution_mode',  self.config.order_execution_mode)
+        exit_mode  = exit_mode_override or getattr(self.config, 'exit_execution_mode', self.config.order_execution_mode)
         leg_a_deriv = is_derivative(self.config.spot_symbol)
         leg_b_deriv = is_derivative(self.config.futures_symbol)
         def _bps(deriv, mode):
@@ -1207,7 +1212,9 @@ class TradingEngine:
         fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
         fut_taker  = getattr(self.config, 'futures_taker_fee_bps', self.config.taker_fee_bps)
         entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
-        exit_mode  = getattr(self.config, 'exit_execution_mode',  self.config.order_execution_mode)
+        # Use actual exit execution mode: MARKET (taker) when the exit was forced
+        # to MARKET after a POST_ONLY rejection — not the config default.
+        exit_mode  = "MARKET" if self._last_exit_was_market else getattr(self.config, 'exit_execution_mode', self.config.order_execution_mode)
         leg_a_deriv = is_derivative(self.config.spot_symbol)
         leg_b_deriv = is_derivative(self.config.futures_symbol)
         def _bps(deriv, mode):
@@ -1931,7 +1938,7 @@ class TradingEngine:
                         (fill_ts - spread_order.created_at).total_seconds() * 1000, 1
                     )
                 logger.info("ENTRY SUCCESS: mode=%s, spot_id=%s @ $%.2f, futures_id=%s @ $%.2f",
-                            self.config.order_execution_mode,
+                            getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode),
                             trade.spot_order_id, trade.entry_spot_price,
                             trade.futures_order_id, trade.entry_futures_price)
 
@@ -2111,6 +2118,7 @@ class TradingEngine:
             # After a POST_ONLY rejection fall back to MARKET to guarantee the close.
             # One rejection is enough — staying on limit just leaves the position open longer.
             use_market = self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
+            self._last_exit_was_market = use_market  # propagate to fee calc in _close_position
             if use_market:
                 logger.warning(
                     "Exit POST_ONLY rejection count=%d >= %d — using MARKET order to guarantee close",
@@ -2145,7 +2153,7 @@ class TradingEngine:
                     trade.exit_latency_ms = round(
                         (fill_ts - spread_order.created_at).total_seconds() * 1000, 1
                     )
-                logger.info("Exit orders executed: mode=%s", self.config.order_execution_mode)
+                logger.info("Exit orders executed: mode=%s", "MARKET" if self._last_exit_was_market else getattr(self.config, 'exit_execution_mode', self.config.order_execution_mode))
                 return True
             else:
                 if spread_order and spread_order.has_partial_fill:
