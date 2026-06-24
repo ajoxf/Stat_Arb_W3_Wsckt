@@ -157,9 +157,21 @@ class OrderExecutor:
         self._executing = False
         self._execution_task: Optional[asyncio.Task] = None
 
+        # RFQ executor — set via set_rfq_executor() when RFQ is configured.
+        # None = order book always used regardless of notional size.
+        self._rfq_executor = None
+
     def update_config(self, config: TradingConfig) -> None:
         """Update configuration."""
         self.config = config
+        if self._rfq_executor is not None:
+            self._rfq_executor.update_config(config)
+
+    def set_rfq_executor(self, rfq_executor) -> None:
+        """Register the RFQ executor. Called from app.py after adapter setup."""
+        self._rfq_executor = rfq_executor
+        logger.info("[executor] RFQ executor registered (threshold=$%.0f)",
+                    getattr(self.config, 'rfq_notional_threshold_usd', 0.0))
 
     async def execute_entry(
         self,
@@ -451,13 +463,78 @@ class OrderExecutor:
         futures_tick: MarketTick,
         force_market: bool = False,
     ) -> SpreadOrder:
-        """Execute a spread order using configured mode (different for entry vs exit)."""
+        """Execute a spread order via RFQ (atomic) or order book, depending on notional."""
         self._executing = True
         self.active_order = spread_order
 
         try:
-            # Use different execution modes for entries vs exits
-            # This allows maker fees on entries and fast execution on exits
+            # ── RFQ routing ──────────────────────────────────────────────────
+            # Route to atomic RFQ execution when per-leg notional >= threshold.
+            # force_market bypasses RFQ (used for emergency exits).
+            rfq_threshold = getattr(self.config, 'rfq_notional_threshold_usd', 0.0)
+            if not force_market and rfq_threshold > 0 and spot_tick and futures_tick:
+                spot_notional = spread_order.spot_leg.quantity * (spot_tick.mid or 0.0)
+                fut_notional = spread_order.futures_leg.quantity * (futures_tick.mid or 0.0)
+                per_leg_notional = max(spot_notional, fut_notional)
+
+                if per_leg_notional >= rfq_threshold:
+                    if self._rfq_executor is None:
+                        logger.critical(
+                            "[executor] NOTIONAL GUARD: per-leg $%.0f >= rfq_threshold $%.0f "
+                            "but no RFQ executor configured. Proceeding on order book — "
+                            "configure RFQ or reduce position size to eliminate legging risk.",
+                            per_leg_notional, rfq_threshold,
+                        )
+                    else:
+                        from core.rfq_executor import RFQResult
+                        sl = spread_order.spot_leg
+                        fl = spread_order.futures_leg
+                        label = ("ENTRY" if spread_order.is_entry else "EXIT") + f" {spread_order.position_type}"
+                        rfq_result: RFQResult = await self._rfq_executor.execute_spread_rfq(
+                            spot_symbol=sl.symbol,
+                            futures_symbol=fl.symbol,
+                            spot_side=sl.side,
+                            futures_side=fl.side,
+                            spot_qty=sl.quantity,
+                            futures_qty=fl.quantity,
+                            spot_pos_side=sl.pos_side,
+                            futures_pos_side=fl.pos_side,
+                            spot_tick=spot_tick,
+                            futures_tick=futures_tick,
+                            label=label,
+                        )
+                        if rfq_result.success:
+                            # Populate SpreadOrder from atomic fills
+                            sl.filled_price = rfq_result.spot_filled_price
+                            sl.filled_qty = rfq_result.spot_filled_qty
+                            sl.status = LegStatus.FILLED
+                            fl.filled_price = rfq_result.futures_filled_price
+                            fl.filled_qty = rfq_result.futures_filled_qty
+                            fl.status = LegStatus.FILLED
+                            logger.info(
+                                "[executor] RFQ atomic fill: %s @ %.4f | %s @ %.4f "
+                                "(tTradeId=%s)",
+                                sl.symbol, sl.filled_price,
+                                fl.symbol, fl.filled_price,
+                                rfq_result.trade_id,
+                            )
+                            return spread_order
+
+                        # RFQ failed
+                        fallback = getattr(self.config, 'rfq_fallback_to_orderbook', True)
+                        if not fallback:
+                            logger.error(
+                                "[executor] RFQ failed and rfq_fallback_to_orderbook=False — "
+                                "aborting: %s", rfq_result.error,
+                            )
+                            return spread_order  # legs not FILLED → engine treats as failure
+                        logger.warning(
+                            "[executor] RFQ failed (%s) — falling back to order book",
+                            rfq_result.error,
+                        )
+                        # Fall through to order-book path below
+
+            # ── Order-book path ──────────────────────────────────────────────
             if force_market:
                 execution_mode = "MARKET"
             elif spread_order.is_entry:

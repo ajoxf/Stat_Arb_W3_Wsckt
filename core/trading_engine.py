@@ -259,6 +259,13 @@ class TradingEngine:
         except Exception as e:
             logger.error("Error applying leverage settings: %s", e)
 
+    def set_rfq_executor(self, rfq_executor) -> None:
+        """Register the RFQ executor on the order executor (call after set_adapters)."""
+        if self.order_executor is not None:
+            self.order_executor.set_rfq_executor(rfq_executor)
+        else:
+            logger.warning("set_rfq_executor called before set_adapters — RFQ not registered")
+
     def set_adapters(self, spot: Optional[ExchangeAdapter], futures: Optional[ExchangeAdapter]) -> None:
         """Set exchange adapters (REST mode)."""
         self.spot_adapter = spot

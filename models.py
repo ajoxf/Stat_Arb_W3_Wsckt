@@ -197,6 +197,20 @@ class TradingConfig:
     # MARKET orders: ~5-10 bps market impact, more in high-vol conditions
     slippage_bps: float = 1.5
 
+    # RFQ / Block trading — OKX atomic multi-leg execution
+    # When per-leg notional >= rfq_notional_threshold_usd the engine routes to
+    # OKX RFQ instead of the live order book, eliminating legging risk entirely.
+    # Both legs fill in a single matching event from a market maker's quote.
+    # Set rfq_notional_threshold_usd = 0 to disable (order book always used).
+    # OKX minimum for BTC/ETH-USDT-SWAP is typically $50k–$500k per leg;
+    # attempting an RFQ below minimum returns an error and falls back to order book.
+    rfq_notional_threshold_usd: float = 0.0   # 0 = disabled
+    rfq_anonymous: bool = True                 # hide identity from market makers
+    rfq_counterparties: str = ""               # comma-separated OKX trader codes; empty = all makers
+    rfq_quote_timeout_sec: float = 10.0        # seconds to wait for quotes before fallback
+    rfq_min_quotes: int = 1                    # minimum quotes needed before executing
+    rfq_fallback_to_orderbook: bool = True     # fall back to order book if RFQ fails
+
     # Self-learning: automatically apply Claude's parameter recommendations
     auto_tune_enabled: bool = False
 
@@ -271,6 +285,12 @@ class TradingConfig:
             'telegram_notify_trades': self.telegram_notify_trades,
             'telegram_notify_signals': self.telegram_notify_signals,
             'telegram_notify_errors': self.telegram_notify_errors,
+            'rfq_notional_threshold_usd': self.rfq_notional_threshold_usd,
+            'rfq_anonymous': self.rfq_anonymous,
+            'rfq_counterparties': self.rfq_counterparties,
+            'rfq_quote_timeout_sec': self.rfq_quote_timeout_sec,
+            'rfq_min_quotes': self.rfq_min_quotes,
+            'rfq_fallback_to_orderbook': self.rfq_fallback_to_orderbook,
         }
 
     @classmethod

@@ -359,6 +359,20 @@ def start_engine_loop():
         _execution_backend = backend_label
         logger.info("%s adapters configured: demo=%s, paper=%s, symbols=(%s, %s)",
                    backend_label, is_demo, config.paper_trading, config.spot_symbol, config.futures_symbol)
+
+        # RFQ executor — wired when rfq_notional_threshold_usd > 0.
+        # Routes large-notional trades to OKX atomic RFQ instead of the order book,
+        # eliminating legging risk. Disabled by default (threshold=0).
+        if getattr(config, 'rfq_notional_threshold_usd', 0.0) > 0:
+            from adapters.okx_rfq_adapter import OKXRFQAdapter
+            from core.rfq_executor import RFQExecutor
+            rfq_adapter = OKXRFQAdapter(api_key, secret_key, passphrase, is_demo)
+            rfq_exec = RFQExecutor(rfq_adapter, config)
+            engine.set_rfq_executor(rfq_exec)
+            logger.info("RFQ executor configured (threshold=$%.0f, timeout=%ss, fallback=%s)",
+                        config.rfq_notional_threshold_usd,
+                        config.rfq_quote_timeout_sec,
+                        config.rfq_fallback_to_orderbook)
     else:
         logger.warning("API keys not configured - using paper trading simulation only")
 
