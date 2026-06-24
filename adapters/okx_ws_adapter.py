@@ -330,10 +330,31 @@ class OKXWebSocketAdapter(ExchangeAdapter):
                     s_msg = data_list[0].get("sMsg", "")
                     if s_msg:
                         err_msg = f"{err_msg}: {s_msg}"
-                    already_flat = any(
-                        str(d.get("sCode", "")) == "51169"
-                        for d in data_list if isinstance(d, dict)
-                    )
+                    # Check each per-order sCode for specific conditions
+                    for d in data_list:
+                        if not isinstance(d, dict):
+                            continue
+                        s_code = str(d.get("sCode", ""))
+                        if s_code == "51169":
+                            already_flat = True
+                        elif s_code == "50061":
+                            logger.critical(
+                                "[ws_adapter] RATE LIMIT BREACH (sCode=50061): sub-account "
+                                "exceeded 1000 new+amend orders/2s — back off immediately | "
+                                "sMsg=%s | order_data=%s", d.get("sMsg", ""), order_data
+                            )
+                        elif s_code == "54030":
+                            logger.error(
+                                "[ws_adapter] POSITION LIMIT (sCode=54030): user position limit "
+                                "exceeded — reduce size or close existing positions | "
+                                "sMsg=%s | order_data=%s", d.get("sMsg", ""), order_data
+                            )
+                        elif s_code == "54031":
+                            logger.error(
+                                "[ws_adapter] POSITION LIMIT (sCode=54031): platform position "
+                                "limit exceeded — OKX-wide limit for this instrument | "
+                                "sMsg=%s | order_data=%s", d.get("sMsg", ""), order_data
+                            )
                 logger.error("[ws_adapter] place_order failed: %s | order_data=%s", err_msg, order_data)
                 return OrderResult(success=False, error=err_msg, already_flat=already_flat)
 

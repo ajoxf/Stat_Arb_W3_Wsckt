@@ -954,20 +954,22 @@ class OrderExecutor:
                 logger.error("Failed to amend futures order: %s", e)
 
     # Map of OKX cancelSource codes → human-readable explanations.
-    # OKX doesn't publish a complete table; codes 13/17/20/21 are documented
-    # and observed in practice. Code 31 is undocumented but consistently
-    # appears under high cancel-and-replace cadence — almost certainly the
-    # exchange's order-flow throttle. Whenever OKX supplies its own
-    # cancel_source_reason string, prefer that over our guesses.
+    # OKX confirmed (2026-06): cancelSource=31 means the POST_ONLY order would
+    # have taken liquidity — the limit price crossed the opposite side of the book
+    # at the moment of placement, so OKX cancelled it rather than let it fill as
+    # a taker. It is NOT a rate-limit or cancel-ratio throttle; there is no
+    # cooldown and no counter to reset. Each order is evaluated independently.
+    # Remedy: retry quickly (10 s) as POST_ONLY; after one rejection switch to
+    # MARKET to guarantee the close rather than staying stuck.
     _OKX_CANCEL_REASONS = {
         "0":  "user initiated",
         "1":  "system cancelled",
         "2":  "not matched and cancelled",
         "13": "price limit breach",
         "17": "IOC unfilled portion",
-        "20": "POST_ONLY would have crossed the book — quoted price was too aggressive",
+        "20": "post_only rejected — limit price crossed the book (would take liquidity)",
         "21": "self-trade prevented",
-        "31": "order-flow throttle (rapid cancel/replace exceeded exchange limit)",
+        "31": "post_only rejected — limit price crossed the book at placement (would take liquidity)",
     }
 
     @classmethod

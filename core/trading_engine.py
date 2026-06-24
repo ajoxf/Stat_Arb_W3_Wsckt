@@ -115,21 +115,23 @@ class TradingEngine:
 
         # Execution lock to prevent new trades while one is being executed
         self._executing_trade = False
-        # Set True by _execute_entry_orders when a cancelSource=31 throttle was
-        # the reason for the entry failure; read by _open_position to choose the
-        # correct cooldown duration.  Reset to False at the start of each attempt.
+        # Set True by _execute_entry_orders when a cancelSource=31 POST_ONLY
+        # rejection was the reason for the entry failure; read by _open_position
+        # to choose cooldown.  Reset to False at the start of each attempt.
+        # cancelSource=31 is NOT a rate-limit throttle — it means the POST_ONLY
+        # limit price crossed the spread at placement.  No special cooldown needed.
         self._last_entry_throttled: bool = False
 
-        # Exit retry throttle — don't hammer the exchange on consecutive failures.
-        # After a cancelSource=31 throttle on exit, _exit_throttle_count tracks
-        # how many consecutive throttled failures have occurred; once ≥ 2 the next
-        # attempt falls back to MARKET to guarantee the position gets closed.
+        # Exit POST_ONLY rejection tracking (cancelSource=31 / cancelSource=20).
+        # These are NOT rate-limit throttles: each order is evaluated independently.
+        # Retry quickly (10s); fall back to MARKET after the first rejection so the
+        # position is guaranteed to close rather than sitting open for minutes.
         self._last_exit_attempt: Optional[datetime] = None
         self._exit_retry_interval_sec = 10
-        self._last_exit_throttled: bool = False
-        self._exit_throttle_count: int = 0
-        self._EXIT_THROTTLE_COOLDOWN_SEC = 300   # 5-min wait after throttle
-        self._EXIT_THROTTLE_MARKET_AFTER = 2     # fall back to MARKET after N throttles
+        self._last_exit_postonly_rejected: bool = False
+        self._exit_postonly_reject_count: int = 0
+        self._EXIT_POSTONLY_RETRY_SEC = 10       # retry quickly — no exchange cooldown needed
+        self._EXIT_POSTONLY_MARKET_AFTER = 1     # fall back to MARKET after just 1 rejection
 
         # Optional callback invoked when the engine self-corrects config values
         # (e.g. leverage capped by exchange). Register in app.py to persist to DB.
@@ -1063,17 +1065,14 @@ class TradingEngine:
             try:
                 success = await self._execute_entry_orders(trade, signal)
                 if not success:
-                    # OKX order-flow throttle (cancelSource=31) needs a much longer
-                    # backoff than the standard entry cooldown — retrying quickly just
-                    # makes the throttle worse and pushes the cancel ratio even higher.
+                    cooldown_sec = max(30, getattr(self.config, 'entry_cooldown_seconds', 60))
                     if self._last_entry_throttled:
-                        cooldown_sec = 300  # 5 minutes for throttle recovery
-                        logger.warning(
-                            "OKX order-flow throttle detected — applying %ds cooldown "
-                            "to allow cancel ratio to recover", cooldown_sec,
+                        # cancelSource=31 = POST_ONLY rejected at placement (price crossed spread).
+                        # No rate-limit cooldown needed; standard cooldown is sufficient.
+                        logger.info(
+                            "Entry POST_ONLY rejected (cancelSource=31) — price moved at placement; "
+                            "applying normal %ds cooldown before re-evaluating signal", cooldown_sec,
                         )
-                    else:
-                        cooldown_sec = max(30, getattr(self.config, 'entry_cooldown_seconds', 60))
                     self._entry_cooldown_until = datetime.utcnow() + timedelta(seconds=cooldown_sec)
                     logger.warning("Entry orders failed - applying %ds cooldown to prevent rapid retry",
                                    cooldown_sec)
@@ -1110,13 +1109,13 @@ class TradingEngine:
             logger.warning("No tick data available")
             return
 
-        # Throttle exit retries — after a failure don't hammer exchange every tick.
-        # After cancelSource=31 throttle use a much longer cooldown: rapid retries
-        # each generate 2 immediate-cancel orders which re-trigger the same throttle.
+        # Throttle exit retries — don't hammer exchange on every tick after a failure.
+        # POST_ONLY rejection (cancelSource=31): retry in 10s (no exchange cooldown needed).
+        # Other failure: use standard _exit_retry_interval_sec.
         if not self.state.paper_trading and self._last_exit_attempt:
             elapsed = (datetime.utcnow() - self._last_exit_attempt).total_seconds()
-            interval = (self._EXIT_THROTTLE_COOLDOWN_SEC
-                        if self._exit_throttle_count > 0
+            interval = (self._EXIT_POSTONLY_RETRY_SEC
+                        if self._exit_postonly_reject_count > 0
                         else self._exit_retry_interval_sec)
             if elapsed < interval:
                 return
@@ -1155,28 +1154,27 @@ class TradingEngine:
                 self._executing_trade = False
 
             if not exit_ok:
-                if self._last_exit_throttled:
-                    self._exit_throttle_count += 1
+                if self._last_exit_postonly_rejected:
+                    self._exit_postonly_reject_count += 1
                     logger.warning(
-                        "Exit blocked by cancelSource=31 throttle (attempt %d/%d) — "
-                        "waiting %ds before retry%s",
-                        self._exit_throttle_count,
-                        self._EXIT_THROTTLE_MARKET_AFTER,
-                        self._EXIT_THROTTLE_COOLDOWN_SEC,
-                        "; MARKET fallback active on next attempt"
-                        if self._exit_throttle_count >= self._EXIT_THROTTLE_MARKET_AFTER
+                        "Exit POST_ONLY rejected (cancelSource=31) — price crossed spread at "
+                        "placement (rejection #%d). Retry in %ds%s",
+                        self._exit_postonly_reject_count,
+                        self._EXIT_POSTONLY_RETRY_SEC,
+                        "; switching to MARKET on next attempt"
+                        if self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
                         else "",
                     )
                 else:
-                    self._exit_throttle_count = 0
+                    self._exit_postonly_reject_count = 0
                 logger.error(
                     "Exit orders FAILED for %s position — leaving position open for retry",
                     trade.position_type,
                 )
                 return  # Do NOT reset state; engine retries after _exit_retry_interval_sec
 
-        self._last_exit_attempt = None   # Clear retry timer on success
-        self._exit_throttle_count = 0    # Clear throttle counter on success
+        self._last_exit_attempt = None           # Clear retry timer on success
+        self._exit_postonly_reject_count = 0     # Clear POST_ONLY rejection counter on success
         trade.is_open = False
 
         # ── Realized P&L from ACTUAL fills (now that the executor has stamped
@@ -2103,13 +2101,13 @@ class TradingEngine:
         try:
             # Mirror the entry sizing: spot leg scaled by the hedge ratio.
             beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
-            # After repeated cancelSource=31 throttle failures fall back to MARKET
-            # to guarantee the position is closed, even at higher taker fee cost.
-            use_market = self._exit_throttle_count >= self._EXIT_THROTTLE_MARKET_AFTER
+            # After a POST_ONLY rejection fall back to MARKET to guarantee the close.
+            # One rejection is enough — staying on limit just leaves the position open longer.
+            use_market = self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
             if use_market:
                 logger.warning(
-                    "Exit throttle count=%d >= %d — using MARKET order to guarantee close",
-                    self._exit_throttle_count, self._EXIT_THROTTLE_MARKET_AFTER,
+                    "Exit POST_ONLY rejection count=%d >= %d — using MARKET order to guarantee close",
+                    self._exit_postonly_reject_count, self._EXIT_POSTONLY_MARKET_AFTER,
                 )
             spread_order = await self.order_executor.execute_exit(
                 position_type=trade.position_type,
@@ -2119,7 +2117,7 @@ class TradingEngine:
                 futures_quantity=trade.quantity,  # futures leg quantity
                 force_market=use_market,
             )
-            self._last_exit_throttled = spread_order.throttled if spread_order else False
+            self._last_exit_postonly_rejected = spread_order.throttled if spread_order else False
 
             if spread_order and spread_order.is_complete:
                 # Update actual exit prices from fills. Guard against 0.0 from
@@ -2241,8 +2239,8 @@ class TradingEngine:
         self._stop_loss_cooldown_until = None
         self._executing_trade = False
         self._last_entry_throttled = False
-        self._last_exit_throttled = False
-        self._exit_throttle_count = 0
+        self._last_exit_postonly_rejected = False
+        self._exit_postonly_reject_count = 0
         self._last_exit_attempt = None
         self._tick_fail_count = 0  # Reset tick failure counter too
         logger.info("Engine reset (running=%s, algo=%s)", was_running, algo_was_enabled)
