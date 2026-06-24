@@ -68,7 +68,7 @@ class SpreadOrder:
     timeout_at: datetime = None
     is_entry: bool = True  # True for entry, False for exit
     position_type: str = ""  # LONG or SHORT
-    throttled: bool = False  # True if OKX order-flow throttle (cancelSource=31) fired
+    throttled: bool = False  # True if a POST_ONLY rejection (cancelSource=31/20) occurred
 
     def __post_init__(self):
         if self.created_at is None:
@@ -614,7 +614,13 @@ class OrderExecutor:
             if not new_spot_tick or not new_futures_tick:
                 continue
 
-            self._update_target_prices(spread_order, new_spot_tick, new_futures_tick)
+            # Use a wider safety buffer on re-quotes after a POST_ONLY rejection.
+            # The rejection means the market moved faster than our tick snapshot;
+            # quoting 2 bp from the opposite touch (vs the normal 1 bp) gives
+            # more headroom against the async gap on the next placement attempt.
+            extra_buf = 1.0 if spread_order.throttled else 0.0
+            self._update_target_prices(spread_order, new_spot_tick, new_futures_tick,
+                                       extra_buffer_bps=extra_buf)
 
             # Amend orders if the *current target* has drifted more than 1 bp
             # from the price actually resting on the exchange (placed_price).
@@ -671,36 +677,40 @@ class OrderExecutor:
         spread_order: SpreadOrder,
         spot_tick: MarketTick,
         futures_tick: MarketTick,
+        extra_buffer_bps: float = 0.0,
     ) -> None:
         """
         Calculate target prices for POST_ONLY limit orders.
 
         For MAKER orders:
-        - BUY: place at bid + offset, but NEVER >= ask (POST_ONLY rejection)
-        - SELL: place at ask - offset, but NEVER <= bid (POST_ONLY rejection)
+        - BUY: price at bid-level, capped safely below the ask
+        - SELL: price at ask-level, floored safely above the bid
 
-        Safety cap prevents the price from crossing the spread which would
-        cause OKX to immediately cancel the POST_ONLY order, creating orphans.
+        The safety buffer keeps the resting price away from the opposite side
+        of the spread to avoid POST_ONLY rejection. The main risk is the async
+        gap: price is calculated from tick-at-T, but place_order is an await
+        that takes ~50 ms. In volatile conditions BTC can move $10+ in that
+        window, so the "safe" price at T may cross the new ask at T+50ms.
 
-        offset = 0: exactly at bid/ask (most passive, safest for POST_ONLY)
-        offset = 1-2 bps: slightly better price, still maker if spread is wider
+        extra_buffer_bps should be set to 1.0 after a POST_ONLY rejection so
+        the retry rests further from the opposite touch, reducing re-rejection
+        probability while the book is moving fast.
         """
         offset_bps = self.config.limit_order_price_offset_bps / 10000
-        # Safety buffer: keep price 1.0 bp away from the opposite side. Widened
-        # from 0.5 bp when the executor switched to POST_ONLY — a tighter cap
-        # let the price land too close to the touch on fast books, causing OKX
-        # to reject ~5-10% of orders for would-have-crossed. The reprice loop
-        # handles those, but a 1.0 bp buffer cuts rejections back to noise.
-        SAFETY_BUFFER_BPS = 1.0 / 10000
+        # Total safety buffer = base 1.0 bp + any extra requested by caller.
+        # Base was widened from 0.5 bp when POST_ONLY replaced plain LIMIT —
+        # the tighter cap caused ~5-10% of orders to land too close to the
+        # touch on fast books. Extra 1.0 bp is added after a rejection.
+        SAFETY_BUFFER_BPS = (1.0 + extra_buffer_bps) / 10000
 
         if spread_order.spot_leg.side == "BUY":
             target = spot_tick.bid * (1 + offset_bps)
-            # Cap below ask to guarantee maker fill (prevents POST_ONLY rejection)
+            # Cap below ask — prevents POST_ONLY rejection if market moves
             max_price = spot_tick.ask * (1 - SAFETY_BUFFER_BPS)
             spread_order.spot_leg.target_price = round(min(target, max_price), 2)
         else:
             target = spot_tick.ask * (1 - offset_bps)
-            # Cap above bid to guarantee maker fill (prevents POST_ONLY rejection)
+            # Floor above bid — prevents POST_ONLY rejection if market moves
             min_price = spot_tick.bid * (1 + SAFETY_BUFFER_BPS)
             spread_order.spot_leg.target_price = round(max(target, min_price), 2)
 
@@ -731,23 +741,14 @@ class OrderExecutor:
 
     async def _place_limit_orders(self, spread_order: SpreadOrder) -> None:
         """
-        Place initial limit orders for both legs.
+        Place initial POST_ONLY limit orders for both legs.
 
-        Uses regular LIMIT orders with passive prices (at/near best bid/ask).
-        This achieves maker fills without the POST_ONLY cancellation risk in tight spreads.
-
-        Note: POST_ONLY was causing issues - OKX cancels immediately if price would
-        cross the spread, which happens often in tight BTC markets.
+        POST_ONLY = OKX cancels the order (cancelSource=31/20) if it would
+        immediately match as a taker, guaranteeing the maker fee (0.8 bps vs
+        2.7 bps taker at VIP4). The reprice loop handles any rejection on the
+        next amend cycle; after one rejection the buffer widens to 2 bp so
+        the retry rests further from the opposite touch.
         """
-        # Use regular LIMIT orders - prices are already calculated to be passive
-        # (at best bid for BUY, best ask for SELL) which should achieve maker fills
-        # POST_ONLY = limit order that OKX cancels if it would fill immediately,
-        # guaranteeing the maker fee (3.4× cheaper at VIP4 dated futures: 0.8
-        # bps maker vs 2.7 bps taker). Plain "limit" at the bid/ask races the
-        # order book — by the time OKX receives the order the book has often
-        # moved and the order matches as a taker. POST_ONLY trades a small risk
-        # of rejection (the reprice loop handles it on the next interval) for
-        # guaranteed maker fills on every order that does land.
         order_type = "POST_ONLY"
 
         # Skip legs already marked FILLED by the pre-flight reconcile — those
