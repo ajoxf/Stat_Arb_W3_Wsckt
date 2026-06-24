@@ -646,17 +646,19 @@ class OrderExecutor:
                     spread_order.spot_leg.quantity,
                     spread_order.futures_leg.quantity)
 
-        # Snap to fresh REST ticks immediately before initial placement to minimise
-        # the async gap between price calculation and order arrival at OKX.
-        # cancelSource=31 fires when the market moves in the ~100-200ms between
-        # the engine's last WS tick and the order landing — fetching current
-        # best bid/ask here cuts that window to the HTTP round-trip only (~50ms).
-        try:
-            snap_spot = await self.spot_adapter.get_tick(self.config.spot_symbol)
-            snap_futures = await self.futures_adapter.get_tick(self.config.futures_symbol)
-        except Exception as _snap_err:
-            logger.warning("Orderbook snap failed (%s) — falling back to engine tick", _snap_err)
-            snap_spot, snap_futures = None, None
+        # Parallel snap of both ticks to initialise target prices. The per-leg
+        # snaps in _place_limit_orders will re-snap each leg again right before
+        # its individual place_order call — this initial snap is just a warm-up
+        # so _update_target_prices has reasonable prices from the start.
+        _snap = await asyncio.gather(
+            self.spot_adapter.get_tick(self.config.spot_symbol),
+            self.futures_adapter.get_tick(self.config.futures_symbol),
+            return_exceptions=True,
+        )
+        snap_spot    = _snap[0] if not isinstance(_snap[0], Exception) else None
+        snap_futures = _snap[1] if not isinstance(_snap[1], Exception) else None
+        if isinstance(_snap[0], Exception) or isinstance(_snap[1], Exception):
+            logger.warning("Initial orderbook snap partial/failed — per-leg snap will correct before placement")
 
         self._update_target_prices(
             spread_order,
@@ -764,6 +766,22 @@ class OrderExecutor:
 
         return spread_order
 
+    def _price_leg(self, leg: LegOrder, tick: MarketTick, extra_buffer_bps: float = 0.0) -> None:
+        """
+        Compute and set target_price on a single leg from a live tick.
+
+        BUY: bid + offset, capped below ask  (maker buy, won't cross to taker)
+        SELL: ask − offset, floored above bid (maker sell, won't cross to taker)
+
+        extra_buffer_bps widens the safety gap after a POST_ONLY rejection.
+        """
+        offset_bps = self.config.limit_order_price_offset_bps / 10000
+        buf = (1.0 + extra_buffer_bps) / 10000
+        if leg.side == "BUY":
+            leg.target_price = round(min(tick.bid * (1 + offset_bps), tick.ask * (1 - buf)), 2)
+        else:
+            leg.target_price = round(max(tick.ask * (1 - offset_bps), tick.bid * (1 + buf)), 2)
+
     def _update_target_prices(
         self,
         spread_order: SpreadOrder,
@@ -788,32 +806,8 @@ class OrderExecutor:
         the retry rests further from the opposite touch, reducing re-rejection
         probability while the book is moving fast.
         """
-        offset_bps = self.config.limit_order_price_offset_bps / 10000
-        # Total safety buffer = base 1.0 bp + any extra requested by caller.
-        # Base was widened from 0.5 bp when POST_ONLY replaced plain LIMIT —
-        # the tighter cap caused ~5-10% of orders to land too close to the
-        # touch on fast books. Extra 1.0 bp is added after a rejection.
-        SAFETY_BUFFER_BPS = (1.0 + extra_buffer_bps) / 10000
-
-        if spread_order.spot_leg.side == "BUY":
-            target = spot_tick.bid * (1 + offset_bps)
-            # Cap below ask — prevents POST_ONLY rejection if market moves
-            max_price = spot_tick.ask * (1 - SAFETY_BUFFER_BPS)
-            spread_order.spot_leg.target_price = round(min(target, max_price), 2)
-        else:
-            target = spot_tick.ask * (1 - offset_bps)
-            # Floor above bid — prevents POST_ONLY rejection if market moves
-            min_price = spot_tick.bid * (1 + SAFETY_BUFFER_BPS)
-            spread_order.spot_leg.target_price = round(max(target, min_price), 2)
-
-        if spread_order.futures_leg.side == "BUY":
-            target = futures_tick.bid * (1 + offset_bps)
-            max_price = futures_tick.ask * (1 - SAFETY_BUFFER_BPS)
-            spread_order.futures_leg.target_price = round(min(target, max_price), 2)
-        else:
-            target = futures_tick.ask * (1 - offset_bps)
-            min_price = futures_tick.bid * (1 + SAFETY_BUFFER_BPS)
-            spread_order.futures_leg.target_price = round(max(target, min_price), 2)
+        self._price_leg(spread_order.spot_leg, spot_tick, extra_buffer_bps)
+        self._price_leg(spread_order.futures_leg, futures_tick, extra_buffer_bps)
 
     async def _place_market_order(
         self,
@@ -851,6 +845,19 @@ class OrderExecutor:
 
         # Place spot limit order first (unless reconcile says it's already done)
         if not spot_skip:
+            # Per-leg snap: fetch the freshest price right before this placement so
+            # the order lands with a price that's only the HTTP round-trip stale (~50ms),
+            # not the cumulative latency of both placements (~800ms). This is the fix for
+            # cancelSource=31 rejections caused by stale prices at order arrival.
+            try:
+                _fresh_spot = await self.spot_adapter.get_tick(self.config.spot_symbol)
+                if _fresh_spot:
+                    self._price_leg(spread_order.spot_leg, _fresh_spot,
+                                    1.0 if spread_order.throttled else 0.0)
+                    logger.debug("Per-leg spot snap: target_price=%.4f", spread_order.spot_leg.target_price)
+            except Exception as _se:
+                logger.debug("Per-leg spot snap failed (%s) — using existing target price", _se)
+
             spot_result = await self.spot_adapter.place_order(
                 symbol=spread_order.spot_leg.symbol,
                 side=spread_order.spot_leg.side,
@@ -880,6 +887,17 @@ class OrderExecutor:
             await asyncio.sleep(0.1)
             await self._check_order_status(spread_order)
             return
+
+        # Per-leg futures snap: spot placement took ~600ms; re-snap futures now so
+        # its price is only the current HTTP round-trip stale at placement time.
+        try:
+            _fresh_fut = await self.futures_adapter.get_tick(self.config.futures_symbol)
+            if _fresh_fut:
+                self._price_leg(spread_order.futures_leg, _fresh_fut,
+                                1.0 if spread_order.throttled else 0.0)
+                logger.debug("Per-leg futures snap: target_price=%.4f", spread_order.futures_leg.target_price)
+        except Exception as _fe:
+            logger.debug("Per-leg futures snap failed (%s) — using existing target price", _fe)
 
         # Place futures limit order
         futures_result = await self.futures_adapter.place_order(

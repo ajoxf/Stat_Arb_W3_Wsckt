@@ -133,6 +133,7 @@ class TradingEngine:
         self._exit_postonly_reject_count: int = 0
         self._EXIT_POSTONLY_RETRY_SEC = 10       # retry quickly — no exchange cooldown needed
         self._EXIT_POSTONLY_MARKET_AFTER = 1     # fall back to MARKET after just 1 rejection
+        self._ENTRY_POSTONLY_RETRY_SEC = 10      # POST_ONLY price-crossed rejection — no exchange cooldown, retry quickly
         # Set True by _execute_exit_orders when the exit actually used MARKET (taker fee).
         # Read by _close_position fee calc and _round_trip_fees for accurate fee accounting.
         self._last_exit_was_market: bool = False
@@ -1142,14 +1143,16 @@ class TradingEngine:
             try:
                 success = await self._execute_entry_orders(trade, signal)
                 if not success:
-                    cooldown_sec = max(30, getattr(self.config, 'entry_cooldown_seconds', 60))
                     if self._last_entry_throttled:
-                        # cancelSource=31 = POST_ONLY rejected at placement (price crossed spread).
-                        # No rate-limit cooldown needed; standard cooldown is sufficient.
+                        # cancelSource=31: POST_ONLY price crossed the book — not a rate limit.
+                        # Per-leg snap on the next attempt uses a fresh price, so retry quickly.
+                        cooldown_sec = self._ENTRY_POSTONLY_RETRY_SEC
                         logger.info(
-                            "Entry POST_ONLY rejected (cancelSource=31) — price moved at placement; "
-                            "applying normal %ds cooldown before re-evaluating signal", cooldown_sec,
+                            "Entry POST_ONLY rejected (cancelSource=31) — retrying in %ds "
+                            "with per-leg price snap", cooldown_sec,
                         )
+                    else:
+                        cooldown_sec = max(30, getattr(self.config, 'entry_cooldown_seconds', 60))
                     self._entry_cooldown_until = datetime.utcnow() + timedelta(seconds=cooldown_sec)
                     logger.warning("Entry orders failed - applying %ds cooldown to prevent rapid retry",
                                    cooldown_sec)
