@@ -2038,6 +2038,12 @@ function updateFilterStatus(elementId, passed, value) {
             _maxHoldMs = 0;
             const mhRowClear = document.getElementById('position-max-hold-row');
             if (mhRowClear) mhRowClear.style.display = 'none';
+            // Reset top-bar P&L to zero when flat
+            const topPnlFlat = document.getElementById('daily-pnl');
+            if (topPnlFlat) {
+                topPnlFlat.textContent = '$0.00';
+                topPnlFlat.classList.remove('balance-positive', 'balance-negative');
+            }
         } else {
             badge.textContent = position;
             badge.className = 'badge ' + (position === 'LONG' ? 'badge-long' : 'badge-short');
@@ -2058,6 +2064,13 @@ function updateFilterStatus(elementId, passed, value) {
                     if (pnl != null) {
                         pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
                         pnlEl.className = pnl >= 0 ? 'price-up' : 'price-down';
+                        // Mirror fee-adjusted net P&L to top bar
+                        const topPnl = document.getElementById('daily-pnl');
+                        if (topPnl) {
+                            topPnl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+                            topPnl.classList.remove('balance-positive', 'balance-negative');
+                            topPnl.classList.add(pnl >= 0 ? 'balance-positive' : 'balance-negative');
+                        }
                     } else {
                         pnlEl.textContent = '-';
                         pnlEl.className = '';
@@ -2690,12 +2703,9 @@ function updateFilterStatus(elementId, passed, value) {
                 const availableEl = document.getElementById('available-balance');
                 if (availableEl) availableEl.textContent = '$' + (data.available || 0).toFixed(2);
 
-                const pnlEl = document.getElementById('daily-pnl');
-                if (pnlEl) {
-                    const pnl = data.unrealized_pnl || 0;
-                    pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
-                    pnlEl.classList.remove('balance-positive', 'balance-negative');
-                    pnlEl.classList.add(pnl >= 0 ? 'balance-positive' : 'balance-negative');
+                // daily-pnl is now driven by the engine's fee-adjusted net P&L
+                // (updated in updatePosition()) — do not overwrite from raw OKX unrealized_pnl here.
+                if (false) {
                 }
 
                 const accountCard = document.getElementById('account-card');
