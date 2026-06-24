@@ -197,6 +197,26 @@ class TradingConfig:
     # MARKET orders: ~5-10 bps market impact, more in high-vol conditions
     slippage_bps: float = 1.5
 
+    # ── Post-entry exit overrides ──────────────────────────────────────────
+    #
+    # Hurst regime-change exit: fires when H > hurst_exit_threshold for
+    # hurst_exit_n_ticks consecutive ticks after entry.  H crossing 0.5+ means
+    # the spread has flipped from mean-reverting to trending — exit before
+    # the dollar stop is hit.  Distinct from hurst_threshold (entry filter).
+    hurst_exit_enabled: bool = False
+    hurst_exit_threshold: float = 0.55   # H > this signals trending regime
+    hurst_exit_n_ticks: int = 3          # consecutive ticks required to fire
+
+    # Spread velocity exit: fires when adverse spread drift exceeds
+    # velocity_exit_pts_per_min for velocity_exit_n_ticks consecutive ticks.
+    # Adverse = spread rising for SHORT, spread falling for LONG.
+    # Velocity is measured over a rolling window of velocity_exit_window_ticks
+    # ticks (each tick ≈ 0.5s, so 20 ticks ≈ 10s of price history).
+    velocity_exit_enabled: bool = False
+    velocity_exit_pts_per_min: float = 2.0   # spread-point threshold per minute
+    velocity_exit_n_ticks: int = 5           # consecutive ticks above threshold
+    velocity_exit_window_ticks: int = 20     # rolling window for velocity calc
+
     # RFQ / Block trading — OKX atomic multi-leg execution
     # When per-leg notional >= rfq_notional_threshold_usd the engine routes to
     # OKX RFQ instead of the live order book, eliminating legging risk entirely.
@@ -291,6 +311,13 @@ class TradingConfig:
             'rfq_quote_timeout_sec': self.rfq_quote_timeout_sec,
             'rfq_min_quotes': self.rfq_min_quotes,
             'rfq_fallback_to_orderbook': self.rfq_fallback_to_orderbook,
+            'hurst_exit_enabled': self.hurst_exit_enabled,
+            'hurst_exit_threshold': self.hurst_exit_threshold,
+            'hurst_exit_n_ticks': self.hurst_exit_n_ticks,
+            'velocity_exit_enabled': self.velocity_exit_enabled,
+            'velocity_exit_pts_per_min': self.velocity_exit_pts_per_min,
+            'velocity_exit_n_ticks': self.velocity_exit_n_ticks,
+            'velocity_exit_window_ticks': self.velocity_exit_window_ticks,
         }
 
     @classmethod

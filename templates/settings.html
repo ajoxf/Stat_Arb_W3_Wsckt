@@ -248,6 +248,58 @@
 
                     <hr class="my-4" style="border-color: var(--border-color);">
 
+                    <!-- Post-Entry Exit Overrides -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Post-Entry Exit Overrides</h6>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="hurst_exit_enabled" name="hurst_exit_enabled" {% if config.hurst_exit_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="hurst_exit_enabled">Hurst Regime Exit</label>
+                            </div>
+                            <small class="text-secondary d-block mb-2">Exit when H &gt; threshold for N ticks after entry — spread has flipped to trending.</small>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <label class="form-label mb-0">H Threshold</label>
+                                    <input type="number" class="form-control form-control-sm" id="hurst_exit_threshold" name="hurst_exit_threshold" value="{{ config.hurst_exit_threshold }}" step="0.05" min="0.3" max="0.9">
+                                    <small class="text-secondary">H &gt; this = trending</small>
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label mb-0">Consecutive Ticks</label>
+                                    <input type="number" class="form-control form-control-sm" id="hurst_exit_n_ticks" name="hurst_exit_n_ticks" value="{{ config.hurst_exit_n_ticks }}" step="1" min="1" max="20">
+                                    <small class="text-secondary">Ticks to confirm</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="velocity_exit_enabled" name="velocity_exit_enabled" {% if config.velocity_exit_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="velocity_exit_enabled">Spread Velocity Exit</label>
+                            </div>
+                            <small class="text-secondary d-block mb-2">Exit when adverse drift &gt; X pts/min for N ticks — trend accelerating.</small>
+                            <div class="row g-2">
+                                <div class="col-4">
+                                    <label class="form-label mb-0">pts/min</label>
+                                    <input type="number" class="form-control form-control-sm" id="velocity_exit_pts_per_min" name="velocity_exit_pts_per_min" value="{{ config.velocity_exit_pts_per_min }}" step="0.5" min="0.1">
+                                    <small class="text-secondary">Threshold</small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label mb-0">Ticks</label>
+                                    <input type="number" class="form-control form-control-sm" id="velocity_exit_n_ticks" name="velocity_exit_n_ticks" value="{{ config.velocity_exit_n_ticks }}" step="1" min="1" max="20">
+                                    <small class="text-secondary">To confirm</small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label mb-0">Window</label>
+                                    <input type="number" class="form-control form-control-sm" id="velocity_exit_window_ticks" name="velocity_exit_window_ticks" value="{{ config.velocity_exit_window_ticks }}" step="5" min="5" max="120">
+                                    <small class="text-secondary">Ticks (~0.5s ea)</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
                     <!-- Self-Learning -->
                     <div class="row mb-4">
                         <div class="col-12">
@@ -1403,6 +1455,13 @@
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
             hurst_enabled: document.getElementById('hurst_enabled').checked,
             hurst_threshold: parseFloat(document.getElementById('hurst_threshold').value),
+            hurst_exit_enabled: document.getElementById('hurst_exit_enabled').checked,
+            hurst_exit_threshold: parseFloat(document.getElementById('hurst_exit_threshold').value),
+            hurst_exit_n_ticks: parseInt(document.getElementById('hurst_exit_n_ticks').value) || 3,
+            velocity_exit_enabled: document.getElementById('velocity_exit_enabled').checked,
+            velocity_exit_pts_per_min: parseFloat(document.getElementById('velocity_exit_pts_per_min').value) || 2.0,
+            velocity_exit_n_ticks: parseInt(document.getElementById('velocity_exit_n_ticks').value) || 5,
+            velocity_exit_window_ticks: parseInt(document.getElementById('velocity_exit_window_ticks').value) || 20,
             std_filter_enabled: document.getElementById('std_filter_enabled').checked,
             trend_direction_filter: document.getElementById('trend_direction_filter').checked,
             min_std_multiple: parseFloat(document.getElementById('min_std_multiple').value),
@@ -1542,6 +1601,13 @@
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
                 document.getElementById('hurst_threshold').value = config.hurst_threshold;
+                document.getElementById('hurst_exit_enabled').checked = config.hurst_exit_enabled || false;
+                document.getElementById('hurst_exit_threshold').value = config.hurst_exit_threshold || 0.55;
+                document.getElementById('hurst_exit_n_ticks').value = config.hurst_exit_n_ticks || 3;
+                document.getElementById('velocity_exit_enabled').checked = config.velocity_exit_enabled || false;
+                document.getElementById('velocity_exit_pts_per_min').value = config.velocity_exit_pts_per_min || 2.0;
+                document.getElementById('velocity_exit_n_ticks').value = config.velocity_exit_n_ticks || 5;
+                document.getElementById('velocity_exit_window_ticks').value = config.velocity_exit_window_ticks || 20;
                 document.getElementById('std_filter_enabled').checked = config.std_filter_enabled;
                 document.getElementById('trend_direction_filter').checked = config.trend_direction_filter || false;
                 document.getElementById('min_std_multiple').value = config.min_std_multiple;

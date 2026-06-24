@@ -646,8 +646,23 @@ class OrderExecutor:
                     spread_order.spot_leg.quantity,
                     spread_order.futures_leg.quantity)
 
-        # Calculate initial prices
-        self._update_target_prices(spread_order, spot_tick, futures_tick)
+        # Snap to fresh REST ticks immediately before initial placement to minimise
+        # the async gap between price calculation and order arrival at OKX.
+        # cancelSource=31 fires when the market moves in the ~100-200ms between
+        # the engine's last WS tick and the order landing — fetching current
+        # best bid/ask here cuts that window to the HTTP round-trip only (~50ms).
+        try:
+            snap_spot = await self.spot_adapter.get_tick(self.config.spot_symbol)
+            snap_futures = await self.futures_adapter.get_tick(self.config.futures_symbol)
+        except Exception as _snap_err:
+            logger.warning("Orderbook snap failed (%s) — falling back to engine tick", _snap_err)
+            snap_spot, snap_futures = None, None
+
+        self._update_target_prices(
+            spread_order,
+            snap_spot if snap_spot else spot_tick,
+            snap_futures if snap_futures else futures_tick,
+        )
 
         # Place initial limit orders, then poll once shortly after so an
         # instant-fill (market-crossing limit, deep book) is registered

@@ -6,6 +6,7 @@ Manages the main trading loop, position management, and order execution.
 import asyncio
 import logging
 import math
+from collections import deque
 from datetime import datetime, timedelta, date
 from typing import Optional, Callable, Dict, Any, List, Tuple
 from dataclasses import dataclass
@@ -135,6 +136,14 @@ class TradingEngine:
         # Set True by _execute_exit_orders when the exit actually used MARKET (taker fee).
         # Read by _close_position fee calc and _round_trip_fees for accurate fee accounting.
         self._last_exit_was_market: bool = False
+
+        # ── Post-entry exit tracking ────────────────────────────────────────
+        # Consecutive ticks where H > hurst_exit_threshold (reset on open/close)
+        self._hurst_exit_count: int = 0
+        # Consecutive ticks where adverse spread velocity > threshold
+        self._velocity_exit_count: int = 0
+        # Rolling window of recent spreads for velocity calc (maxlen=120 = 60s at 0.5s/tick)
+        self._spread_velocity_window: deque = deque(maxlen=120)
 
         # Optional callback invoked when the engine self-corrects config values
         # (e.g. leverage capped by exchange). Register in app.py to persist to DB.
@@ -837,6 +846,60 @@ class TradingEngine:
                         exit_type, reason_tag = "EXIT", "MAX_HOLD"
                         reason_detail = f"{held_min:.0f}m >= {max_hold_minutes:.0f}m, net +${net_pnl:.2f}"
 
+        # ── 3. Hurst regime-change exit ────────────────────────────────────
+        # H rising above threshold for N consecutive ticks means the spread has
+        # flipped from mean-reverting to trending — the core bet is structurally
+        # wrong, exit before the dollar stop is hit.
+        if not exit_type and getattr(self.config, 'hurst_exit_enabled', False):
+            h_thresh = getattr(self.config, 'hurst_exit_threshold', 0.55)
+            h_n      = max(1, int(getattr(self.config, 'hurst_exit_n_ticks', 3)))
+            if signal.hurst is not None and signal.hurst > h_thresh:
+                self._hurst_exit_count += 1
+                if self._hurst_exit_count >= h_n:
+                    exit_type     = "EXIT"
+                    reason_tag    = "HURST_REGIME"
+                    reason_detail = (
+                        f"H={signal.hurst:.3f} > {h_thresh} for "
+                        f"{self._hurst_exit_count} consecutive ticks "
+                        f"(regime flipped to trending)"
+                    )
+            else:
+                self._hurst_exit_count = 0
+
+        # ── 4. Spread velocity exit ────────────────────────────────────────
+        # If the spread drifts adversely faster than velocity_exit_pts_per_min
+        # for N consecutive ticks, the trend is accelerating — cut early.
+        # Adverse = spread rising for SHORT position, falling for LONG.
+        if not exit_type and getattr(self.config, 'velocity_exit_enabled', False):
+            vel_thresh = getattr(self.config, 'velocity_exit_pts_per_min', 2.0)
+            vel_n      = max(1, int(getattr(self.config, 'velocity_exit_n_ticks', 5)))
+            vel_window = max(2, int(getattr(self.config, 'velocity_exit_window_ticks', 20)))
+
+            self._spread_velocity_window.append(signal.spread)
+
+            if len(self._spread_velocity_window) >= vel_window:
+                spread_then      = self._spread_velocity_window[-vel_window]
+                window_min       = vel_window * 0.5 / 60.0   # 0.5s per tick → minutes
+                raw_velocity     = (signal.spread - spread_then) / window_min
+                # Adverse direction depends on position side
+                adverse_velocity = (raw_velocity if trade.position_type == "SHORT"
+                                    else -raw_velocity)
+                if adverse_velocity > vel_thresh:
+                    self._velocity_exit_count += 1
+                    if self._velocity_exit_count >= vel_n:
+                        exit_type     = "EXIT"
+                        reason_tag    = "SPREAD_VELOCITY"
+                        reason_detail = (
+                            f"adverse {adverse_velocity:.2f} pts/min > {vel_thresh} "
+                            f"for {self._velocity_exit_count} ticks "
+                            f"(spread {spread_then:.1f}→{signal.spread:.1f} "
+                            f"over {vel_window * 0.5:.0f}s)"
+                        )
+                else:
+                    self._velocity_exit_count = 0
+            else:
+                self._velocity_exit_count = 0
+
         if not exit_type:
             return None
 
@@ -1094,6 +1157,9 @@ class TradingEngine:
 
         self.open_trade = trade
         self._entry_tick_count = self.signal_generator.total_ticks
+        self._hurst_exit_count = 0
+        self._velocity_exit_count = 0
+        self._spread_velocity_window.clear()
         self.state.current_position = position_type
         self.signal_generator.set_position(
             position_type,
@@ -1273,6 +1339,9 @@ class TradingEngine:
         self.signal_generator.set_position("NONE")
         self.open_trade = None
         self._entry_tick_count = None
+        self._hurst_exit_count = 0
+        self._velocity_exit_count = 0
+        self._spread_velocity_window.clear()
 
         # Apply post-stop-loss cooldown to prevent immediate re-entry
         if signal.signal_type == "STOP_LOSS":
