@@ -7,6 +7,7 @@ import sys
 import time
 import signal
 import asyncio
+import concurrent.futures
 import logging
 import atexit
 from threading import Thread
@@ -1982,75 +1983,65 @@ def close_current_position():
     if engine.state.current_position == "NONE" or not engine.open_trade:
         return jsonify({'success': False, 'error': 'No open position'}), 400
 
-    # Create a manual exit signal
-    if engine.spot_tick and engine.futures_tick:
-        from models import Signal
-        manual_signal = Signal(
-            signal_type="EXIT",
-            zscore=engine.signal_generator.current_zscore,
-            spread=engine.signal_generator.current_spread,
-            spread_mean=engine.signal_generator.current_mean,
-            spread_std=engine.signal_generator.current_std,
-            hurst=engine.signal_generator.current_hurst,
-            regime="MANUAL_CLOSE",
-            current_position=engine.state.current_position,
-            timestamp=datetime.now(timezone.utc),
-        )
+    if not engine.spot_tick or not engine.futures_tick:
+        return jsonify({'success': False, 'error': 'No price data available'}), 400
 
-        # Execute the close
-        async def close_position():
-            trade = engine.open_trade
-            spot_price = engine.spot_tick.mid
-            futures_price = engine.futures_tick.mid
+    # Build a manual signal using current market state.  signal_type="MANUAL"
+    # is stored directly as trade.exit_reason by _close_position.
+    manual_signal = Signal(
+        signal_type="MANUAL",
+        zscore=engine.signal_generator.current_zscore,
+        spread=engine.signal_generator.current_spread,
+        spread_mean=engine.signal_generator.current_mean,
+        spread_std=engine.signal_generator.current_std,
+        hurst=engine.signal_generator.current_hurst,
+        regime="MANUAL_CLOSE",
+        current_position=engine.state.current_position,
+        timestamp=datetime.now(timezone.utc),
+    )
 
-            # Calculate P&L
-            if trade.position_type == "LONG":
-                spread_change = manual_signal.spread - trade.entry_spread
-                pnl = spread_change * trade.quantity
-            else:
-                spread_change = trade.entry_spread - manual_signal.spread
-                pnl = spread_change * trade.quantity
+    async def do_close():
+        # Capture reference before _close_position nulls engine.open_trade.
+        # _close_position modifies the trade object in-place: it stamps fill
+        # prices, recalculates P&L from fills (with correct maker/taker fees),
+        # marks is_open=False, saves via on_trade callback, and resets state.
+        trade = engine.open_trade
+        await engine._close_position(manual_signal)
+        return trade
 
-            pnl_percent = (pnl / trade.notional_usd) * 100 if trade.notional_usd > 0 else 0
-
-            # Update trade
-            trade.exit_time = datetime.now(timezone.utc)
-            trade.exit_spot_price = spot_price
-            trade.exit_futures_price = futures_price
-            trade.exit_spread = manual_signal.spread
-            trade.exit_zscore = manual_signal.zscore
-            trade.exit_reason = "MANUAL"
-            trade.pnl_usd = pnl
-            trade.pnl_percent = pnl_percent
-            trade.is_open = False
-
-            # Execute exit orders if not paper trading
-            if not engine.state.paper_trading and engine.order_executor:
-                await engine._execute_exit_orders(trade, manual_signal)
-
-            # Save to database
-            db.save_trade(trade)
-
-            # Reset engine state
-            engine.state.current_position = "NONE"
-            engine.signal_generator.set_position("NONE")
-            engine.open_trade = None
-
-            # Notify via socket
-            socketio.emit('trade', trade.to_dict(), namespace='/')
-
-            return trade
-
-        if loop:
-            future = asyncio.run_coroutine_threadsafe(close_position(), loop)
-            trade = future.result(timeout=30)
+    if loop:
+        try:
+            future = asyncio.run_coroutine_threadsafe(do_close(), loop)
+            # 120s covers the worst-case orphan-recovery path (~60s per leg +
+            # headroom).  The old 30s limit fired before BTC recovery filled,
+            # causing the trade to record mid-price P&L instead of fill P&L.
+            trade = future.result(timeout=120)
+            if trade and not trade.is_open:
+                return jsonify({
+                    'success': True,
+                    'trade': trade.to_dict(),
+                    'message': f"Position closed. P&L: ${trade.pnl_usd:.2f} ({trade.pnl_percent:.2f}%)"
+                })
+            # _close_position returned without closing (orders failed); engine
+            # will retry on the next tick.
             return jsonify({
-                'success': True,
-                'trade': trade.to_dict(),
-                'message': f"Position closed. P&L: ${trade.pnl_usd:.2f} ({trade.pnl_percent:.2f}%)"
-            })
+                'success': False,
+                'error': 'Exit orders did not complete — engine will retry. Check logs.'
+            }), 500
+        except concurrent.futures.TimeoutError:
+            # Recovery is still running in the background.  The trade will be
+            # saved correctly once fills arrive — no data loss, just a slow exit.
+            logger.warning("Manual close timeout (>120s) — orphan recovery still running")
+            return jsonify({
+                'success': False,
+                'error': 'Close taking longer than expected (recovery in progress). '
+                         'Check Trade Journal for the final result once recovery completes.'
+            }), 504
+        except Exception as e:
+            logger.error("Error during manual close: %s", e)
+            return jsonify({'success': False, 'error': str(e)}), 500
 
-    return jsonify({'success': False, 'error': 'No price data available'}), 400
+    return jsonify({'success': False, 'error': 'Event loop not running'}), 500
 
 
 @app.route('/api/exchange-orders', methods=['GET'])
