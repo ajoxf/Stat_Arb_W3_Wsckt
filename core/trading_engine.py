@@ -1328,12 +1328,20 @@ class TradingEngine:
         a_entry, b_entry = _bps(leg_a_deriv, entry_mode), _bps(leg_b_deriv, entry_mode)
         a_exit,  b_exit  = _bps(leg_a_deriv, exit_mode),  _bps(leg_b_deriv, exit_mode)
         spot_qty = trade.quantity * beta
-        fees_usd = (
+        fees_estimated = (
             a_entry / 10000.0 * spot_qty       * trade.entry_spot_price +
             b_entry / 10000.0 * trade.quantity * trade.entry_futures_price +
             a_exit  / 10000.0 * spot_qty       * trade.exit_spot_price +
             b_exit  / 10000.0 * trade.quantity * trade.exit_futures_price
         )
+        actual_fees = trade.entry_fees_usd + trade.exit_fees_usd
+        if actual_fees > 0:
+            fees_usd = actual_fees
+            logger.info("Using actual OKX fees: $%.4f (entry=$%.4f exit=$%.4f) vs estimated $%.4f",
+                        fees_usd, trade.entry_fees_usd, trade.exit_fees_usd, fees_estimated)
+        else:
+            fees_usd = fees_estimated
+            logger.debug("Using estimated fees: $%.4f (actual not captured)", fees_usd)
 
         pnl = pnl_gross - fees_usd
         pnl_percent = (pnl / trade.notional_usd) * 100 if trade.notional_usd > 0 else 0
@@ -2025,6 +2033,27 @@ class TradingEngine:
                 # Use VWAP-blended prices (for 1-slice these equal the single fill price).
                 trade.entry_spot_price = vwap_spot_price
                 trade.entry_futures_price = vwap_fut_price
+                # Capture actual entry fees paid — OKX returns the charged fee on
+                # each filled order. Fee is negative (amount deducted), so abs().
+                if trade.spot_order_id and trade.futures_order_id:
+                    try:
+                        _fs, _ff = await asyncio.gather(
+                            self.spot_adapter.get_order_status(
+                                self.config.spot_symbol, trade.spot_order_id),
+                            self.futures_adapter.get_order_status(
+                                self.config.futures_symbol, trade.futures_order_id),
+                            return_exceptions=True,
+                        )
+                        spot_fee = abs(float((_fs or {}).get("fee", 0) or 0)) \
+                            if not isinstance(_fs, Exception) else 0.0
+                        fut_fee  = abs(float((_ff or {}).get("fee", 0) or 0)) \
+                            if not isinstance(_ff, Exception) else 0.0
+                        trade.entry_fees_usd = spot_fee + fut_fee
+                        if trade.entry_fees_usd > 0:
+                            logger.info("Actual entry fees from OKX: $%.4f (spot=$%.4f fut=$%.4f)",
+                                        trade.entry_fees_usd, spot_fee, fut_fee)
+                    except Exception as _fe:
+                        logger.debug("Entry fee capture failed (%s) — will estimate at close", _fe)
                 # DO NOT override trade.quantity here. filled_qty from the adapter is in
                 # OKX contract units (1 contract for BTC-USDT-SWAP), not underlying BTC.
                 # trade.quantity was correctly set in underlying units at trade creation and
@@ -2252,6 +2281,26 @@ class TradingEngine:
                     trade.exit_spot_price = spread_order.spot_leg.filled_price
                 if spread_order.futures_leg.filled_price > 0:
                     trade.exit_futures_price = spread_order.futures_leg.filled_price
+                # Capture actual exit fees paid from OKX
+                if spread_order.spot_leg.order_id and spread_order.futures_leg.order_id:
+                    try:
+                        _fs, _ff = await asyncio.gather(
+                            self.spot_adapter.get_order_status(
+                                self.config.spot_symbol, spread_order.spot_leg.order_id),
+                            self.futures_adapter.get_order_status(
+                                self.config.futures_symbol, spread_order.futures_leg.order_id),
+                            return_exceptions=True,
+                        )
+                        spot_fee = abs(float((_fs or {}).get("fee", 0) or 0)) \
+                            if not isinstance(_fs, Exception) else 0.0
+                        fut_fee  = abs(float((_ff or {}).get("fee", 0) or 0)) \
+                            if not isinstance(_ff, Exception) else 0.0
+                        trade.exit_fees_usd = spot_fee + fut_fee
+                        if trade.exit_fees_usd > 0:
+                            logger.info("Actual exit fees from OKX: $%.4f (spot=$%.4f fut=$%.4f)",
+                                        trade.exit_fees_usd, spot_fee, fut_fee)
+                    except Exception as _fe:
+                        logger.debug("Exit fee capture failed (%s) — will estimate at close", _fe)
                 # Execution timing
                 trade.exit_placed_at = spread_order.created_at
                 fill_ts = (spread_order.spot_leg.last_update or

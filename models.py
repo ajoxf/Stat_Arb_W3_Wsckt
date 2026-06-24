@@ -408,6 +408,8 @@ class Trade:
     pnl_usd: float = 0.0
     pnl_percent: float = 0.0
     fees_usd: float = 0.0      # realized round-trip fees from OKX (4 leg-fills)
+    entry_fees_usd: float = 0.0  # actual fees captured from OKX fills at entry (transient)
+    exit_fees_usd:  float = 0.0  # actual fees captured from OKX fills at exit  (transient)
     pnl_gross_usd: float = 0.0 # P&L before fees (audit trail: pnl_gross - fees = pnl_usd)
     # ── Capital metrics (return-on-margin tracking) ──────────────────────────
     # Actually-locked capital at trade open: per-leg margin + M2M buffer. This

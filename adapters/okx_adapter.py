@@ -581,6 +581,9 @@ class OKXAdapter(ExchangeAdapter):
                     # Full list: https://www.okx.com/docs-v5/en/#error-code
                     "cancel_source": o.get("cancelSource", ""),
                     "cancel_source_reason": o.get("cancelSourceReason", ""),
+                    # Actual fee charged by OKX (negative = fee paid, in fee_ccy units)
+                    "fee":     float(o.get("fee", 0) or 0),
+                    "fee_ccy": o.get("feeCcy", ""),
                 }
             else:
                 # Order might not exist (already cancelled or never placed)
