@@ -850,7 +850,9 @@ class TradingEngine:
         # H rising above threshold for N consecutive ticks means the spread has
         # flipped from mean-reverting to trending — the core bet is structurally
         # wrong, exit before the dollar stop is hit.
-        if not exit_type and getattr(self.config, 'hurst_exit_enabled', False):
+        if (not exit_type
+                and getattr(self.config, 'hurst_exit_enabled', False)
+                and getattr(self.config, 'hurst_enabled', True)):
             h_thresh = getattr(self.config, 'hurst_exit_threshold', 0.55)
             h_n      = max(1, int(getattr(self.config, 'hurst_exit_n_ticks', 3)))
             if signal.hurst is not None and signal.hurst > h_thresh:
