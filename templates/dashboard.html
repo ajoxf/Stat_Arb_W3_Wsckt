@@ -82,6 +82,23 @@
 </div>
 {% endif %}
 
+<!-- Data Feed Interruption Banner -->
+<div class="alert mb-3 d-none" id="feed-stale-banner"
+     style="background:#1a1200;border:1.5px solid #ffc107;color:#fff;">
+    <div class="d-flex align-items-center justify-content-between">
+        <div>
+            <i class="bi bi-exclamation-triangle-fill me-2 text-warning"></i>
+            <strong class="text-warning" id="feed-stale-title">Data feed interrupted</strong>
+            <span class="ms-2" style="font-size:0.82rem;color:#ccc;" id="feed-stale-msg">
+                No price update received — market data feed may be reconnecting.
+            </span>
+        </div>
+        <button class="btn btn-outline-warning btn-sm ms-3" onclick="location.reload()">
+            <i class="bi bi-arrow-clockwise me-1"></i>Reload
+        </button>
+    </div>
+</div>
+
 <!-- Orphaned Leg A Position Warning Banner -->
 <div class="alert alert-warning mb-3 d-none" id="orphan-warning">
     <div class="d-flex align-items-center justify-content-between">
@@ -1373,7 +1390,31 @@
                 })
                 .catch(err => console.log('Polling error:', err));
         }
+
+        // Feed staleness banner — show after 10 s with no tick, hide immediately on recovery
+        const _staleBanner = document.getElementById('feed-stale-banner');
+        const _staleMsg    = document.getElementById('feed-stale-msg');
+        const _staleTitle  = document.getElementById('feed-stale-title');
+        const _feedAge = (Date.now() - lastUpdateTime) / 1000;
+        if (_feedAge > 10) {
+            if (_staleBanner.classList.contains('d-none')) {
+                _staleBanner.classList.remove('d-none');
+            }
+            _staleMsg.textContent = `No price update for ${Math.round(_feedAge)}s — market data feed may be reconnecting.`;
+        } else {
+            if (!_staleBanner.classList.contains('d-none')) {
+                _staleBanner.classList.add('d-none');
+                _staleTitle.textContent = 'Data feed resumed';
+                _staleMsg.textContent   = '';
+            }
+        }
     }, UPDATE_INTERVAL);
+
+    // Also hide stale banner on every received tick
+    socket.on('connect', function() {
+        const b = document.getElementById('feed-stale-banner');
+        if (b && !b.classList.contains('d-none')) b.classList.add('d-none');
+    });
 
     let prevSpotPrice = null;
     let prevFuturesPrice = null;
