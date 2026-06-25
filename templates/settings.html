@@ -134,6 +134,11 @@
                             <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.1" min="0" max="20">
                             <small class="text-secondary">% of capital-at-risk per trade. <strong>0.5&ndash;1.0</strong> recommended</small>
                         </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Min Reward / Risk (R:R)</label>
+                            <input type="number" class="form-control" id="min_entry_rr_multiple" name="min_entry_rr_multiple" value="{{ config.min_entry_rr_multiple }}" step="0.1" min="0" max="10">
+                            <small class="text-secondary">Block entry if profit target &divide; stop &lt; this. <strong>1.5</strong> recommended. <strong>0</strong> = off</small>
+                        </div>
                     </div>
                     <div class="row mb-3">
                         <div class="col-md-4">
@@ -242,6 +247,17 @@
                                 rising spread (Leg B outperforming) allows SHORT only;
                                 falling spread allows LONG only.
                                 Useful when Hurst is high and mean-reversion is unreliable.
+                            </small>
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="z_reset_gate_enabled" name="z_reset_gate_enabled" {% if config.z_reset_gate_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="z_reset_gate_enabled">Z-Reset Gate</label>
+                            </div>
+                            <small class="text-secondary d-block">
+                                When <strong>ON</strong>: after a stop-loss, blocks re-entry in the same direction
+                                until the z-score crosses back through &plusmn;exit&nbsp;threshold.
+                                Prevents re-entering a trending market immediately after a loss.
                             </small>
                         </div>
                     </div>
@@ -1484,7 +1500,9 @@
             trailing_stop_floor_pct: parseFloat(document.getElementById('trailing_stop_floor_pct').value) || 0,
             std_filter_enabled: document.getElementById('std_filter_enabled').checked,
             trend_direction_filter: document.getElementById('trend_direction_filter').checked,
+            z_reset_gate_enabled: document.getElementById('z_reset_gate_enabled').checked,
             min_std_multiple: parseFloat(document.getElementById('min_std_multiple').value),
+            min_entry_rr_multiple: parseFloat(document.getElementById('min_entry_rr_multiple').value) || 0,
             position_size_usd: parseFloat(document.getElementById('position_size_usd').value),
             max_position_size_usd: parseFloat(document.getElementById('max_position_size_usd').value),
             spot_leverage: parseInt(document.getElementById('spot_leverage').value),
@@ -1632,7 +1650,9 @@
                 document.getElementById('trailing_stop_floor_pct').value = config.trailing_stop_floor_pct || 0;
                 document.getElementById('std_filter_enabled').checked = config.std_filter_enabled;
                 document.getElementById('trend_direction_filter').checked = config.trend_direction_filter || false;
+                document.getElementById('z_reset_gate_enabled').checked = config.z_reset_gate_enabled !== false;
                 document.getElementById('min_std_multiple').value = config.min_std_multiple;
+                document.getElementById('min_entry_rr_multiple').value = config.min_entry_rr_multiple || 0;
                 document.getElementById('position_size_usd').value = config.position_size_usd;
                 document.getElementById('max_position_size_usd').value = config.max_position_size_usd;
                 document.getElementById('spot_leverage').value = config.spot_leverage || 1;
