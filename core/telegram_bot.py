@@ -351,6 +351,66 @@ class TelegramNotifier:
         except Exception as e:
             logger.error("Error building trade exit notification: %s", e)
 
+    def notify_trade_analysis(self, trade_id: int, analysis: dict) -> None:
+        """Send AI post-trade analysis results to Telegram."""
+        if not self.is_ready() or not self._notify_trades:
+            return
+        try:
+            health   = analysis.get("health_score", 0)
+            conf     = analysis.get("confidence_score", 0)
+            cause    = (analysis.get("root_cause") or "—")[:300]
+            summary  = (analysis.get("summary") or "—")[:300]
+            recs     = analysis.get("recommendations") or []
+
+            # Health emoji
+            if health >= 70:
+                health_icon = "🟢"
+            elif health >= 40:
+                health_icon = "🟡"
+            else:
+                health_icon = "🔴"
+
+            R = self._R
+            SEP = "─" * 24
+
+            rows = [
+                f"<b>🔬 AI Post-Trade Analysis  ·  Trade #{trade_id}</b>",
+                SEP,
+                R("Health", f"{health_icon} {health}/100"),
+                R("Confidence", f"{conf}/10"),
+                "",
+                "<b>Root Cause</b>",
+                f"<i>{cause}</i>",
+            ]
+
+            # Top 3 recommendations
+            if recs:
+                rows += ["", "<b>Recommendations</b>"]
+                for rec in recs[:3]:
+                    rtype = rec.get("type", "")
+                    rationale = (rec.get("rationale") or "")[:150]
+                    if rtype == "PARAMETER_CHANGE":
+                        param = rec.get("param", "")
+                        cur   = rec.get("current_value", "")
+                        sug   = rec.get("suggested_value", "")
+                        rows.append(f"  ⚙️ <code>{param}</code>: {cur} → <b>{sug}</b>  <i>{rationale}</i>")
+                    elif rtype == "FILTER_TOGGLE":
+                        param = rec.get("param", "")
+                        sug   = rec.get("suggested_value", "")
+                        rows.append(f"  🔀 Toggle <code>{param}</code> → <b>{sug}</b>  <i>{rationale}</i>")
+                    elif rtype == "POSITION_SIZE_CHANGE":
+                        cur  = rec.get("current_value", "")
+                        sug  = rec.get("suggested_value", "")
+                        rows.append(f"  📏 Position size: {cur} → <b>{sug}</b>  <i>{rationale}</i>")
+                    elif rtype == "OBSERVATION":
+                        rows.append(f"  💡 <i>{rationale}</i>")
+
+            rows += ["", "<b>Summary</b>", f"<i>{summary}</i>"]
+
+            self._send("\n".join(rows))
+        except Exception as e:
+            logger.error("Error building trade analysis notification: %s", e)
+
     def notify_signal(self, signal) -> None:
         """Send a trading signal notification (non-NONE signals only)."""
         if not self.is_ready() or not self._notify_signals:

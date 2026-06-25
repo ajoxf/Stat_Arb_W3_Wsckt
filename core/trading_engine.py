@@ -149,6 +149,12 @@ class TradingEngine:
         # trailing stop to measure how far the trade has pulled back from its high.
         self._peak_pnl: float = 0.0
 
+        # Z-score reset gate: after a STOP_LOSS in direction X, block new X entries
+        # until z-score crosses back through ±exit_threshold (spread must genuinely
+        # return to normal before the same side is re-entered).
+        # None = no gate active.  "SHORT" or "LONG" = gate for that direction.
+        self._z_reset_block_direction: Optional[str] = None
+
         # Optional callback invoked when the engine self-corrects config values
         # (e.g. leverage capped by exchange). Register in app.py to persist to DB.
         self.on_config_corrected = None
@@ -1001,6 +1007,37 @@ class TradingEngine:
             }
             return
 
+        # Z-score reset gate: after a STOP_LOSS, block same-direction re-entry until
+        # the z-score has returned to the exit zone (spread genuinely reverted).
+        if (self._z_reset_block_direction
+                and signal.signal_type == self._z_reset_block_direction):
+            reset_z = getattr(self.config, 'exit_threshold', 0.5)
+            z = signal.zscore
+            # SHORT reset: z must rise above −reset_z  (back to near-mean or above)
+            # LONG  reset: z must fall below +reset_z
+            if self._z_reset_block_direction == "SHORT":
+                cleared = z >= -reset_z
+            else:
+                cleared = z <= reset_z
+            if cleared:
+                logger.info(
+                    "Z-reset gate cleared for %s (z=%.4f crossed ±%.2f) — same-side entry allowed",
+                    self._z_reset_block_direction, z, reset_z,
+                )
+                self._z_reset_block_direction = None
+            else:
+                logger.debug(
+                    "Z-reset gate blocking %s re-entry: z=%.4f has not returned to ±%.2f",
+                    self._z_reset_block_direction, z, reset_z,
+                )
+                self.signal_generator.last_blocked_signal = {
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'would_be_signal': signal.signal_type,
+                    'zscore': round(z, 4),
+                    'reason': f"Z-reset gate: z={z:.2f} must return to ±{reset_z:.2f} before same-side re-entry",
+                }
+                return
+
         # Check general entry cooldown (prevents rapid re-entry after any trade)
         if self._entry_cooldown_until and datetime.utcnow() < self._entry_cooldown_until:
             remaining = (self._entry_cooldown_until - datetime.utcnow()).total_seconds()
@@ -1395,6 +1432,15 @@ class TradingEngine:
             from datetime import timedelta
             self._stop_loss_cooldown_until = datetime.utcnow() + timedelta(seconds=self._stop_loss_cooldown_sec)
             logger.info("Stop-loss cooldown active for %ds", self._stop_loss_cooldown_sec)
+            # Z-reset gate: block same-direction re-entry until z-score returns to
+            # the exit zone (±exit_threshold), preventing re-entry into a trending market.
+            closed_direction = trade.position_type  # "SHORT" or "LONG"
+            self._z_reset_block_direction = closed_direction
+            reset_z = getattr(self.config, 'exit_threshold', 0.5)
+            logger.info(
+                "Z-reset gate armed for %s: waiting for z to return to ±%.2f before same-side re-entry",
+                closed_direction, reset_z,
+            )
 
         # Apply general entry cooldown after any trade
         from datetime import timedelta
@@ -2379,6 +2425,7 @@ class TradingEngine:
             'open_trade': open_trade_dict,
             'sl_cooldown_remaining': sl_cooldown_remaining,
             'sl_cooldown_sec': self._stop_loss_cooldown_sec,
+            'z_reset_block_direction': self._z_reset_block_direction,
             'executing_trade': self._executing_trade,
             'position_mismatch': self._position_mismatch,
             'entry_execution_mode': getattr(self.config, 'entry_execution_mode', 'LIMIT'),
@@ -2413,6 +2460,7 @@ class TradingEngine:
         self.spot_tick = None
         self.futures_tick = None
         self._stop_loss_cooldown_until = None
+        self._z_reset_block_direction = None
         self._executing_trade = False
         self._last_entry_throttled = False
         self._last_exit_postonly_rejected = False

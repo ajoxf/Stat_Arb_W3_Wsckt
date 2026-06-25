@@ -247,6 +247,13 @@ class PostTradeAnalyzer:
                     namespace="/",
                 )
 
+            # Push analysis to Telegram
+            try:
+                from core.telegram_bot import get_notifier
+                get_notifier().notify_trade_analysis(trade.id, analysis_data)
+            except Exception as _te:
+                logger.debug("Telegram analysis notification failed: %s", _te)
+
             # Hand off to AutoTuner
             if self.auto_tuner:
                 self.auto_tuner.check_and_apply(trade.id)
