@@ -486,6 +486,8 @@ class TelegramNotifier:
             f"{'/dashboard':<{C}}full system snapshot",
             f"{'/ping':<{C}}alive check (always responds)",
             f"{'/status':<{C}}engine &amp; algo state",
+            f"{'/pause':<{C}}halt new entries",
+            f"{'/resume':<{C}}re-enable new entries",
             f"{'/positions':<{C}}open positions",
             f"{'/trades':<{C}}recent closed trades",
             f"{'/balance':<{C}}account balance",
