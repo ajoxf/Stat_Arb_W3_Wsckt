@@ -153,6 +153,7 @@ class PostTradeAnalyzer:
         self.socketio = socketio
         self.auto_tuner = auto_tuner
         self._api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+        self._credits_exhausted: bool = False
         if not self._api_key:
             logger.warning("ANTHROPIC_API_KEY not set — post-trade analysis disabled")
 
@@ -163,6 +164,8 @@ class PostTradeAnalyzer:
         if trade.is_open or trade.is_paper:
             return
         if not self._api_key:
+            return
+        if self._credits_exhausted:
             return
         threading.Thread(
             target=self._run_analysis,
@@ -248,8 +251,16 @@ class PostTradeAnalyzer:
             if self.auto_tuner:
                 self.auto_tuner.check_and_apply(trade.id)
 
-        except Exception:
-            logger.exception("Post-trade analysis failed for trade %s", trade.id)
+        except Exception as exc:
+            msg = str(exc)
+            if "credit balance is too low" in msg or "insufficient_quota" in msg:
+                self._credits_exhausted = True
+                logger.error(
+                    "Anthropic API credits exhausted — post-trade analysis disabled. "
+                    "Add credits at https://console.anthropic.com/settings/billing"
+                )
+            else:
+                logger.exception("Post-trade analysis failed for trade %s", trade.id)
 
     # ── Prompt builder ────────────────────────────────────────────────────────
 
