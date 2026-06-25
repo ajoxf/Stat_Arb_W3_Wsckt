@@ -38,47 +38,51 @@ _MAX_TOKENS = 2048
 _ANALYSIS_TOOL = {
     "name": "record_trade_analysis",
     "description": (
-        "Record a complete, structured post-trade analysis. "
-        "Use all four recommendation types: PARAMETER_CHANGE, FILTER_TOGGLE, "
-        "POSITION_SIZE_CHANGE, and OBSERVATION where appropriate."
+        "Record a plain-English post-trade analysis that anyone can understand. "
+        "No jargon, no technical terms. Write as if explaining to a friend "
+        "who knows nothing about trading or finance. "
+        "Also include typed recommendations for the auto-tuner."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "root_cause": {
-                "type": "string",
-                "description": "1-2 sentences: the fundamental reason this trade won or lost."
-            },
-            "patterns": {
+            "what_happened": {
                 "type": "string",
                 "description": (
-                    "1-2 sentences: repeating failure/success patterns visible "
-                    "in the cross-trade history provided."
+                    "2-3 plain-English sentences: did the trade make or lose money? "
+                    "What specifically happened — did the price move in our favour or against us? "
+                    "No jargon. Example: 'The trade made $1.54. We bet that ETH and BTC "
+                    "prices would move closer together, and they did within 48 seconds.'"
                 )
             },
-            "execution_quality": {
+            "why": {
                 "type": "string",
                 "description": (
-                    "Assessment of entry/exit execution: fill efficiency, "
-                    "cost-to-opportunity ratio, leg synchronisation. 1-2 sentences."
+                    "2-3 plain-English sentences: what caused that outcome? "
+                    "Was the market behaving as expected? Was there a trend, a sudden move, "
+                    "or normal reversion? No jargon. Example: 'The gap between the two prices "
+                    "was unusually large and snapped back quickly, which is exactly the "
+                    "condition we look for.'"
                 )
             },
-            "regime_assessment": {
+            "what_could_be_better": {
                 "type": "string",
                 "description": (
-                    "Market regime at trade time: mean-reverting vs trending, "
-                    "spread volatility, any structural shift observed. 1-2 sentences."
+                    "2-3 plain-English sentences: what could have improved this trade? "
+                    "Consider timing, position size, entry/exit levels, or market conditions. "
+                    "No jargon. Example: 'We could have waited for an even larger gap before "
+                    "entering, which would have given more profit potential relative to the risk.'"
                 )
             },
             "recommendations": {
                 "type": "array",
                 "description": (
-                    "Up to 4 recommendations across all four types. "
-                    "PARAMETER_CHANGE: numeric param within a safe corridor. "
+                    "Up to 4 recommendations. Write all rationale fields in plain English — "
+                    "no jargon. PARAMETER_CHANGE: numeric param within a safe corridor. "
                     "FILTER_TOGGLE: param is 'hurst_enabled' or 'std_filter_enabled', "
                     "  current_value/suggested_value use 1.0=on 0.0=off. "
                     "POSITION_SIZE_CHANGE: param is 'position_size_usd', only suggest lower values. "
-                    "OBSERVATION: human-review insight, param is a short label, "
+                    "OBSERVATION: human-review insight, param is a short plain-English label, "
                     "  current_value and suggested_value are 0."
                 ),
                 "maxItems": 4,
@@ -125,11 +129,14 @@ _ANALYSIS_TOOL = {
             },
             "summary": {
                 "type": "string",
-                "description": "One sentence: outcome, key pattern, most important next action."
+                "description": (
+                    "One plain-English sentence summarising the outcome and the single "
+                    "most important takeaway. No jargon."
+                )
             },
         },
         "required": [
-            "root_cause", "patterns", "execution_quality", "regime_assessment",
+            "what_happened", "why", "what_could_be_better",
             "recommendations", "health_score", "confidence_score", "summary",
         ],
     },
@@ -216,11 +223,14 @@ class PostTradeAnalyzer:
 
             recs = analysis_data.get("recommendations", [])
             logger.info(
-                "Post-trade analysis: trade=%d health=%d/100 score=%d/10 recs=%d",
+                "Post-trade analysis: trade=%d health=%d/100 score=%d/10 recs=%d "
+                "tokens(in=%d out=%d)",
                 trade.id,
                 analysis_data.get("health_score", 0),
                 analysis_data.get("confidence_score", 0),
                 len(recs),
+                message.usage.input_tokens,
+                message.usage.output_tokens,
             )
 
             # Persist learning
@@ -378,9 +388,10 @@ class PostTradeAnalyzer:
             f"{reason}: {cnt}" for reason, cnt in exit_reasons.most_common()
         )
 
-        return f"""You are a quant analyst reviewing a crypto statistical-arbitrage (spot-futures basis) trade.
-Be thorough. Use all four recommendation types where the evidence warrants it.
-Call record_trade_analysis to record your structured analysis.
+        return f"""You are reviewing a crypto trading strategy for someone who is not a financial or technical expert.
+Write all analysis fields in plain, simple English — no jargon, no acronyms, no formulas.
+Imagine explaining each section to a smart friend who has never traded before.
+Use the four-section format below and call record_trade_analysis to record your analysis.
 
 ═══ THIS TRADE · {outcome} ═══
 Asset:            {trade.asset}
@@ -422,17 +433,16 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 ═══ ACCUMULATED LEARNINGS (most recent first) ═══
 {chr(10).join(learnings_lines) if learnings_lines else "  (no prior learnings)"}
 
-═══ RECOMMENDATION GUIDE ═══
-PARAMETER_CHANGE  — numeric param within corridor, auto-applied at 3+ consensus, conf ≥0.70
-FILTER_TOGGLE     — hurst_enabled or std_filter_enabled (1.0=on, 0.0=off)
-                    auto-applied at 5+ consensus, conf ≥0.72
-                    Only recommend disabling if repeated evidence the filter is blocking good trades
-                    or enabling if regime evidence shows filter would have prevented losses
-POSITION_SIZE_CHANGE — position_size_usd only, ONLY suggest values lower than current
-                    auto-applied at 4+ consensus, conf ≥0.75
-                    Use this if the strategy is clearly in a losing streak / wrong regime
-OBSERVATION       — any insight for human review: execution anomalies, market structure,
-                    funding rate concerns, time-of-day patterns, regime warnings
-                    These are surfaced on the dashboard, never auto-applied
+═══ ANALYSIS FORMAT ═══
+Fill these four sections in plain English:
 
-Call record_trade_analysis now with your full analysis."""
+what_happened  — What worked or didn't work? (did the trade win or lose, what happened to prices)
+why            — Why? (what caused that outcome — market behaviour, conditions at the time)
+what_could_be_better — What could have been better? (timing, size, entry/exit levels)
+recommendations — Up to 4 items. Write the rationale in plain English anyone can understand.
+  PARAMETER_CHANGE     — numeric setting change, auto-applied at 3+ consensus, conf ≥0.70
+  FILTER_TOGGLE        — turn hurst_enabled or std_filter_enabled on/off, needs 5+ consensus
+  POSITION_SIZE_CHANGE — reduce position size only, needs 4+ consensus
+  OBSERVATION          — anything worth a human seeing: shown on dashboard, never auto-applied
+
+Call record_trade_analysis now."""

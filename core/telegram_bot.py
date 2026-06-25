@@ -356,13 +356,14 @@ class TelegramNotifier:
         if not self.is_ready() or not self._notify_trades:
             return
         try:
-            health   = analysis.get("health_score", 0)
-            conf     = analysis.get("confidence_score", 0)
-            cause    = (analysis.get("root_cause") or "—")[:300]
-            summary  = (analysis.get("summary") or "—")[:300]
-            recs     = analysis.get("recommendations") or []
+            health          = analysis.get("health_score", 0)
+            conf            = analysis.get("confidence_score", 0)
+            what_happened   = (analysis.get("what_happened") or "—")[:300]
+            why             = (analysis.get("why") or "—")[:300]
+            what_better     = (analysis.get("what_could_be_better") or "—")[:300]
+            summary         = (analysis.get("summary") or "—")[:300]
+            recs            = analysis.get("recommendations") or []
 
-            # Health emoji
             if health >= 70:
                 health_icon = "🟢"
             elif health >= 40:
@@ -374,21 +375,26 @@ class TelegramNotifier:
             SEP = "─" * 24
 
             rows = [
-                f"<b>🔬 AI Post-Trade Analysis  ·  Trade #{trade_id}</b>",
+                f"<b>🔬 AI Trade Review  ·  Trade #{trade_id}</b>",
                 SEP,
                 R("Health", f"{health_icon} {health}/100"),
                 R("Confidence", f"{conf}/10"),
                 "",
-                "<b>Root Cause</b>",
-                f"<i>{cause}</i>",
+                "<b>What worked or didn't work?</b>",
+                f"<i>{what_happened}</i>",
+                "",
+                "<b>Why?</b>",
+                f"<i>{why}</i>",
+                "",
+                "<b>What could have been better?</b>",
+                f"<i>{what_better}</i>",
             ]
 
-            # Top 3 recommendations
             if recs:
                 rows += ["", "<b>Recommendations</b>"]
-                for rec in recs[:3]:
-                    rtype = rec.get("type", "")
-                    rationale = (rec.get("rationale") or "")[:150]
+                for rec in recs[:4]:
+                    rtype     = rec.get("type", "")
+                    rationale = (rec.get("rationale") or "")[:200]
                     if rtype == "PARAMETER_CHANGE":
                         param = rec.get("param", "")
                         cur   = rec.get("current_value", "")
@@ -401,11 +407,11 @@ class TelegramNotifier:
                     elif rtype == "POSITION_SIZE_CHANGE":
                         cur  = rec.get("current_value", "")
                         sug  = rec.get("suggested_value", "")
-                        rows.append(f"  📏 Position size: {cur} → <b>{sug}</b>  <i>{rationale}</i>")
+                        rows.append(f"  📏 Position size: ${cur} → <b>${sug}</b>  <i>{rationale}</i>")
                     elif rtype == "OBSERVATION":
                         rows.append(f"  💡 <i>{rationale}</i>")
 
-            rows += ["", "<b>Summary</b>", f"<i>{summary}</i>"]
+            rows += ["", SEP, f"<i>{summary}</i>"]
 
             self._send("\n".join(rows))
         except Exception as e:
