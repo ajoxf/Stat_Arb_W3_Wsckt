@@ -312,25 +312,88 @@ class PostTradeAnalyzer:
         config: "TradingConfig",
     ) -> str:
         # ── Duration ──
+        duration_secs = None
         duration_str = "unknown"
         if trade.entry_time and trade.exit_time:
-            secs = (trade.exit_time - trade.entry_time).total_seconds()
-            duration_str = f"{secs / 60:.1f} min"
+            et = trade.entry_time.replace(tzinfo=None) if trade.entry_time.tzinfo else trade.entry_time
+            xt = trade.exit_time.replace(tzinfo=None)  if trade.exit_time.tzinfo  else trade.exit_time
+            duration_secs = (xt - et).total_seconds()
+            if duration_secs < 120:
+                duration_str = f"{duration_secs:.0f} sec"
+            else:
+                duration_str = f"{duration_secs / 60:.1f} min"
 
         outcome = "WIN" if trade.pnl_usd > 0 else "LOSS"
 
+        # ── Gross / net / fee split ──
+        gross_usd = trade.pnl_gross_usd if trade.pnl_gross_usd else trade.pnl_usd
+        fees_usd  = trade.fees_usd or 0.0
+        net_usd   = trade.pnl_usd
+        fee_pct_of_gross = (fees_usd / abs(gross_usd) * 100) if gross_usd else 0.0
+
+        # ── Capital / return-on-capital ──
+        capital = trade.capital_locked_usd or 0.0
+        roc_pct  = trade.pnl_pct_on_capital or 0.0
+
+        # ── Notional & bps ──
+        notional = trade.notional_usd or config.position_size_usd or 0.0
+
+        # ── Z-score reversion (how much of entry gap closed) ──
+        ez = abs(trade.entry_zscore)
+        xz = abs(trade.exit_zscore)
+        z_rev_pct = ((ez - xz) / ez * 100) if ez > 0 else 0.0
+
+        # ── Spread dollar move ──
+        spread_move = trade.entry_spread - trade.exit_spread  # positive for LONG if spread fell
+        spread_move_usd = spread_move * trade.quantity if trade.quantity else 0.0
+
+        # ── Entry spread context ──
+        e_std  = trade.entry_spread_std
+        e_mean = trade.entry_spread_mean
+
+        # ── Execution latency ──
+        entry_lat = f"{trade.entry_latency_ms:.0f} ms" if trade.entry_latency_ms else "n/a"
+        exit_lat  = f"{trade.exit_latency_ms:.0f} ms"  if trade.exit_latency_ms  else "n/a"
+
+        # ── Cost analysis (config round-trip estimate) ──
+        entry_mode = getattr(config, "entry_execution_mode", "MARKET")
+        exit_mode  = getattr(config, "exit_execution_mode", "MARKET")
+        spot_ef  = config.spot_maker_fee_bps  if entry_mode == "LIMIT" else config.spot_taker_fee_bps
+        fut_ef   = config.futures_maker_fee_bps if entry_mode == "LIMIT" else config.futures_taker_fee_bps
+        spot_xf  = config.spot_maker_fee_bps  if exit_mode  == "LIMIT" else config.spot_taker_fee_bps
+        fut_xf   = config.futures_maker_fee_bps if exit_mode  == "LIMIT" else config.futures_taker_fee_bps
+        total_fees_bps = spot_ef + fut_ef + spot_xf + fut_xf
+        total_slip_bps = config.slippage_bps * 4
+        total_cost_bps = total_fees_bps + total_slip_bps
+
+        gross_pnl_bps = (gross_usd / notional * 10000) if notional > 0 else 0.0
+        cor = round(total_cost_bps / abs(gross_pnl_bps), 2) if gross_pnl_bps != 0 else "∞"
+
         # ── Win/loss stats ──
-        wins   = sum(1 for t in recent_trades if t.pnl_usd > 0)
-        losses = len(recent_trades) - wins
-        wr_last5  = sum(1 for t in recent_trades[:5]  if t.pnl_usd > 0) / max(len(recent_trades[:5]),  1)
-        wr_last20 = sum(1 for t in recent_trades[:20] if t.pnl_usd > 0) / max(len(recent_trades[:20]), 1)
+        wins5   = sum(1 for t in recent_trades[:5]  if t.pnl_usd > 0)
+        wins20  = sum(1 for t in recent_trades[:20] if t.pnl_usd > 0)
+        wr_last5  = wins5  / max(len(recent_trades[:5]),  1)
+        wr_last20 = wins20 / max(len(recent_trades[:20]), 1)
         wr_trend  = "IMPROVING" if wr_last5 > wr_last20 + 0.05 else \
                     "DECLINING"  if wr_last5 < wr_last20 - 0.05 else "STABLE"
+
+        # ── P&L totals ──
+        total_pnl_5  = sum(t.pnl_usd for t in recent_trades[:5])
+        total_pnl_20 = sum(t.pnl_usd for t in recent_trades[:20])
+
+        # ── Avg win / avg loss ──
+        win_pnls  = [t.pnl_usd for t in recent_trades if t.pnl_usd > 0]
+        loss_pnls = [t.pnl_usd for t in recent_trades if t.pnl_usd < 0]
+        avg_win   = f"${sum(win_pnls)/len(win_pnls):+.2f}"   if win_pnls  else "n/a"
+        avg_loss  = f"${sum(loss_pnls)/len(loss_pnls):+.2f}" if loss_pnls else "n/a"
+        max_win   = f"${max(win_pnls):+.2f}"   if win_pnls  else "n/a"
+        max_loss  = f"${min(loss_pnls):+.2f}"  if loss_pnls else "n/a"
 
         # ── Profit factor ──
         gross_wins   = sum(t.pnl_usd for t in recent_trades if t.pnl_usd > 0)
         gross_losses = abs(sum(t.pnl_usd for t in recent_trades if t.pnl_usd < 0))
         profit_factor = round(gross_wins / gross_losses, 2) if gross_losses > 0 else 0.0
+        expected_val  = round(total_pnl_20 / max(len(recent_trades), 1), 2)
 
         # ── Consecutive streak ──
         streak = 0
@@ -342,39 +405,24 @@ class PostTradeAnalyzer:
                 else:
                     break
             if not first_win:
-                streak = -streak   # negative = consecutive losses
+                streak = -streak
 
         # ── Avg hold time ──
         def _hold_min(t: "Trade") -> Optional[float]:
             if t.entry_time and t.exit_time:
-                et = t.entry_time.replace(tzinfo=None) if t.entry_time.tzinfo else t.entry_time
-                xt = t.exit_time.replace(tzinfo=None)  if t.exit_time.tzinfo  else t.exit_time
-                return (xt - et).total_seconds() / 60
+                _et = t.entry_time.replace(tzinfo=None) if t.entry_time.tzinfo else t.entry_time
+                _xt = t.exit_time.replace(tzinfo=None)  if t.exit_time.tzinfo  else t.exit_time
+                return (_xt - _et).total_seconds() / 60
             return None
 
         winner_holds = [_hold_min(t) for t in recent_trades if t.pnl_usd > 0 and _hold_min(t)]
         loser_holds  = [_hold_min(t) for t in recent_trades if t.pnl_usd < 0 and _hold_min(t)]
-        avg_hold_w   = f"{sum(winner_holds)/len(winner_holds):.1f} min" if winner_holds else "n/a"
-        avg_hold_l   = f"{sum(loser_holds)/len(loser_holds):.1f} min"   if loser_holds  else "n/a"
+        avg_hold_w = f"{sum(winner_holds)/len(winner_holds):.1f} min" if winner_holds else "n/a"
+        avg_hold_l = f"{sum(loser_holds)/len(loser_holds):.1f} min"   if loser_holds  else "n/a"
 
-        # ── Cost analysis ──
-        entry_mode = getattr(config, "entry_execution_mode", "MARKET")
-        exit_mode  = getattr(config, "exit_execution_mode", "MARKET")
-        spot_ef  = config.spot_maker_fee_bps if entry_mode == "LIMIT" else config.spot_taker_fee_bps
-        fut_ef   = config.futures_maker_fee_bps if entry_mode == "LIMIT" else config.futures_taker_fee_bps
-        spot_xf  = config.spot_maker_fee_bps if exit_mode == "LIMIT" else config.spot_taker_fee_bps
-        fut_xf   = config.futures_maker_fee_bps if exit_mode == "LIMIT" else config.futures_taker_fee_bps
-        total_fees_bps = spot_ef + fut_ef + spot_xf + fut_xf
-        total_slip_bps = config.slippage_bps * 4
-        total_cost_bps = total_fees_bps + total_slip_bps
-
-        notional = getattr(trade, "notional_usd", None) or config.position_size_usd
-        if notional and notional > 0:
-            gross_pnl_bps = (trade.pnl_usd / notional) * 10000
-            cor = round(total_cost_bps / abs(gross_pnl_bps), 2) if gross_pnl_bps != 0 else "∞"
-        else:
-            gross_pnl_bps = 0.0
-            cor = "unknown"
+        # ── Avg fees per trade (recent) ──
+        fee_samples = [t.fees_usd for t in recent_trades if t.fees_usd]
+        avg_fee_recent = f"${sum(fee_samples)/len(fee_samples):.2f}" if fee_samples else "n/a"
 
         # ── Trade history lines ──
         history_lines = []
@@ -382,13 +430,15 @@ class PostTradeAnalyzer:
             flag = "W" if t.pnl_usd > 0 else "L"
             hold = _hold_min(t)
             hold_str = f"{hold:.0f}m" if hold else "?"
+            fee_str = f"  fees=${t.fees_usd:.2f}" if t.fees_usd else ""
             history_lines.append(
                 f"  [{flag}] {t.position_type:<5}  "
                 f"entry_z={t.entry_zscore:+.2f}  exit_z={t.exit_zscore:+.2f}  "
-                f"pnl=${t.pnl_usd:+.2f}  hold={hold_str}  reason={t.exit_reason}"
+                f"gross=${t.pnl_gross_usd:+.2f}  net=${t.pnl_usd:+.2f}{fee_str}  "
+                f"hold={hold_str}  reason={t.exit_reason}"
             )
 
-        # ── Prior learnings with typed recs ──
+        # ── Prior learnings ──
         learnings_lines = []
         for lrn in past_learnings:
             recs = json.loads(lrn.get("recommendations", "[]"))
@@ -425,32 +475,46 @@ RULES:
 Use the four-section format and call record_trade_analysis to record your analysis.
 
 ═══ THIS TRADE · {outcome} ═══
-Asset:            {trade.asset}
-Direction:        {trade.position_type} spread
-Entry Z-score:    {trade.entry_zscore:+.4f}
-Exit  Z-score:    {trade.exit_zscore:+.4f}
-Entry Spread:     {trade.entry_spread:.4f}
-Exit  Spread:     {trade.exit_spread:.4f}
-Spot @ entry:     ${trade.entry_spot_price:,.2f}
-Futures @ entry:  ${trade.entry_futures_price:,.2f}
-Duration:         {duration_str}
-P&L (gross):      ${trade.pnl_usd:+.2f}  ({trade.pnl_percent:+.2f}%)
-Exit reason:      {trade.exit_reason}
-Cost-to-Opp:      {cor}  (round-trip cost {total_cost_bps:.1f} bps vs {abs(gross_pnl_bps):.1f} bps gross move)
+Asset:                {trade.asset}
+Direction:            {trade.position_type} spread
+Entry Z-score:        {trade.entry_zscore:+.4f}  (entry threshold: {config.entry_threshold})
+Exit  Z-score:        {trade.exit_zscore:+.4f}   (exit threshold: {config.exit_threshold})
+Z-score reverted:     {z_rev_pct:.1f}% of the way back to zero
+Entry Spread:         {trade.entry_spread:.6f}  (mean={e_mean:.6f}, std={e_std:.6f})
+Exit  Spread:         {trade.exit_spread:.6f}
+Spread move:          {spread_move:+.6f}  (~${spread_move_usd:+.2f} at qty {trade.quantity:.4f})
+Spot @ entry:         ${trade.entry_spot_price:,.2f}
+Futures @ entry:      ${trade.entry_futures_price:,.2f}
+Duration:             {duration_str}
+Notional (Leg A):     ${notional:,.2f}
+Capital locked:       ${capital:,.2f}
+P&L gross:            ${gross_usd:+.2f}
+Fees paid:            ${fees_usd:.2f}  ({fee_pct_of_gross:.1f}% of gross)
+P&L net:              ${net_usd:+.2f}  ({trade.pnl_percent:+.2f}% of notional, {roc_pct:+.2f}% of capital)
+Exit reason:          {trade.exit_reason}
+Entry latency:        {entry_lat}
+Exit latency:         {exit_lat}
+Cost-to-Opp ratio:    {cor}  (round-trip cost {total_cost_bps:.1f} bps vs {abs(gross_pnl_bps):.1f} bps gross move)
 
 ═══ STRATEGY PERFORMANCE ({len(recent_trades)} closed trades) ═══
-Win rate:         last-5={wr_last5:.0%}  last-20={wr_last20:.0%}  trend={wr_trend}
-Profit factor:    {profit_factor}
-Current streak:   {'+' if streak >= 0 else ''}{streak}  ({'consecutive wins' if streak > 0 else 'consecutive losses' if streak < 0 else 'n/a'})
-Avg hold (wins):  {avg_hold_w}
-Avg hold (losses):{avg_hold_l}
-Exit breakdown:   {exit_breakdown}
+Win rate:             last-5={wr_last5:.0%} ({wins5}/{len(recent_trades[:5])})  last-20={wr_last20:.0%} ({wins20}/{len(recent_trades[:20])})  trend={wr_trend}
+Profit factor:        {profit_factor}  (every $1 lost → ${profit_factor} recovered)
+Expected value/trade: ${expected_val:+.2f}
+Avg win:              {avg_win}    max win: {max_win}
+Avg loss:             {avg_loss}    max loss: {max_loss}
+Total P&L last-5:     ${total_pnl_5:+.2f}
+Total P&L last-20:    ${total_pnl_20:+.2f}
+Current streak:       {'+' if streak >= 0 else ''}{streak}  ({'consecutive wins' if streak > 0 else 'consecutive losses' if streak < 0 else 'n/a'})
+Avg hold (wins):      {avg_hold_w}
+Avg hold (losses):    {avg_hold_l}
+Avg fees/trade:       {avg_fee_recent}
+Exit breakdown:       {exit_breakdown}
 
 ═══ CURRENT CONFIG ═══
 entry_threshold:      {config.entry_threshold}   (safe: 1.8–3.5, step ≤0.2)
 exit_threshold:       {config.exit_threshold}   (safe: 0.3–1.0, step ≤0.1)
 stop_loss_threshold:  {config.stop_loss_threshold}   (safe: 3.0–5.5, step ≤0.3)
-min_std_multiple:     {config.min_std_multiple}   (edge gate: min expected-move ÷ cost; safe: 1.0–2.5, step ≤0.15)
+min_std_multiple:     {config.min_std_multiple}   (edge gate; safe: 1.0–2.5, step ≤0.15)
 slippage_bps:         {config.slippage_bps}   (safe: 1.0–10.0, step ≤1.0)
 hurst_enabled:        {config.hurst_enabled}   (threshold: {config.hurst_threshold})
 std_filter_enabled:   {config.std_filter_enabled}
@@ -467,11 +531,11 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 ═══ ANALYSIS FORMAT ═══
 Four sections. Every sentence must contain at least one number from the data above.
 
-what_happened       — Net P&L $, hold time, gross vs fees, entry/exit z-score, exit reason.
-why                 — Win rate (last-5 and last-20), profit factor, streak, cost-to-opp ratio,
-                      whether the market was behaving normally or trending against us.
-what_could_be_better — Specific numbers: what entry level would have improved R:R, what the
-                      cost ratio was vs target, whether position size fits recent performance.
+what_happened       — Net P&L $, hold time, gross vs fees ($ and %), z-reversion %, exit reason.
+why                 — Win rate last-5 vs last-20, profit factor, streak, expected value/trade,
+                      cost-to-opp ratio vs healthy target (<0.30), avg win vs avg loss.
+what_could_be_better — Specific numbers: entry z vs threshold, fee % vs 25% target, avg hold
+                       winners vs losers, whether position size fits current expected value.
 recommendations     — Up to 4 items. Each rationale: current number → problem → suggested number
                       → why that number → expected improvement. No vague statements.
   PARAMETER_CHANGE     — numeric setting, auto-applied at 3+ consensus, conf ≥0.70
