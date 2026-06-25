@@ -81,19 +81,22 @@ class AutoTuner:
             # Layer 2: streak circuit breaker — always runs regardless of auto_tune setting
             self._check_streak_safety(trade_id)
 
-            config = self.db.get_config()
-            if not getattr(config, "auto_tune_enabled", False):
-                return
-
-            # Layer 1: Claude consensus for all recommendation types
             learnings = self.db.get_recent_learnings(limit=max(FILTER_WINDOW, CONSENSUS_WINDOW))
             if not learnings:
                 return
 
+            # Observations are always surfaced to the dashboard for human review —
+            # not gated behind auto_tune_enabled because they never auto-apply anything.
+            self._process_observations(learnings[0], trade_id)
+
+            config = self.db.get_config()
+            if not getattr(config, "auto_tune_enabled", False):
+                return
+
+            # Layer 1: Claude consensus — only when auto_tune is on
             self._process_parameter_changes(learnings[:CONSENSUS_WINDOW], trade_id)
             self._process_filter_toggles(learnings[:FILTER_WINDOW], trade_id)
             self._process_position_changes(learnings[:POSITION_WINDOW], trade_id)
-            self._process_observations(learnings[0], trade_id)   # most recent only
 
         except Exception:
             logger.exception("AutoTuner.check_and_apply error")
