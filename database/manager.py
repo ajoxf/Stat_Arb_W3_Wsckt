@@ -69,6 +69,7 @@ class DatabaseManager:
                     max_hold_z_progress_min REAL DEFAULT 0.5,
                     stop_loss_capital_pct REAL DEFAULT 0.0,
                     max_loss_usd REAL DEFAULT 0.0,
+                    min_entry_rr_multiple REAL DEFAULT 0.0,
                     exit_signal_mode TEXT DEFAULT 'zscore',
                     lookback_period INTEGER DEFAULT 100,
                     stats_update_interval INTEGER DEFAULT 300,
@@ -360,6 +361,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN stop_loss_capital_pct REAL DEFAULT 0.0")
             if 'profit_target_min_cost_mult' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_min_cost_mult REAL DEFAULT 0.0")
+            if 'min_entry_rr_multiple' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN min_entry_rr_multiple REAL DEFAULT 0.0")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -461,6 +464,7 @@ class DatabaseManager:
                     max_hold_z_progress_min=row["max_hold_z_progress_min"] if "max_hold_z_progress_min" in row.keys() else 0.5,
                     stop_loss_capital_pct=row["stop_loss_capital_pct"] if "stop_loss_capital_pct" in row.keys() else 0.0,
                     max_loss_usd=row["max_loss_usd"] if "max_loss_usd" in row.keys() else 0.0,
+                    min_entry_rr_multiple=row["min_entry_rr_multiple"] if "min_entry_rr_multiple" in row.keys() else 0.0,
                 )
 
             return TradingConfig()
@@ -526,7 +530,8 @@ class DatabaseManager:
                     max_hold_minutes = ?,
                     max_hold_z_progress_min = ?,
                     stop_loss_capital_pct = ?,
-                    max_loss_usd = ?
+                    max_loss_usd = ?,
+                    min_entry_rr_multiple = ?
                 WHERE id = 1
             """, (
                 config.asset,
@@ -585,6 +590,7 @@ class DatabaseManager:
                 config.max_hold_z_progress_min,
                 config.stop_loss_capital_pct,
                 config.max_loss_usd,
+                config.min_entry_rr_multiple,
             ))
             logger.info("Config saved")
 
