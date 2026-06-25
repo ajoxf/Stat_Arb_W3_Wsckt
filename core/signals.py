@@ -256,9 +256,24 @@ class SignalGenerator:
         slope, _ = np.polyfit(x, recent, 1)
         return float(slope)
 
+    def _expected_rs_anis_lloyd(self, n: int) -> float:
+        """Expected R/S for a random walk of length n (Anis-Lloyd correction).
+
+        Removes the small-sample upward bias in the R/S statistic so that a
+        true random walk maps to H ≈ 0.5 rather than H ≈ 0.6-0.7 for short lags.
+        """
+        if n <= 1:
+            return 1.0
+        ns = np.arange(1, n)
+        return float(((n - 0.5) / n) * np.sum(np.sqrt((n - ns) / ns)) / np.sqrt(n * np.pi / 2))
+
     def _calculate_hurst(self, series: np.ndarray) -> float:
         """
-        Calculate Hurst exponent using R/S (Rescaled Range) analysis.
+        Calculate Hurst exponent using bias-corrected R/S (Rescaled Range) analysis.
+
+        Applies the Anis-Lloyd correction to remove the small-sample upward bias
+        that makes raw R/S over-estimate H for short lag windows.  After correction
+        a pure random walk returns H ≈ 0.5, mean-reverting H < 0.5, trending H > 0.5.
 
         H < 0.5: Mean-reverting (anti-persistent)
         H = 0.5: Random walk
@@ -268,50 +283,51 @@ class SignalGenerator:
         if n < 20:
             return 0.5
 
-        # Use different sub-series lengths
-        max_k = min(n // 2, 50)
+        max_k = min(n // 2, 200)
         min_k = 10
 
         if max_k <= min_k:
             return 0.5
 
+        # Logarithmically spaced lags for better scale coverage with fewer points
+        k_values = np.unique(
+            np.logspace(np.log10(min_k), np.log10(max_k), 20).astype(int)
+        )
+
         rs_values = []
         n_values = []
 
-        for k in range(min_k, max_k + 1, 5):
+        for k in k_values:
             rs_list = []
-
             for start in range(0, n - k + 1, k):
                 subseries = series[start:start + k]
                 if len(subseries) < k:
                     continue
-
                 mean_val = np.mean(subseries)
                 deviations = subseries - mean_val
                 cumulative_deviations = np.cumsum(deviations)
-
                 r = np.max(cumulative_deviations) - np.min(cumulative_deviations)
                 s = np.std(subseries, ddof=1)
-
                 if s > 0:
                     rs_list.append(r / s)
 
             if rs_list:
-                rs_values.append(np.mean(rs_list))
-                n_values.append(k)
+                observed_rs = np.mean(rs_list)
+                expected_rs = self._expected_rs_anis_lloyd(k)
+                if expected_rs > 0:
+                    rs_values.append(observed_rs / expected_rs)
+                    n_values.append(k)
 
         if len(rs_values) < 2:
             return 0.5
 
-        # Linear regression in log-log space
         log_n = np.log(n_values)
-        log_rs = np.log(rs_values)
+        log_rs = np.log(np.clip(rs_values, 1e-10, None))
 
         try:
-            # H = slope of log(R/S) vs log(n)
+            # After Anis-Lloyd: ratio ~ C × n^(H-0.5), so slope = H - 0.5
             slope, _ = np.polyfit(log_n, log_rs, 1)
-            hurst = float(np.clip(slope, 0.0, 1.0))
-            return hurst
+            return float(np.clip(slope + 0.5, 0.0, 1.0))
         except Exception:
             return 0.5
 
@@ -548,7 +564,15 @@ class SignalGenerator:
             )
 
         # Check filters
-        hurst_ok = not self.config.hurst_enabled or self.current_hurst < self.config.hurst_threshold
+        # Half-life is a direct OU proof of mean reversion — use as cross-check so
+        # a finite positive half-life passes even when Hurst is above threshold.
+        _hl_confirms_mr = (
+            self.current_half_life != float('inf')
+            and 0 < self.current_half_life < self.lookback * 0.5
+        )
+        hurst_ok = not self.config.hurst_enabled or (
+            self.current_hurst < self.config.hurst_threshold or _hl_confirms_mr
+        )
         std_ok, _ = self._check_std_filter()
 
         # Determine regime
@@ -576,8 +600,12 @@ class SignalGenerator:
             if z_triggers_long or z_triggers_short:
                 # Z-score triggered - check why it might be blocked
                 if not hurst_ok:
-                    blocked_reason = "Hurst filter (H={:.3f} > {:.2f})".format(
-                        self.current_hurst, self.config.hurst_threshold)
+                    _hl_str = (f"{self.current_half_life:.0f}p"
+                               if self.current_half_life != float('inf') else "∞")
+                    blocked_reason = (
+                        "Hurst filter (H={:.3f} > {:.2f}, HL={})".format(
+                            self.current_hurst, self.config.hurst_threshold, _hl_str)
+                    )
                 elif not std_ok:
                     _, _edge = self._check_std_filter()
                     _req = max(self.config.min_std_multiple,

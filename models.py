@@ -154,6 +154,11 @@ class TradingConfig:
     # raise (e.g. 30%) for more safety margin against liquidation on volatile pairs.
     m2m_buffer_pct: float = 10.0
 
+    # Minimum reward/risk ratio required before entering.
+    # Reward = expected profit target USD; Risk = stop loss USD.
+    # 0.0 = disabled (backwards compatible); typical value 1.5.
+    min_entry_rr_multiple: float = 0.0
+
     # Trading mode
     paper_trading: bool = True
     algo_enabled: bool = False

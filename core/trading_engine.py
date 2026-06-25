@@ -1188,6 +1188,40 @@ class TradingEngine:
         leg_b_lev = max(self.config.futures_leverage if leg_b_is_deriv else 1, 1)
         total_margin = leg_a_notional / leg_a_lev + leg_b_notional / leg_b_lev
 
+        # Guard #12: R:R entry gate — expected profit target must be a minimum
+        # multiple of the stop loss before accepting the trade.
+        # Reward = what the profit target would pay at this z-score.
+        # Risk   = stop loss in USD (same formula as the live exit check).
+        _min_rr = getattr(self.config, 'min_entry_rr_multiple', 0.0) or 0.0
+        if _min_rr > 0:
+            _sig_frac = getattr(self.config, 'profit_target_sigma_frac', 0.0) or 0.0
+            if _sig_frac > 0:
+                _expected_target = (_sig_frac * abs(signal.zscore)
+                                    * signal.spread_std * quantity)
+            else:
+                _expected_target = getattr(self.config, 'profit_target_usd', 0.0) or 0.0
+            _cap_pct = getattr(self.config, 'stop_loss_capital_pct', 0.0) or 0.0
+            if _cap_pct > 0:
+                _buf = getattr(self.config, 'm2m_buffer_pct', 0.0) or 0.0
+                _stop_usd = _cap_pct / 100.0 * total_margin * (1 + _buf / 100.0)
+            else:
+                _stop_usd = getattr(self.config, 'max_loss_usd', 0.0) or 0.0
+            if _expected_target > 0 and _stop_usd > 0:
+                _rr = _expected_target / _stop_usd
+                if _rr < _min_rr:
+                    _rr_block = (
+                        f"R:R gate: reward ${_expected_target:.2f} / risk ${_stop_usd:.2f}"
+                        f" = {_rr:.2f}x < min {_min_rr:.1f}x"
+                    )
+                    logger.info("Entry blocked: %s", _rr_block)
+                    self.signal_generator.last_blocked_signal = {
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'would_be_signal': signal.signal_type,
+                        'zscore': round(signal.zscore, 4),
+                        'reason': _rr_block,
+                    }
+                    return
+
         trade = Trade(
             asset=self.config.asset,
             position_type=position_type,
