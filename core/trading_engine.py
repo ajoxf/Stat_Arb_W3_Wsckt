@@ -1443,6 +1443,8 @@ class TradingEngine:
         trade.fees_usd = fees_usd
         trade.capital_locked_usd = capital_locked
         trade.pnl_pct_on_capital = pnl_pct_on_capital
+        trade.actual_entry_mode = entry_mode
+        trade.actual_exit_mode  = exit_mode
         # Audit trail: store fill-derived spreads so the DB matches OKX
         trade.entry_spread = entry_spread_fills
         trade.exit_spread  = exit_spread_fills

@@ -358,13 +358,52 @@ class PostTradeAnalyzer:
         # ── Cost analysis (config round-trip estimate) ──
         entry_mode = getattr(config, "entry_execution_mode", "MARKET")
         exit_mode  = getattr(config, "exit_execution_mode", "MARKET")
-        spot_ef  = config.spot_maker_fee_bps  if entry_mode == "LIMIT" else config.spot_taker_fee_bps
-        fut_ef   = config.futures_maker_fee_bps if entry_mode == "LIMIT" else config.futures_taker_fee_bps
-        spot_xf  = config.spot_maker_fee_bps  if exit_mode  == "LIMIT" else config.spot_taker_fee_bps
-        fut_xf   = config.futures_maker_fee_bps if exit_mode  == "LIMIT" else config.futures_taker_fee_bps
+
+        # Actual modes recorded at close time (fall back to config if pre-migration trade)
+        actual_entry_mode = getattr(trade, 'actual_entry_mode', None) or entry_mode
+        actual_exit_mode  = getattr(trade, 'actual_exit_mode',  None) or exit_mode
+
+        # Determine per-leg fee schedule (both legs are SWAP futures in this strategy)
+        from core.trading_engine import is_derivative
+        leg_a_deriv = is_derivative(getattr(config, 'spot_symbol',    ''))
+        leg_b_deriv = is_derivative(getattr(config, 'futures_symbol', ''))
+        def _leg_bps(is_deriv: bool, mode: str) -> float:
+            if mode == "LIMIT":
+                return config.futures_maker_fee_bps if is_deriv else config.spot_maker_fee_bps
+            return config.futures_taker_fee_bps if is_deriv else config.spot_taker_fee_bps
+
+        spot_ef  = _leg_bps(leg_a_deriv, actual_entry_mode)
+        fut_ef   = _leg_bps(leg_b_deriv, actual_entry_mode)
+        spot_xf  = _leg_bps(leg_a_deriv, actual_exit_mode)
+        fut_xf   = _leg_bps(leg_b_deriv, actual_exit_mode)
         total_fees_bps = spot_ef + fut_ef + spot_xf + fut_xf
         total_slip_bps = config.slippage_bps * 4
         total_cost_bps = total_fees_bps + total_slip_bps
+
+        # Maker-only baseline (best case: all 4 legs fill as maker)
+        maker_baseline_bps = (
+            _leg_bps(leg_a_deriv, "LIMIT") + _leg_bps(leg_b_deriv, "LIMIT") +
+            _leg_bps(leg_a_deriv, "LIMIT") + _leg_bps(leg_b_deriv, "LIMIT")
+        )
+        maker_baseline_usd = notional * maker_baseline_bps / 10000.0
+        taker_drag_bps = total_fees_bps - maker_baseline_bps   # extra bps paid due to taker fills
+        taker_drag_usd = fees_usd - maker_baseline_usd         # $ lost to taker vs maker ideal
+
+        if taker_drag_usd > 0.01:
+            fee_efficiency_block = (
+                f"Actual modes:    entry={actual_entry_mode}, exit={actual_exit_mode}\n"
+                f"Maker baseline:  {maker_baseline_bps:.1f} bps = ${maker_baseline_usd:.2f}\n"
+                f"Actual fees:     {total_fees_bps:.1f} bps = ${fees_usd:.2f}\n"
+                f"Taker drag:     +{taker_drag_bps:.1f} bps = +${taker_drag_usd:.2f}  "
+                f"← POST_ONLY rejection forced exit to MARKET taker"
+            )
+        else:
+            fee_efficiency_block = (
+                f"Actual modes:    entry={actual_entry_mode}, exit={actual_exit_mode}\n"
+                f"Maker baseline:  {maker_baseline_bps:.1f} bps = ${maker_baseline_usd:.2f}\n"
+                f"Actual fees:     {total_fees_bps:.1f} bps = ${fees_usd:.2f}\n"
+                f"Taker drag:      none — all limit orders filled as maker"
+            )
 
         gross_pnl_bps = (gross_usd / notional * 10000) if notional > 0 else 0.0
         cor = round(total_cost_bps / abs(gross_pnl_bps), 2) if gross_pnl_bps != 0 else "∞"
@@ -521,6 +560,9 @@ Entry latency:        {entry_lat}
 Exit latency:         {exit_lat}
 Cost-to-Opp ratio:    {cor}  (round-trip cost {total_cost_bps:.1f} bps vs {abs(gross_pnl_bps):.1f} bps gross move)
 
+═══ FEE EFFICIENCY ═══
+{fee_efficiency_block}
+
 ═══ EXPECTED VALUE (EV) ANALYSIS ═══
 {ev_block}
 
@@ -560,12 +602,15 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 Four sections. Every sentence must contain at least one number from the data above.
 
 what_happened       — Net P&L $, hold time, gross vs fees ($ and %), z-reversion %, exit reason.
+                      If taker drag > $0, state how much of the gross profit was consumed by the
+                      maker→taker fee upgrade (e.g. "POST_ONLY rejection cost an extra $0.09").
 why                 — Win rate last-5 vs last-20, profit factor, streak, EV/trade (from EV section),
                       break-even win rate vs actual win rate, cost-to-opp ratio vs target (<0.30),
                       avg win vs avg loss. Explain whether this strategy has positive expected value.
 what_could_be_better — Specific numbers: R:R ratio, whether actual win rate exceeds break-even win
                        rate, fee % vs 25% target, avg hold winners vs losers, whether position size
-                       fits current EV per trade.
+                       fits current EV per trade. If taker drag appeared, comment on exit limit price
+                       aggressiveness and whether wider exit limits would reduce POST_ONLY rejections.
 recommendations     — Up to 4 items. Each rationale: current number → problem → suggested number
                       → why that number → expected improvement. No vague statements.
   PARAMETER_CHANGE     — numeric setting, auto-applied at 3+ consensus, conf ≥0.70

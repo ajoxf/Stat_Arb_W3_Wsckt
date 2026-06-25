@@ -429,6 +429,12 @@ class Trade:
     # personal return (capital %).
     pnl_pct_on_capital: float = 0.0
 
+    # Actual execution modes recorded at close — LIMIT (maker) or MARKET (taker).
+    # Entry never falls back from LIMIT to MARKET (rejected limit orders just retry);
+    # exit falls back to MARKET after the first POST_ONLY rejection.
+    actual_entry_mode: str = ""
+    actual_exit_mode: str = ""
+
     # Order IDs
     spot_order_id: str = ""
     futures_order_id: str = ""

@@ -206,16 +206,27 @@ class AIMonitor:
                 snap["spread"] = round(sg.current_spread, 4)
                 snap["spread_std"] = round(sg.current_std, 4)
                 snap["spread_mean"] = round(sg.current_mean, 4)
-                snap["hurst"] = round(sg.current_hurst, 3)
                 snap["half_life"] = sg.current_half_life
-                snap["hurst_filter_enabled"] = getattr(sg.config, "hurst_enabled", True)
-                snap["hurst_threshold"] = getattr(sg.config, "hurst_threshold", 0.5)
-                snap["hurst_blocking_entries"] = (
-                    getattr(sg.config, "hurst_enabled", True)
-                    and sg.current_hurst >= getattr(sg.config, "hurst_threshold", 0.5)
-                )
             except Exception:
                 pass
+
+        # Execution quality — the biggest silent edge-killer is POST_ONLY rejection
+        # forcing a maker order to re-execute as taker, paying 2.5× the fee.
+        try:
+            cfg = eng.config
+            snap["entry_execution_mode"] = getattr(cfg, "entry_execution_mode",
+                                                    getattr(cfg, "order_execution_mode", "LIMIT"))
+            snap["exit_execution_mode"]  = getattr(cfg, "exit_execution_mode",
+                                                    getattr(cfg, "order_execution_mode", "LIMIT"))
+            snap["futures_maker_fee_bps"] = getattr(cfg, "futures_maker_fee_bps",
+                                                     getattr(cfg, "maker_fee_bps", 2.0))
+            snap["futures_taker_fee_bps"] = getattr(cfg, "futures_taker_fee_bps",
+                                                     getattr(cfg, "taker_fee_bps", 5.0))
+            snap["exit_postonly_reject_count"] = getattr(eng, "_exit_postonly_reject_count", 0)
+            snap["last_exit_was_market"]       = getattr(eng, "_last_exit_was_market", False)
+            snap["last_entry_throttled"]       = getattr(eng, "_last_entry_throttled", False)
+        except Exception:
+            pass
         snap["recent_log_tail"] = self._tail_log(_LOG_TAIL_LINES)
         return snap
 
@@ -244,19 +255,32 @@ class AIMonitor:
         import json
         state_block = json.dumps(snap, default=str, indent=2)
         return (
-            "You are an SRE monitoring a crypto spot+futures statistical-arbitrage "
-            "trading bot. Review the snapshot below and call report_bot_health.\n\n"
+            "You are an SRE monitoring a crypto statistical-arbitrage trading bot "
+            "(both legs are perpetual SWAP futures). "
+            "Review the snapshot below and call report_bot_health.\n\n"
             "STRICT RULES — violations result in incorrect verdicts:\n"
-            "1. If hurst_filter_enabled is false, the Hurst exponent is INFORMATIONAL ONLY. "
-            "Do NOT mention Hurst in the summary and do NOT use it to influence severity. "
-            "A disabled filter is a deliberate operator choice, not a risk.\n"
+            "1. Do NOT mention the Hurst exponent, half_life, or mean-reversion regime "
+            "in the summary under any circumstances. These are informational only.\n"
             "2. If algo_enabled is false, no trades can be triggered. Do NOT warn about "
-            "z-score proximity to entry thresholds when the algo is disabled.\n"
+            "z-score proximity to entry thresholds.\n"
             "3. paper_trading true = simulated mode; treat open positions as expected, not stuck.\n\n"
-            "Look for: stuck positions (live mode only), position_mismatch flagged True, "
-            "repeated OKX error codes (50102 clock drift, 50013 rate limit storms, "
-            "51169 reduce-only failures), engine stuck in a single state for an "
-            "unreasonable period, or anything else suggesting the bot needs attention.\n\n"
+            "PRIMARY CONCERN — execution quality / fee degradation:\n"
+            "The biggest silent edge-killer is a POST_ONLY limit order being rejected "
+            "(OKX cancelSource=31) and re-executing as a MARKET (taker) order. "
+            "Futures maker fee ≈ 2 bps per leg; taker ≈ 5 bps — a 2.5× jump. "
+            "A single exit leg forced to taker adds ~3 bps × 2 legs = 6 extra bps, "
+            "which on a $1 500 notional is ≈$0.09 extra cost per trade. "
+            "In the log look for lines containing 'Exit POST_ONLY rejected' or "
+            "'using MARKET order to guarantee close' or 'cancelSource=31'.\n"
+            "  • exit_postonly_reject_count > 0 in the current trade → warn if > 1 "
+            "rejection in a single exit cycle.\n"
+            "  • last_exit_was_market=true → the exit paid taker fees; flag if frequent.\n"
+            "  • last_entry_throttled=true → entry POST_ONLY was rejected; usually benign "
+            "(retried immediately), only warn if it appears many times.\n\n"
+            "OTHER THINGS TO LOOK FOR: stuck positions (live mode only), "
+            "position_mismatch flagged True, repeated OKX error codes "
+            "(50102 clock drift, 50013 rate-limit storms, 51169 reduce-only failures), "
+            "engine stuck in a single state for an unreasonable period.\n\n"
             "Keep summary to TWO sentences. Suggest action only when severity is "
             "warn or critical.\n\n"
             f"STATE:\n{state_block}\n\n"
