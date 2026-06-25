@@ -31,11 +31,23 @@ from adapters.base import is_derivative
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging — console + rotating daily file so AI monitor can tail logs
+import os as _os
+from logging.handlers import TimedRotatingFileHandler as _TRFH
+_LOG_DIR = _os.path.join(_os.path.dirname(__file__), "logs")
+_os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FMT = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_file_handler = _TRFH(
+    _os.path.join(_LOG_DIR, "trading.log"),
+    when="midnight", backupCount=7, encoding="utf-8",
+)
+_file_handler.suffix = "%Y%m%d"
+_file_handler.setFormatter(_LOG_FMT)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger(__name__)
 
 # Suppress noisy HTTP request logs - use ERROR to hide all routine requests

@@ -207,6 +207,13 @@ class AIMonitor:
                 snap["spread_std"] = round(sg.current_std, 4)
                 snap["spread_mean"] = round(sg.current_mean, 4)
                 snap["hurst"] = round(sg.current_hurst, 3)
+                snap["half_life"] = sg.current_half_life
+                snap["hurst_filter_enabled"] = getattr(sg.config, "hurst_enabled", True)
+                snap["hurst_threshold"] = getattr(sg.config, "hurst_threshold", 0.5)
+                snap["hurst_blocking_entries"] = (
+                    getattr(sg.config, "hurst_enabled", True)
+                    and sg.current_hurst >= getattr(sg.config, "hurst_threshold", 0.5)
+                )
             except Exception:
                 pass
         snap["recent_log_tail"] = self._tail_log(_LOG_TAIL_LINES)
@@ -216,10 +223,14 @@ class AIMonitor:
     def _tail_log(n: int) -> List[str]:
         log_dir = Path("logs")
         if not log_dir.exists():
-            return []
-        candidates = sorted(log_dir.glob("trading_*.log"), reverse=True)
+            return ["(logs/ directory not found — file logging not configured)"]
+        # TimedRotatingFileHandler writes "trading.log" (current) + "trading.logYYYYMMDD" (rotated)
+        candidates = sorted(log_dir.glob("trading.log*"), reverse=True)
         if not candidates:
-            return []
+            # Fallback: legacy trading_*.log naming
+            candidates = sorted(log_dir.glob("trading_*.log"), reverse=True)
+        if not candidates:
+            return ["(no trading log files found in logs/)"]
         try:
             text = candidates[0].read_text(errors="replace")
             return text.splitlines()[-n:]
