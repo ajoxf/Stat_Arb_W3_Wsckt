@@ -493,7 +493,7 @@ class SignalGenerator:
             getattr(self.config, 'min_std_multiple', 0.0) or 0.0,
             getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0,
         )
-        passed = edge_ratio >= required
+        passed = bool(edge_ratio >= required)
         return passed, edge_ratio
 
     def _track_sd_touch(self, zscore: float, spot_price: float, futures_price: float) -> Optional[SDTouchEvent]:
@@ -566,13 +566,13 @@ class SignalGenerator:
         # Check filters
         # Half-life is a direct OU proof of mean reversion — use as cross-check so
         # a finite positive half-life passes even when Hurst is above threshold.
-        _hl_confirms_mr = (
+        _hl_confirms_mr = bool(
             self.current_half_life != float('inf')
             and 0 < self.current_half_life < self.lookback * 0.5
         )
-        hurst_ok = not self.config.hurst_enabled or (
+        hurst_ok = bool(not self.config.hurst_enabled or (
             self.current_hurst < self.config.hurst_threshold or _hl_confirms_mr
-        )
+        ))
         std_ok, _ = self._check_std_filter()
 
         # Determine regime
@@ -753,7 +753,7 @@ class SignalGenerator:
             next_update_in = 0
 
         # Calculate filter status (same logic as generate_signal)
-        hurst_ok = not self.config.hurst_enabled or self.current_hurst < self.config.hurst_threshold
+        hurst_ok = bool(not self.config.hurst_enabled or self.current_hurst < self.config.hurst_threshold)
         std_ok, std_ratio = self._check_std_filter()
 
         # Check if we have enough data (must have full lookback period)
@@ -789,8 +789,8 @@ class SignalGenerator:
             'hurst': round(self.current_hurst, 4),
             'half_life': round(hl, 1) if hl != float('inf') else None,
             'suggested_lookback': suggested_lookback,
-            'hurst_ok': hurst_ok if data_ready else None,
-            'std_filter_ok': std_ok if data_ready else None,
+            'hurst_ok': bool(hurst_ok) if data_ready else None,
+            'std_filter_ok': bool(std_ok) if data_ready else None,
             'std_ratio': round(std_ratio, 2) if std_ratio != float('inf') else None,
             # Effective required multiple = max(min_std_multiple, exit cost-floor
             # multiple) — the coherence floor the entry gate actually applies.
