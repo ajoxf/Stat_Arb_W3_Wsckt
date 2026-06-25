@@ -131,6 +131,7 @@ class TradingConfig:
     std_filter_enabled: bool = True
     min_std_multiple: float = 0.9  # STD must be > costs * multiple (0.9 = just above break-even)
     trend_direction_filter: bool = False  # Only take signals aligned with spread slope direction
+    z_reset_gate_enabled: bool = True  # After stop-loss, block same-side re-entry until z reverts
 
     # Position sizing
     position_size_usd: float = 1000.0

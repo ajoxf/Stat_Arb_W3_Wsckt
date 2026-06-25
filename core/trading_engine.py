@@ -1009,7 +1009,8 @@ class TradingEngine:
 
         # Z-score reset gate: after a STOP_LOSS, block same-direction re-entry until
         # the z-score has returned to the exit zone (spread genuinely reverted).
-        if (self._z_reset_block_direction
+        if (getattr(self.config, 'z_reset_gate_enabled', True)
+                and self._z_reset_block_direction
                 and signal.signal_type == self._z_reset_block_direction):
             reset_z = getattr(self.config, 'exit_threshold', 0.5)
             z = signal.zscore
@@ -1469,7 +1470,8 @@ class TradingEngine:
             # Z-reset gate: block same-direction re-entry until z-score returns to
             # the exit zone (±exit_threshold), preventing re-entry into a trending market.
             closed_direction = trade.position_type  # "SHORT" or "LONG"
-            self._z_reset_block_direction = closed_direction
+            if getattr(self.config, 'z_reset_gate_enabled', True):
+                self._z_reset_block_direction = closed_direction
             reset_z = getattr(self.config, 'exit_threshold', 0.5)
             logger.info(
                 "Z-reset gate armed for %s: waiting for z to return to ±%.2f before same-side re-entry",
