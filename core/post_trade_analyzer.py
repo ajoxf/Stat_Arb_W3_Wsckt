@@ -38,10 +38,11 @@ _MAX_TOKENS = 2048
 _ANALYSIS_TOOL = {
     "name": "record_trade_analysis",
     "description": (
-        "Record a plain-English post-trade analysis that anyone can understand. "
-        "No jargon, no technical terms. Write as if explaining to a friend "
-        "who knows nothing about trading or finance. "
-        "Also include typed recommendations for the auto-tuner."
+        "Record a data-rich, plain-English post-trade analysis. "
+        "Every sentence must include specific numbers from the trade data provided. "
+        "No jargon, but do not omit numbers — dollars, percentages, durations, z-scores, "
+        "win rates, and counts must all appear where relevant. "
+        "Write as if briefing a smart non-trader who wants the full picture in plain language."
     ),
     "input_schema": {
         "type": "object",
@@ -49,41 +50,63 @@ _ANALYSIS_TOOL = {
             "what_happened": {
                 "type": "string",
                 "description": (
-                    "2-3 plain-English sentences: did the trade make or lose money? "
-                    "What specifically happened — did the price move in our favour or against us? "
-                    "No jargon. Example: 'The trade made $1.54. We bet that ETH and BTC "
-                    "prices would move closer together, and they did within 48 seconds.'"
+                    "3-4 sentences covering the full factual outcome with every key number. "
+                    "MUST include: net P&L in dollars, hold time, gross P&L vs fees/slippage cost, "
+                    "entry gap size (z-score) and exit gap size, and the exit reason. "
+                    "Example style: 'The trade made $1.15 net ($1.56 gross minus $0.41 in fees) "
+                    "and closed in 48 seconds. We entered when the ETH-BTC price gap was 2.80 "
+                    "standard deviations wide and exited at 1.53 — the gap closed 45% of the way "
+                    "back to normal. Fees and slippage consumed 26% of the gross profit.'"
                 )
             },
             "why": {
                 "type": "string",
                 "description": (
-                    "2-3 plain-English sentences: what caused that outcome? "
-                    "Was the market behaving as expected? Was there a trend, a sudden move, "
-                    "or normal reversion? No jargon. Example: 'The gap between the two prices "
-                    "was unusually large and snapped back quickly, which is exactly the "
-                    "condition we look for.'"
+                    "3-4 sentences explaining the cause with supporting numbers from both "
+                    "this trade and the recent history. "
+                    "MUST reference: win rate (last-5 and last-20), profit factor, current streak, "
+                    "cost-to-opportunity ratio, and whether the market was behaving normally. "
+                    "Example style: 'The gap closed quickly because the market was behaving "
+                    "normally — prices snapping back is what this strategy depends on. "
+                    "Across the last 20 trades the win rate is 60% with a profit factor of 1.4, "
+                    "meaning for every $1 lost we make $1.40 on wins. "
+                    "This is the 3rd win in a row. The fee cost was 36% of gross profit — "
+                    "higher than the healthy target of under 25%.'"
                 )
             },
             "what_could_be_better": {
                 "type": "string",
                 "description": (
-                    "2-3 plain-English sentences: what could have improved this trade? "
-                    "Consider timing, position size, entry/exit levels, or market conditions. "
-                    "No jargon. Example: 'We could have waited for an even larger gap before "
-                    "entering, which would have given more profit potential relative to the risk.'"
+                    "3-4 sentences with specific, numbered improvements. "
+                    "MUST include concrete numbers: what entry gap threshold would have improved "
+                    "the reward vs risk, what the cost ratio was vs target, what the current "
+                    "position size is and whether it is appropriate given recent performance, "
+                    "and any pattern visible across the last N trades. "
+                    "Example style: 'We entered at a gap of 2.80 — waiting for 3.00 would give "
+                    "7% more profit potential for the same risk. Fees were 36% of gross vs the "
+                    "target of under 25%; switching to limit orders on exit could save ~5 bps. "
+                    "The last 5 trades all closed within 5 minutes, suggesting the position "
+                    "size of $1,000 could be increased once fees are under control.'"
                 )
             },
             "recommendations": {
                 "type": "array",
                 "description": (
-                    "Up to 4 recommendations. Write all rationale fields in plain English — "
-                    "no jargon. PARAMETER_CHANGE: numeric param within a safe corridor. "
+                    "Up to 4 sharp, actionable recommendations. "
+                    "Each rationale MUST: (1) state the current number and what is wrong with it, "
+                    "(2) state the suggested number and exactly why that number, "
+                    "(3) explain the expected improvement in plain English with a number. "
+                    "Example rationale for PARAMETER_CHANGE: 'Entry threshold is 2.5. "
+                    "In the last 5 trades it triggered at gaps that closed only 40% before "
+                    "the stop fired. Raising to 2.7 means we only enter at larger gaps — "
+                    "back-testing across the last 20 trades suggests win rate improves from "
+                    "60% to ~70% at this level.' "
+                    "PARAMETER_CHANGE: numeric param within a safe corridor. "
                     "FILTER_TOGGLE: param is 'hurst_enabled' or 'std_filter_enabled', "
                     "  current_value/suggested_value use 1.0=on 0.0=off. "
                     "POSITION_SIZE_CHANGE: param is 'position_size_usd', only suggest lower values. "
-                    "OBSERVATION: human-review insight, param is a short plain-English label, "
-                    "  current_value and suggested_value are 0."
+                    "OBSERVATION: human-review insight — must include supporting numbers, "
+                    "  param is a short plain-English label, current_value and suggested_value are 0."
                 ),
                 "maxItems": 4,
                 "items": {
@@ -130,8 +153,8 @@ _ANALYSIS_TOOL = {
             "summary": {
                 "type": "string",
                 "description": (
-                    "One plain-English sentence summarising the outcome and the single "
-                    "most important takeaway. No jargon."
+                    "One plain-English sentence with the key number: outcome in dollars, "
+                    "the single most important pattern, and the one most urgent action."
                 )
             },
         },
@@ -389,9 +412,17 @@ class PostTradeAnalyzer:
         )
 
         return f"""You are reviewing a crypto trading strategy for someone who is not a financial or technical expert.
-Write all analysis fields in plain, simple English — no jargon, no acronyms, no formulas.
-Imagine explaining each section to a smart friend who has never traded before.
-Use the four-section format below and call record_trade_analysis to record your analysis.
+RULES:
+1. Plain English only — no jargon, no acronyms, no formulas.
+2. Every sentence must contain specific numbers pulled from the data below.
+   Vague statements like "fees were high" are not acceptable.
+   Correct: "Fees consumed $0.41 of the $1.56 gross profit — that is 26%."
+3. Recommendations must be sharp and actionable: state the current number,
+   the suggested number, and in one sentence why that specific change is justified
+   by the data (reference win rate, streak, cost ratio, or trade count).
+4. Do not pad with generic advice. Every point must be earned by the numbers.
+
+Use the four-section format and call record_trade_analysis to record your analysis.
 
 ═══ THIS TRADE · {outcome} ═══
 Asset:            {trade.asset}
@@ -434,15 +465,18 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 {chr(10).join(learnings_lines) if learnings_lines else "  (no prior learnings)"}
 
 ═══ ANALYSIS FORMAT ═══
-Fill these four sections in plain English:
+Four sections. Every sentence must contain at least one number from the data above.
 
-what_happened  — What worked or didn't work? (did the trade win or lose, what happened to prices)
-why            — Why? (what caused that outcome — market behaviour, conditions at the time)
-what_could_be_better — What could have been better? (timing, size, entry/exit levels)
-recommendations — Up to 4 items. Write the rationale in plain English anyone can understand.
-  PARAMETER_CHANGE     — numeric setting change, auto-applied at 3+ consensus, conf ≥0.70
-  FILTER_TOGGLE        — turn hurst_enabled or std_filter_enabled on/off, needs 5+ consensus
-  POSITION_SIZE_CHANGE — reduce position size only, needs 4+ consensus
-  OBSERVATION          — anything worth a human seeing: shown on dashboard, never auto-applied
+what_happened       — Net P&L $, hold time, gross vs fees, entry/exit z-score, exit reason.
+why                 — Win rate (last-5 and last-20), profit factor, streak, cost-to-opp ratio,
+                      whether the market was behaving normally or trending against us.
+what_could_be_better — Specific numbers: what entry level would have improved R:R, what the
+                      cost ratio was vs target, whether position size fits recent performance.
+recommendations     — Up to 4 items. Each rationale: current number → problem → suggested number
+                      → why that number → expected improvement. No vague statements.
+  PARAMETER_CHANGE     — numeric setting, auto-applied at 3+ consensus, conf ≥0.70
+  FILTER_TOGGLE        — hurst_enabled or std_filter_enabled, needs 5+ consensus
+  POSITION_SIZE_CHANGE — reduce position_size_usd only, needs 4+ consensus
+  OBSERVATION          — human-review note with supporting numbers, shown on dashboard
 
 Call record_trade_analysis now."""

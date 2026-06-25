@@ -358,9 +358,9 @@ class TelegramNotifier:
         try:
             health          = analysis.get("health_score", 0)
             conf            = analysis.get("confidence_score", 0)
-            what_happened   = (analysis.get("what_happened") or "—")[:300]
-            why             = (analysis.get("why") or "—")[:300]
-            what_better     = (analysis.get("what_could_be_better") or "—")[:300]
+            what_happened   = (analysis.get("what_happened") or "—")[:500]
+            why             = (analysis.get("why") or "—")[:500]
+            what_better     = (analysis.get("what_could_be_better") or "—")[:500]
             summary         = (analysis.get("summary") or "—")[:300]
             recs            = analysis.get("recommendations") or []
 
@@ -394,7 +394,7 @@ class TelegramNotifier:
                 rows += ["", "<b>Recommendations</b>"]
                 for rec in recs[:4]:
                     rtype     = rec.get("type", "")
-                    rationale = (rec.get("rationale") or "")[:200]
+                    rationale = (rec.get("rationale") or "")[:350]
                     if rtype == "PARAMETER_CHANGE":
                         param = rec.get("param", "")
                         cur   = rec.get("current_value", "")
