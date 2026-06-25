@@ -424,6 +424,31 @@ class PostTradeAnalyzer:
         fee_samples = [t.fees_usd for t in recent_trades if t.fees_usd]
         avg_fee_recent = f"${sum(fee_samples)/len(fee_samples):.2f}" if fee_samples else "n/a"
 
+        # ── Expected Value (EV) calculation ──
+        # Target and stop as configured; R:R = target / stop.
+        # Break-even win rate = stop / (target + stop)
+        # Actual EV = win_rate × target - (1-win_rate) × stop
+        cfg_target = getattr(config, 'profit_target_usd', 0.0) or 0.0
+        cfg_rr     = getattr(config, 'min_entry_rr_multiple', 0.0) or 0.0
+        cfg_stop   = (cfg_target / cfg_rr) if (cfg_rr > 0 and cfg_target > 0) else (
+                     getattr(config, 'max_loss_usd', 0.0) or 0.0)
+        if cfg_target > 0 and cfg_stop > 0:
+            rr_ratio          = cfg_target / cfg_stop
+            breakeven_wr      = cfg_stop / (cfg_target + cfg_stop)
+            actual_ev_last20  = wr_last20 * cfg_target - (1 - wr_last20) * cfg_stop
+            actual_ev_last5   = wr_last5  * cfg_target - (1 - wr_last5)  * cfg_stop
+            ev_block = (
+                f"Target: ${cfg_target:.2f}  |  Stop: ${cfg_stop:.2f}  |  R:R = {rr_ratio:.2f}x\n"
+                f"Break-even win rate:   {breakeven_wr:.1%} (need this win rate just to break even)\n"
+                f"EV at last-20 win rate ({wr_last20:.0%}): ${actual_ev_last20:+.2f} per trade\n"
+                f"EV at last-5  win rate ({wr_last5:.0%}):  ${actual_ev_last5:+.2f} per trade"
+            )
+        else:
+            rr_ratio = 0.0
+            breakeven_wr = 0.0
+            actual_ev_last20 = 0.0
+            ev_block = "(no profit target or stop configured — EV not calculable)"
+
         # ── Trade history lines ──
         history_lines = []
         for t in recent_trades:
@@ -496,10 +521,13 @@ Entry latency:        {entry_lat}
 Exit latency:         {exit_lat}
 Cost-to-Opp ratio:    {cor}  (round-trip cost {total_cost_bps:.1f} bps vs {abs(gross_pnl_bps):.1f} bps gross move)
 
+═══ EXPECTED VALUE (EV) ANALYSIS ═══
+{ev_block}
+
 ═══ STRATEGY PERFORMANCE ({len(recent_trades)} closed trades) ═══
 Win rate:             last-5={wr_last5:.0%} ({wins5}/{len(recent_trades[:5])})  last-20={wr_last20:.0%} ({wins20}/{len(recent_trades[:20])})  trend={wr_trend}
 Profit factor:        {profit_factor}  (every $1 lost → ${profit_factor} recovered)
-Expected value/trade: ${expected_val:+.2f}
+EV/trade (last-20):   ${expected_val:+.2f}
 Avg win:              {avg_win}    max win: {max_win}
 Avg loss:             {avg_loss}    max loss: {max_loss}
 Total P&L last-5:     ${total_pnl_5:+.2f}
@@ -532,10 +560,12 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 Four sections. Every sentence must contain at least one number from the data above.
 
 what_happened       — Net P&L $, hold time, gross vs fees ($ and %), z-reversion %, exit reason.
-why                 — Win rate last-5 vs last-20, profit factor, streak, expected value/trade,
-                      cost-to-opp ratio vs healthy target (<0.30), avg win vs avg loss.
-what_could_be_better — Specific numbers: entry z vs threshold, fee % vs 25% target, avg hold
-                       winners vs losers, whether position size fits current expected value.
+why                 — Win rate last-5 vs last-20, profit factor, streak, EV/trade (from EV section),
+                      break-even win rate vs actual win rate, cost-to-opp ratio vs target (<0.30),
+                      avg win vs avg loss. Explain whether this strategy has positive expected value.
+what_could_be_better — Specific numbers: R:R ratio, whether actual win rate exceeds break-even win
+                       rate, fee % vs 25% target, avg hold winners vs losers, whether position size
+                       fits current EV per trade.
 recommendations     — Up to 4 items. Each rationale: current number → problem → suggested number
                       → why that number → expected improvement. No vague statements.
   PARAMETER_CHANGE     — numeric setting, auto-applied at 3+ consensus, conf ≥0.70

@@ -752,11 +752,25 @@ class TradingEngine:
                 rt_cost = self._round_trip_cost_usd(trade)
                 target_usd = max(target_usd, cost_mult * rt_cost)
         # Dollar stop $
+        # Primary: derive from target and R:R multiple — stop = target / rr_multiple.
+        # This is the correct flow: set the target, R:R determines the stop.
+        # Secondary: capital-% or flat max_loss_usd act as a hard backstop.
+        # If both are active, use the TIGHTER (smaller) stop.
+        rr_mult = getattr(cfg, 'min_entry_rr_multiple', 0.0) or 0.0
+        rr_stop = (target_usd / rr_mult) if (rr_mult > 0 and target_usd > 0) else 0.0
+
         cap_pct = getattr(cfg, 'stop_loss_capital_pct', 0.0) or 0.0
         if cap_pct > 0:
-            stop_usd = cap_pct / 100.0 * self._capital_at_risk(trade)
+            backstop_usd = cap_pct / 100.0 * self._capital_at_risk(trade)
         else:
-            stop_usd = getattr(cfg, 'max_loss_usd', 0.0) or 0.0
+            backstop_usd = getattr(cfg, 'max_loss_usd', 0.0) or 0.0
+
+        if rr_stop > 0 and backstop_usd > 0:
+            stop_usd = min(rr_stop, backstop_usd)   # tighter stop wins
+        elif rr_stop > 0:
+            stop_usd = rr_stop
+        else:
+            stop_usd = backstop_usd
         # Max hold (in periods; half-life is measured in periods)
         hl_mult = getattr(cfg, 'max_hold_halflife_mult', 0.0) or 0.0
         max_hold_periods = 0.0
@@ -1189,10 +1203,10 @@ class TradingEngine:
         leg_b_lev = max(self.config.futures_leverage if leg_b_is_deriv else 1, 1)
         total_margin = leg_a_notional / leg_a_lev + leg_b_notional / leg_b_lev
 
-        # Guard #12: R:R entry gate — expected profit target must be a minimum
-        # multiple of the stop loss before accepting the trade.
-        # Reward = what the profit target would pay at this z-score.
-        # Risk   = stop loss in USD (same formula as the live exit check).
+        # Guard #12: R:R entry gate.
+        # The stop is derived from target / rr_multiple in _effective_exit_targets.
+        # Here we only block if rr_multiple is set but no profit target is configured
+        # — without a target we can't derive the stop, so the entry is ambiguous.
         _min_rr = getattr(self.config, 'min_entry_rr_multiple', 0.0) or 0.0
         if _min_rr > 0:
             _sig_frac = getattr(self.config, 'profit_target_sigma_frac', 0.0) or 0.0
@@ -1201,27 +1215,20 @@ class TradingEngine:
                                     * signal.spread_std * quantity)
             else:
                 _expected_target = getattr(self.config, 'profit_target_usd', 0.0) or 0.0
-            _cap_pct = getattr(self.config, 'stop_loss_capital_pct', 0.0) or 0.0
-            if _cap_pct > 0:
-                _buf = getattr(self.config, 'm2m_buffer_pct', 0.0) or 0.0
-                _stop_usd = _cap_pct / 100.0 * total_margin * (1 + _buf / 100.0)
-            else:
-                _stop_usd = getattr(self.config, 'max_loss_usd', 0.0) or 0.0
-            if _expected_target > 0 and _stop_usd > 0:
-                _rr = _expected_target / _stop_usd
-                if _rr < _min_rr:
-                    _rr_block = (
-                        f"R:R gate: reward ${_expected_target:.2f} / risk ${_stop_usd:.2f}"
-                        f" = {_rr:.2f}x < min {_min_rr:.1f}x"
-                    )
-                    logger.info("Entry blocked: %s", _rr_block)
-                    self.signal_generator.last_blocked_signal = {
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'would_be_signal': signal.signal_type,
-                        'zscore': round(signal.zscore, 4),
-                        'reason': _rr_block,
-                    }
-                    return
+            if _expected_target <= 0:
+                _rr_block = (
+                    f"R:R gate: min_entry_rr_multiple={_min_rr} is set but "
+                    f"profit_target_usd and profit_target_sigma_frac are both 0 — "
+                    f"cannot derive stop loss without a profit target"
+                )
+                logger.info("Entry blocked: %s", _rr_block)
+                self.signal_generator.last_blocked_signal = {
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'would_be_signal': signal.signal_type,
+                    'zscore': round(signal.zscore, 4),
+                    'reason': _rr_block,
+                }
+                return
 
         trade = Trade(
             asset=self.config.asset,
