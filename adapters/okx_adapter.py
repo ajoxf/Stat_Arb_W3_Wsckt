@@ -139,8 +139,14 @@ class OKXAdapter(ExchangeAdapter):
         path: str,
         params: Optional[Dict] = None,
         data: Optional[Dict] = None,
+        quiet_codes: Optional[set] = None,
     ) -> Optional[Dict]:
-        """Make API request with automatic 429 retry (up to 3 attempts)."""
+        """Make API request with automatic 429 retry (up to 3 attempts).
+
+        quiet_codes: OKX error codes (strings) to log at DEBUG instead of WARNING.
+        Use for expected non-fatal failures like 51001 (instrument not found) when
+        probing for optional instrument data.
+        """
         if not self._session:
             self._session = aiohttp.ClientSession()
 
@@ -183,8 +189,12 @@ class OKXAdapter(ExchangeAdapter):
                             sub_msg = data_arr[0].get("sMsg", "")
                             if sub_code or sub_msg:
                                 error = f"{error} (sCode={sub_code}: {sub_msg})"
-                        logger.warning("OKX API error [%s %s]: %s | Full response: %s",
-                                       method, path, error, result)
+                        if quiet_codes and result.get("code") in quiet_codes:
+                            logger.debug("OKX API [%s %s] code=%s (expected): %s",
+                                         method, path, result.get("code"), error)
+                        else:
+                            logger.warning("OKX API error [%s %s]: %s | Full response: %s",
+                                           method, path, error, result)
                         self._set_error(error)
 
                     return result
@@ -1029,10 +1039,14 @@ class OKXAdapter(ExchangeAdapter):
         """Get symbol trading information."""
         try:
             inst_type = _detect_inst_type(symbol)
+            # Dated FUTURES contracts expire and OKX returns 51001 after expiry.
+            # Suppress that to DEBUG — it is expected, not an error.
+            quiet = {"51001"} if inst_type == "FUTURES" else None
             result = await self._request(
                 "GET",
                 "/api/v5/public/instruments",
                 params={"instType": inst_type, "instId": symbol},
+                quiet_codes=quiet,
             )
 
             if result and result.get("code") == "0" and result.get("data"):

@@ -227,6 +227,16 @@ class AIMonitor:
             snap["last_entry_throttled"]       = getattr(eng, "_last_entry_throttled", False)
         except Exception:
             pass
+
+        # WS current state — explicitly included so the LLM does not diagnose old
+        # startup-failure log lines as a current problem when WS has since reconnected.
+        try:
+            adapter = getattr(eng, "exchange", None)
+            snap["ws_connected"] = getattr(adapter, "_connected", None)
+            snap["ws_last_error"] = getattr(adapter, "last_error", None) or None
+        except Exception:
+            pass
+
         snap["recent_log_tail"] = self._tail_log(_LOG_TAIL_LINES)
         return snap
 
@@ -263,7 +273,11 @@ class AIMonitor:
             "in the summary under any circumstances. These are informational only.\n"
             "2. If algo_enabled is false, no trades can be triggered. Do NOT warn about "
             "z-score proximity to entry thresholds.\n"
-            "3. paper_trading true = simulated mode; treat open positions as expected, not stuck.\n\n"
+            "3. paper_trading true = simulated mode; treat open positions as expected, not stuck.\n"
+            "4. ws_connected in STATE is the authoritative WS status. If ws_connected is true, "
+            "the WebSocket is currently functional — do NOT report WS login failures seen in "
+            "the log tail as a current problem. Those are startup-attempt lines from earlier; "
+            "the WS has since reconnected successfully.\n\n"
             "PRIMARY CONCERN — execution quality / fee degradation:\n"
             "The biggest silent edge-killer is a POST_ONLY limit order being rejected "
             "(OKX cancelSource=31) and re-executing as a MARKET (taker) order. "
