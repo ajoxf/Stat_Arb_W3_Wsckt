@@ -1088,6 +1088,16 @@ class OKXAdapter(ExchangeAdapter):
 
         return None
 
+    async def get_server_time_ms(self) -> Optional[float]:
+        """Return OKX server time in milliseconds, or None on error."""
+        try:
+            result = await self._request("GET", "/api/v5/public/time")
+            if result and result.get("code") == "0":
+                return float(result["data"][0]["ts"])
+        except Exception as e:
+            logger.debug("get_server_time_ms failed: %s", e)
+        return None
+
     async def get_instruments(self, inst_type: str = "SPOT") -> List[Dict[str, Any]]:
         """List all tradable instruments of a given type from OKX.
 

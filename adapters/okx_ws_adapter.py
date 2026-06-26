@@ -611,6 +611,11 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         )
         logger.info("[%s] WS TCP connected", cid)
 
+        # Clock-drift check: OKX silently drops the WS connection (no error frame)
+        # if the login timestamp is outside ±30 s of server time.  Check once per
+        # connect so the operator gets a clear warning before the 10 s timeout fires.
+        await self._check_clock_drift()
+
         # Create event before starting the receive loop so the loop can set it
         self._login_event = asyncio.Event()
         self._logged_in = False
@@ -635,6 +640,32 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         await self._subscribe_all()
         self._connected = True
         logger.info("[ws_adapter] ready — connected, authenticated, subscribed")
+
+    async def _check_clock_drift(self) -> None:
+        """
+        Compare local clock against OKX server time via REST.
+        OKX rejects (silently drops) WS login frames whose timestamp
+        is outside ±30 s of server time — the symptom is a login timeout
+        with no error frame.  Log a clear warning when drift > 5 s so the
+        operator knows to resync their system clock before debugging further.
+        """
+        try:
+            server_ts_ms = await self._rest.get_server_time_ms()
+            if server_ts_ms is None:
+                return
+            drift_s = abs(time.time() - server_ts_ms / 1000.0)
+            if drift_s > 5:
+                logger.warning(
+                    "[ws_adapter] CLOCK DRIFT DETECTED: local time is %.1f s off OKX server time. "
+                    "OKX silently drops WS login frames with drift > 30 s — this is the likely "
+                    "cause of 'WS login timed out'. Fix: resync your system clock "
+                    "(Windows: w32tm /resync /force  |  Linux: ntpdate -u pool.ntp.org).",
+                    drift_s,
+                )
+            else:
+                logger.debug("[ws_adapter] clock drift OK: %.2f s", drift_s)
+        except Exception as e:
+            logger.debug("[ws_adapter] clock drift check failed (non-fatal): %s", e)
 
     async def _send_login(self, cid: str) -> None:
         """Build and send the WS login frame per OKX docs."""
