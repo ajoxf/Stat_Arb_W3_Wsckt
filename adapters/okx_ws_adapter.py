@@ -186,9 +186,13 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             await self._ws_connect()
             return True
         except Exception as e:
-            self._running = False
+            # Do NOT set _running = False here.  _on_disconnect() has already
+            # spawned _reconnect_loop(), which loops on `while self._running`.
+            # Clearing the flag kills that loop after the very first retry.
+            # Keep _running = True so the loop retries with full backoff in
+            # the background while REST handles the fallback.
             self._set_error(str(e))
-            logger.exception("[ws_adapter] connect failed: %s", e)
+            logger.warning("[ws_adapter] initial connect failed: %s — reconnect loop active", e)
             return False
 
     async def disconnect(self) -> None:

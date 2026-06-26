@@ -1170,8 +1170,8 @@ def get_exchange_positions():
             })
 
         except Exception as e:
-            logger.error("Error fetching exchange positions: %s", e)
-            return jsonify({'success': False, 'positions': [], 'error': str(e)})
+            logger.error("Error fetching exchange positions: %r", e, exc_info=True)
+            return jsonify({'success': False, 'positions': [], 'error': repr(e)})
 
     return jsonify({'positions': [], 'error': 'Event loop not running'})
 
@@ -1465,8 +1465,8 @@ def get_spot_holdings():
             })
 
         except Exception as e:
-            logger.error("Error fetching spot holdings: %s", e)
-            return jsonify({'holdings': [], 'error': str(e)})
+            logger.error("Error fetching spot holdings: %r", e, exc_info=True)
+            return jsonify({'holdings': [], 'error': repr(e)})
 
     return jsonify({'holdings': [], 'error': 'Event loop not running'})
 
@@ -1809,7 +1809,7 @@ def get_account_info():
                     logger.warning("Error fetching positions: %s", pos_err)
 
         except Exception as e:
-            logger.warning("Error fetching account info: %s", e)
+            logger.warning("Error fetching account info: %r", e, exc_info=True)
 
     # Add configured leverage for comparison
     account_data['configured_spot_leverage'] = config.spot_leverage
