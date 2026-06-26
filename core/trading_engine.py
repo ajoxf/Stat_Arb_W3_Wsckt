@@ -163,6 +163,16 @@ class TradingEngine:
         # Critical for WebSocket mode where ticks arrive faster than processing
         self._processing_tick = False
 
+        # WS eval throttle: bound how often we run the (relatively heavy) tick
+        # pipeline. WS streams ticks far faster than we need to evaluate, and
+        # running _process_tick_pair back-to-back saturates the single async
+        # loop — starving the REST account/position calls the dashboard
+        # schedules onto it (they were timing out at 10s). spot_tick/futures_tick
+        # still update on EVERY ws tick (so prices stay fresh for order pricing);
+        # this only caps signal/order evaluation cadence so the loop can breathe.
+        self._last_tick_eval: Optional[datetime] = None
+        self._tick_eval_min_interval: float = 0.25  # seconds (4 evals/s max)
+
         # Position reconciliation tracking
         self._last_position_verify: Optional[datetime] = None
         self._position_verify_interval = 20  # seconds between checks (was 60 — live needs faster)
@@ -334,8 +344,18 @@ class TradingEngine:
         # Process tick if we have both AND no tick is currently being processed
         # Without this guard, rapid WebSocket ticks spawn concurrent tasks that
         # all see current_position=NONE and place duplicate orders simultaneously
-        if self.spot_tick and self.futures_tick and not self._processing_tick:
-            asyncio.create_task(self._run_tick_guarded())
+        if not (self.spot_tick and self.futures_tick) or self._processing_tick:
+            return
+
+        # Throttle: cap evaluation cadence so back-to-back WS ticks don't starve
+        # the event loop of time to drive concurrent REST calls. Ticks arriving
+        # inside the window just refresh the cached prices above and return.
+        now = datetime.utcnow()
+        if (self._last_tick_eval is not None
+                and (now - self._last_tick_eval).total_seconds() < self._tick_eval_min_interval):
+            return
+        self._last_tick_eval = now
+        asyncio.create_task(self._run_tick_guarded())
 
     async def _run_tick_guarded(self) -> None:
         """Process a tick with a guard to prevent concurrent execution."""
