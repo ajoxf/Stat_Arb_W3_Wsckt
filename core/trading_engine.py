@@ -2462,6 +2462,16 @@ class TradingEngine:
             except Exception:
                 pass
 
+        # Tick age: how stale is the most recent price update
+        tick_age_ms = None
+        if self.state.last_tick_time:
+            tick_age_ms = round((datetime.utcnow() - self.state.last_tick_time).total_seconds() * 1000)
+
+        # WS connection state (True/False/None = unknown)
+        ws_connected = getattr(self.futures_adapter, "_connected", None)
+        if ws_connected is None:
+            ws_connected = getattr(self.spot_adapter, "_connected", None)
+
         return {
             'is_running': self.state.is_running,
             'algo_enabled': self.state.algo_enabled,
@@ -2469,6 +2479,8 @@ class TradingEngine:
             'asset': self.config.asset,
             'position': self.state.current_position,
             'last_tick_time': self.state.last_tick_time.isoformat() if self.state.last_tick_time else None,
+            'tick_age_ms': tick_age_ms,
+            'ws_connected': ws_connected,
             'error': self.state.error,
             'spot_connected': self.spot_adapter is not None,
             'futures_connected': self.futures_adapter is not None,

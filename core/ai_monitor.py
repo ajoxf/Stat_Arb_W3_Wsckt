@@ -231,9 +231,16 @@ class AIMonitor:
         # WS current state — explicitly included so the LLM does not diagnose old
         # startup-failure log lines as a current problem when WS has since reconnected.
         try:
-            adapter = getattr(eng, "exchange", None)
-            snap["ws_connected"] = getattr(adapter, "_connected", None)
-            snap["ws_last_error"] = getattr(adapter, "last_error", None) or None
+            spot_adapter = getattr(eng, "spot_adapter", None)
+            fut_adapter  = getattr(eng, "futures_adapter", None)
+            ws_conn = getattr(fut_adapter, "_connected", None)
+            if ws_conn is None:
+                ws_conn = getattr(spot_adapter, "_connected", None)
+            snap["ws_connected"] = ws_conn
+            snap["ws_last_error"] = (
+                getattr(fut_adapter, "last_error", None) or
+                getattr(spot_adapter, "last_error", None) or None
+            )
         except Exception:
             pass
 

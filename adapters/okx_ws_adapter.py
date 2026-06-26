@@ -199,6 +199,11 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             # the background while REST handles the fallback.
             self._set_error(str(e))
             logger.warning("[ws_adapter] initial connect failed: %s — reconnect loop active", e)
+            # On login timeout _ws_connect() cancels tasks before raising, so
+            # _on_disconnect() (which lives at the end of _receive_loop) will NOT
+            # fire. Ensure reconnect loop is running regardless of failure mode.
+            if self._running and (self._reconnect_task is None or self._reconnect_task.done()):
+                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
             return False
 
     async def disconnect(self) -> None:
@@ -639,11 +644,16 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         # Send login frame
         await self._send_login(cid)
 
-        # Block until login is confirmed or rejected (10 s timeout)
+        # Block until login is confirmed or rejected (20 s — extended for proxy environments)
         try:
-            await asyncio.wait_for(self._login_event.wait(), timeout=10.0)
+            await asyncio.wait_for(self._login_event.wait(), timeout=20.0)
         except asyncio.TimeoutError:
-            raise RuntimeError("OKX WS login timed out (10 s)")
+            # Cancel tasks immediately so the stale receive loop doesn't later call
+            # _on_disconnect() and spawn a competing reconnect loop. connect() will
+            # spawn the reconnect loop itself after catching this exception.
+            await self._cancel_tasks()
+            await self._close_ws()
+            raise RuntimeError("OKX WS login timed out")
 
         if not self._logged_in:
             raise RuntimeError("OKX WS login rejected by exchange")
