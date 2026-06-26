@@ -1325,7 +1325,9 @@ class OrderExecutor:
                 adapter=self.futures_adapter,
                 leg=spread_order.futures_leg,
                 label="futures",
-                recovery_timeout_sec=getattr(self.config, 'orphan_recovery_timeout_sec', 60),
+                recovery_timeout_sec=getattr(self.config, 'orphan_recovery_timeout_sec', 5),
+                filled_leg=spread_order.spot_leg,
+                filled_adapter=self.spot_adapter,
             )
             if not recovered:
                 # Last resort: close the spot leg at market
@@ -1358,7 +1360,9 @@ class OrderExecutor:
                 adapter=self.spot_adapter,
                 leg=spread_order.spot_leg,
                 label="spot",
-                recovery_timeout_sec=getattr(self.config, 'orphan_recovery_timeout_sec', 60),
+                recovery_timeout_sec=getattr(self.config, 'orphan_recovery_timeout_sec', 5),
+                filled_leg=spread_order.futures_leg,
+                filled_adapter=self.futures_adapter,
             )
             if not recovered:
                 # Last resort: close the futures leg at market
@@ -1385,20 +1389,31 @@ class OrderExecutor:
         adapter: ExchangeAdapter,
         leg: LegOrder,
         label: str,
-        recovery_timeout_sec: int = 60,
-        price_step_bps: float = 2.0,
-        max_price_steps: int = 10,
+        recovery_timeout_sec: int = 5,
+        price_step_bps: float = 3.0,
+        max_price_steps: int = 3,
+        filled_leg: Optional[LegOrder] = None,
+        filled_adapter: Optional[ExchangeAdapter] = None,
     ) -> bool:
         """
-        Attempt to fill an orphaned leg using LIMIT orders before falling back to market.
+        Fill an orphaned leg, prioritising hedge re-establishment over fees.
 
-        Strategy:
-        - Place a passive LIMIT order (not POST_ONLY, so it won't be auto-cancelled)
-        - Check every second for fill
-        - Every (timeout / max_steps) seconds, nudge price 1 bps closer to market
-        - Return True if filled as maker, False if gave up (caller should market close)
+        When one leg fills and the other is rejected, the position is a naked
+        directional punt — every second unhedged is pure market risk that dwarfs
+        the ~3 bps taker premium. Strategy (per operator decision):
+        - Try a passive maker LIMIT for a SHORT window (~recovery_timeout_sec),
+          nudging toward market every (timeout / max_steps) seconds.
+        - If still unfilled when the window elapses, CROSS the book (taker) to
+          complete the hedge immediately rather than abandoning the entry.
+        - ABORT-AND-FLATTEN safety net: if the half-hedged position's unrealized
+          loss breaches max_loss_usd at any point, stop chasing and return False
+          so the caller flattens the filled leg — capping the orphan bleed.
 
-        This preserves maker fees instead of paying taker fees + slippage.
+        filled_leg / filled_adapter: the already-on leg, used for the abort PnL
+        check. Optional for backward compatibility.
+
+        Returns True if the missing leg was filled (maker or taker) and the hedge
+        is complete; False if the caller should flatten the filled leg to flat.
         """
         logger.info("Starting maker recovery for %s leg: %s %.6f",
                     label, leg.side, leg.quantity)
@@ -1408,6 +1423,7 @@ class OrderExecutor:
         deadline = datetime.utcnow() + timedelta(seconds=recovery_timeout_sec)
         step_deadline = datetime.utcnow() + timedelta(seconds=step_interval)
         current_order_id = None
+        abort_usd = getattr(self.config, 'max_loss_usd', 0.0) or 0.0
 
         try:
             # Get current market price for the leg
@@ -1439,7 +1455,21 @@ class OrderExecutor:
 
             # Poll until filled or deadline
             while datetime.utcnow() < deadline:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
+
+                # Abort-and-flatten safety net: if the half-hedged position is
+                # already past the dollar-stop, stop chasing and let the caller
+                # flatten the filled leg — capping the naked-leg bleed at the stop.
+                if abort_usd > 0 and filled_leg is not None and filled_adapter is not None:
+                    pnl = await self._half_hedged_pnl(filled_leg, filled_adapter)
+                    if pnl is not None and pnl <= -abort_usd:
+                        logger.error(
+                            "Orphan ABORT: half-hedged exposure unrealized $%.2f <= -$%.2f "
+                            "max_loss — cancelling %s recovery, flattening filled leg",
+                            pnl, abort_usd, label)
+                        if current_order_id:
+                            await adapter.cancel_order(leg.symbol, current_order_id)
+                        return False
 
                 # Check fill status
                 status = await adapter.get_order_status(leg.symbol, current_order_id)
@@ -1492,13 +1522,15 @@ class OrderExecutor:
                                 logger.error("Failed to replace recovery order: %s", result.error)
                                 return False
 
-            # Timeout - cancel the recovery order
-            logger.warning("Recovery timeout for %s after %ds - falling back to market",
-                          label, recovery_timeout_sec)
+            # Maker window elapsed — cross the book (taker) to complete the hedge
+            # immediately rather than leaving the position naked any longer. The
+            # ~3 bps taker premium is trivial next to seconds of directional risk.
+            logger.warning("Recovery maker window (%ds) elapsed for %s — crossing book (taker) to re-hedge",
+                          recovery_timeout_sec, label)
             if current_order_id:
                 await adapter.cancel_order(leg.symbol, current_order_id)
 
-            return False
+            return await self._cross_to_fill(adapter, leg, label)
 
         except Exception as e:
             logger.exception("Error during maker recovery for %s: %s", label, e)
@@ -1509,6 +1541,77 @@ class OrderExecutor:
                 except Exception:
                     pass
             return False
+
+    async def _cross_to_fill(self, adapter: ExchangeAdapter, leg: LegOrder, label: str) -> bool:
+        """
+        Cross the book with an aggressive LIMIT (taker) to fill the orphan leg now.
+        A crossing LIMIT (not MARKET) keeps spot BUY sizing in base units while
+        still taking liquidity immediately. Returns True only on a confirmed fill.
+        """
+        try:
+            tick = await adapter.get_tick(leg.symbol)
+            if not tick:
+                logger.error("Cross-to-fill: no tick for %s — cannot re-hedge", leg.symbol)
+                return False
+            cross_buf = 0.0010  # 10 bps through the touch to guarantee the cross
+            if leg.side == "BUY":
+                px = round(tick.ask * (1 + cross_buf), 2)
+            else:
+                px = round(tick.bid * (1 - cross_buf), 2)
+            remaining = leg.quantity - leg.filled_qty
+            qty = remaining if remaining > 0 else leg.quantity
+            result = await adapter.place_order(
+                symbol=leg.symbol, side=leg.side, order_type="LIMIT",
+                quantity=qty, price=px, pos_side=leg.pos_side,
+            )
+            if not result.success:
+                logger.error("Cross-to-fill order rejected for %s: %s", label, result.error)
+                return False
+            order_id = result.order_id
+            logger.info("Cross-to-fill: %s crossing LIMIT %s qty=%.6f @ %.4f (taker)",
+                        label, leg.side, qty, px)
+            # Poll briefly for the taker fill (should be near-instant)
+            for _ in range(6):
+                await asyncio.sleep(0.5)
+                status = await adapter.get_order_status(leg.symbol, order_id)
+                if status and status["state"] == "filled":
+                    leg.status = LegStatus.FILLED
+                    leg.filled_qty = status["filled_qty"]
+                    leg.filled_price = status["filled_price"]
+                    leg.order_id = order_id
+                    logger.info("Cross-to-fill SUCCESS: %s leg hedged as taker @ %.4f",
+                                label, leg.filled_price)
+                    return True
+            # Did not confirm — cancel and hand back to caller to flatten
+            await adapter.cancel_order(leg.symbol, order_id)
+            logger.error("Cross-to-fill did not confirm for %s — abandoning to flat", label)
+            return False
+        except Exception as e:
+            logger.exception("Cross-to-fill error for %s: %s", label, e)
+            return False
+
+    async def _half_hedged_pnl(self, filled_leg: LegOrder, adapter: ExchangeAdapter) -> Optional[float]:
+        """
+        USD unrealized PnL of the already-filled (currently unhedged) leg.
+        Uses base-unit quantity × price so it is unit-consistent with the rest
+        of the executor. Negative = losing. Returns None if no mark available.
+        """
+        try:
+            tick = await adapter.get_tick(filled_leg.symbol)
+            if not tick:
+                return None
+            mark = getattr(tick, "mid", 0.0) or 0.0
+            if mark <= 0:
+                mark = ((tick.bid + tick.ask) / 2.0) if (tick.bid and tick.ask) else tick.last
+            entry = filled_leg.filled_price or filled_leg.target_price
+            if not mark or not entry:
+                return None
+            qty_base = filled_leg.quantity  # base units (e.g. ETH/BTC)
+            if filled_leg.side == "BUY":
+                return (mark - entry) * qty_base
+            return (entry - mark) * qty_base
+        except Exception:
+            return None
 
     def _calc_recovery_price(self, side: str, tick: MarketTick, offset_bps: float) -> float:
         """
