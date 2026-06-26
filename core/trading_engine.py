@@ -289,10 +289,17 @@ class TradingEngine:
             logger.warning("set_rfq_executor called before set_adapters — RFQ not registered")
 
     def set_adapters(self, spot: Optional[ExchangeAdapter], futures: Optional[ExchangeAdapter]) -> None:
-        """Set exchange adapters (REST mode)."""
+        """Set exchange adapters (used for orders / account / REST fallback).
+
+        These adapters are orthogonal to the market-data feed. Do NOT force REST
+        polling here: app.py calls set_websocket_manager() BEFORE set_adapters(),
+        so unconditionally clearing _use_websocket clobbered the already-wired
+        public market-data WS and silently forced the engine onto 0.5s REST
+        polling. Reflect reality instead — stream if a WS manager is registered.
+        """
         self.spot_adapter = spot
         self.futures_adapter = futures
-        self._use_websocket = False
+        self._use_websocket = self.ws_manager is not None
 
         # Initialize order executor if we have both adapters
         if spot and futures:
