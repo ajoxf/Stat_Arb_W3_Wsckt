@@ -159,6 +159,11 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         # Pending WS operation futures: op_id → asyncio.Future[Dict]
         self._pending_ops: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
 
+        # Signed offset: local_time - server_time (seconds).  Positive means
+        # local clock is ahead.  Updated each connect; used in _send_login so
+        # the auth timestamp is server-clock-relative even when the OS is drifted.
+        self._clock_offset_s: float = 0.0
+
         # instId → numeric instIdCode, resolved once per symbol and cached.
         # OKX is migrating WS trade ops from the string instId to the numeric
         # instIdCode; the demo endpoint already enforces it (sCode 50014 otherwise).
@@ -643,33 +648,38 @@ class OKXWebSocketAdapter(ExchangeAdapter):
 
     async def _check_clock_drift(self) -> None:
         """
-        Compare local clock against OKX server time via REST.
-        OKX rejects (silently drops) WS login frames whose timestamp
-        is outside ±30 s of server time — the symptom is a login timeout
-        with no error frame.  Log a clear warning when drift > 5 s so the
-        operator knows to resync their system clock before debugging further.
+        Compare local clock against OKX server time via REST and store the
+        signed offset so _send_login can compensate.  OKX silently drops WS
+        login frames whose timestamp is outside ±30 s of server time — with
+        the offset applied the login uses server-relative time regardless of
+        OS clock state, so auth succeeds even on a drifted machine.
         """
         try:
             server_ts_ms = await self._rest.get_server_time_ms()
             if server_ts_ms is None:
                 return
-            drift_s = abs(time.time() - server_ts_ms / 1000.0)
+            # Signed: positive means local is ahead of server.
+            self._clock_offset_s = time.time() - server_ts_ms / 1000.0
+            drift_s = abs(self._clock_offset_s)
             if drift_s > 5:
                 logger.warning(
-                    "[ws_adapter] CLOCK DRIFT DETECTED: local time is %.1f s off OKX server time. "
-                    "OKX silently drops WS login frames with drift > 30 s — this is the likely "
-                    "cause of 'WS login timed out'. Fix: resync your system clock "
+                    "[ws_adapter] CLOCK DRIFT: local time is %.1f s %s OKX server — "
+                    "login timestamp auto-corrected so auth will succeed. "
+                    "For a permanent fix resync your OS clock "
                     "(Windows: w32tm /resync /force  |  Linux: ntpdate -u pool.ntp.org).",
                     drift_s,
+                    "ahead of" if self._clock_offset_s > 0 else "behind",
                 )
             else:
-                logger.debug("[ws_adapter] clock drift OK: %.2f s", drift_s)
+                logger.debug("[ws_adapter] clock drift OK: %.2f s", self._clock_offset_s)
         except Exception as e:
             logger.debug("[ws_adapter] clock drift check failed (non-fatal): %s", e)
 
     async def _send_login(self, cid: str) -> None:
         """Build and send the WS login frame per OKX docs."""
-        ts = str(int(time.time()))
+        # Apply measured clock offset so the timestamp is server-relative.
+        # _clock_offset_s = local - server; subtracting it gives server time.
+        ts = str(int(time.time() - self._clock_offset_s))
         sign_payload = ts + "GET" + "/users/self/verify"
         mac = hmac.new(
             self.secret_key.encode("utf-8"),
