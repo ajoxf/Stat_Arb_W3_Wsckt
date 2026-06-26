@@ -1333,22 +1333,38 @@ class OrderExecutor:
                 # Last resort: close the spot leg at market
                 logger.error("Futures recovery failed - closing spot orphan at MARKET (taker fees apply)")
                 close_side = "SELL" if spread_order.spot_leg.side == "BUY" else "BUY"
-                # Cross-margin SPOT MARKET BUY needs notional_usdt (sz must be in USDT)
+                spot_is_deriv = is_derivative(spread_order.spot_leg.symbol)
+                # Cross-margin TRUE-SPOT MARKET BUY needs notional_usdt (sz must be
+                # in USDT). Derivatives close by contract qty, never by notional.
                 spot_notional = None
-                if close_side == "BUY":
+                if close_side == "BUY" and not spot_is_deriv:
                     try:
                         spot_tick = await self.spot_adapter.get_tick(spread_order.spot_leg.symbol)
                         if spot_tick:
                             spot_notional = round(spread_order.spot_leg.filled_qty * spot_tick.mid, 2)
                     except Exception as e:
                         logger.warning("Could not fetch spot tick for notional calc: %s", e)
-                result = await self.spot_adapter.place_order(
+                close_kwargs = dict(
                     symbol=spread_order.spot_leg.symbol,
                     side=close_side,
                     order_type="MARKET",
                     quantity=spread_order.spot_leg.filled_qty,
                     notional_usdt=spot_notional,
                 )
+                # When the "spot" leg is actually a derivative (e.g. ETH-USDT-SWAP),
+                # close REDUCE-ONLY with the held pos_side. OKX clamps a reduce-only
+                # order to the live position size, so this flatten can only REDUCE an
+                # existing position — never flip a flat book into a fresh one.
+                # Without this, filled_qty (reported in CONTRACTS, not base units)
+                # was passed as a base-currency qty, inflating ~10x via ctVal, and
+                # with no reduce_only it opened a new position. That is exactly the
+                # 06/26 incident: the engine sold 6.3 ETH into an already-flat book,
+                # then bought it back at a ~$17 loss.
+                if spot_is_deriv:
+                    close_kwargs["reduce_only"] = True
+                    if spread_order.spot_leg.pos_side:
+                        close_kwargs["pos_side"] = spread_order.spot_leg.pos_side
+                result = await self.spot_adapter.place_order(**close_kwargs)
                 if result.success:
                     logger.info("Closed orphan spot leg at market: order_id=%s", result.order_id)
                 else:
