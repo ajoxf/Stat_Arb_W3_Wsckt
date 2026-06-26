@@ -770,17 +770,35 @@ class OrderExecutor:
         """
         Compute and set target_price on a single leg from a live tick.
 
-        BUY: bid + offset, capped below ask  (maker buy, won't cross to taker)
-        SELL: ask − offset, floored above bid (maker sell, won't cross to taker)
+        BUY:  rest at/just inside the bid, kept a safety buffer clear of the ask.
+        SELL: rest at/just inside the ask, kept a safety buffer clear of the bid.
 
-        extra_buffer_bps widens the safety gap after a POST_ONLY rejection.
+        Two design points that fix the chronic cancelSource=31 rejections:
+        - The resting price is FLOORED at the own-side touch, so a wide buffer on
+          a tight book still rests ON the book (maker, fillable) instead of being
+          pushed below the bid (or above the ask) where it never fills.
+        - The buffer keeps the price away from the OPPOSITE touch so a stale/async
+          tick can't cross it into a taker fill — the reject that orphaned one leg.
+          The old hard-coded 1 bp is only ~$6 on BTC (less than one fast tick),
+          so it was routinely crossed between price-snap and order arrival.
+        extra_buffer_bps widens the gap further on the retry after a rejection.
         """
-        offset_bps = self.config.limit_order_price_offset_bps / 10000
-        buf = (1.0 + extra_buffer_bps) / 10000
+        offset_bps = self.config.limit_order_price_offset_bps / 10000.0
+        # Default 3 bp (override via config.post_only_safety_buffer_bps if set).
+        base_buf_bps = getattr(self.config, 'post_only_safety_buffer_bps', 0.0) or 3.0
+        buf = (base_buf_bps + extra_buffer_bps) / 10000.0
         if leg.side == "BUY":
-            leg.target_price = round(min(tick.bid * (1 + offset_bps), tick.ask * (1 - buf)), 2)
+            target = min(tick.bid * (1 + offset_bps), tick.ask * (1 - buf))
+            target = max(target, tick.bid)            # never below the bid (stay fillable)
+            if target >= tick.ask:                    # crossed/locked tick — fall back
+                target = tick.ask * (1 - buf)
+            leg.target_price = round(target, 2)
         else:
-            leg.target_price = round(max(tick.ask * (1 - offset_bps), tick.bid * (1 + buf)), 2)
+            target = max(tick.ask * (1 - offset_bps), tick.bid * (1 + buf))
+            target = min(target, tick.ask)            # never above the ask (stay fillable)
+            if target <= tick.bid:                    # crossed/locked tick — fall back
+                target = tick.bid * (1 + buf)
+            leg.target_price = round(target, 2)
 
     def _update_target_prices(
         self,
