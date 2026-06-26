@@ -155,6 +155,7 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         # Background tasks
         self._receive_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._reconnect_task: Optional[asyncio.Task] = None
 
         # Pending WS operation futures: op_id → asyncio.Future[Dict]
         self._pending_ops: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
@@ -605,6 +606,12 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         Low-level: open TCP, send login, wait for ack, subscribe channels.
         Called both on initial connect and on every reconnect attempt.
         """
+        # Cancel stale tasks and close any open WS/session from a prior failed
+        # attempt.  Without this, leaked receive tasks fire _on_disconnect() and
+        # spawn competing reconnect loops that overwrite each other's state.
+        await self._cancel_tasks()
+        await self._close_ws()
+
         cid = _new_cid()
         url = _TESTNET_PRIVATE_URL if self.is_testnet else _LIVE_PRIVATE_URL
         headers = {"x-simulated-trading": "1"} if self.is_testnet else {}
@@ -791,7 +798,13 @@ class OKXWebSocketAdapter(ExchangeAdapter):
         self._logged_in = False
 
         if self._running:
-            asyncio.create_task(self._reconnect_loop())
+            # Guard: only one reconnect loop at a time.  Leaked receive tasks
+            # from a prior failed _ws_connect() would each call _on_disconnect()
+            # and spawn competing loops that fight over self._ws/_session.
+            if self._reconnect_task is None or self._reconnect_task.done():
+                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+            else:
+                logger.debug("[recv_loop] reconnect already in progress, skipping duplicate")
 
     async def _dispatch(self, raw: str, cid: str) -> None:
         """Parse and route a single incoming message."""
