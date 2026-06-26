@@ -102,6 +102,12 @@ class TelegramNotifier:
         # Flip algo_enabled on/off from Telegram (panic switch).
         # Signature: toggle_algo_cb(enabled: bool) -> bool (new state).
         self.toggle_algo_cb: Optional[Callable[[bool], bool]] = None
+        # Update a single config field from Telegram.
+        # Signature: set_config_cb(key: str, value) -> Dict with 'ok', 'message'.
+        self.set_config_cb: Optional[Callable[[str, Any], Dict[str, Any]]] = None
+
+        # Pending /set input: key waiting for a value message.
+        self._pending_set_key: Optional[str] = None
 
         # Polling state
         self._poll_thread: Optional[threading.Thread] = None
@@ -481,11 +487,13 @@ class TelegramNotifier:
         if not self._token or not self._chat_id:
             return False
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        C = 13
+        C = 16
         cmd_rows = [
             f"{'/dashboard':<{C}}full system snapshot",
             f"{'/ping':<{C}}alive check (always responds)",
             f"{'/status':<{C}}engine &amp; algo state",
+            f"{'/settings':<{C}}show all tunable settings",
+            f"{'/set key val':<{C}}change a setting live",
             f"{'/pause':<{C}}halt new entries",
             f"{'/resume':<{C}}re-enable new entries",
             f"{'/positions':<{C}}open positions",
@@ -570,6 +578,17 @@ class TelegramNotifier:
         text = msg.get("text", "").strip().lower()
         command = text.split("@")[0]  # Strip bot username suffix if present
 
+        # If we're waiting for a free-text value after /set <key>, treat any
+        # non-command message as the value input.
+        if self._pending_set_key and not text.startswith("/"):
+            try:
+                self._apply_set(self._pending_set_key, msg.get("text", "").strip())
+            except Exception as e:
+                self._send(f"<b>Error</b>  <code>{html.escape(str(e))}</code>")
+            finally:
+                self._pending_set_key = None
+            return
+
         handlers = {
             "/start": self._cmd_start,
             "/help": self._cmd_start,
@@ -585,7 +604,25 @@ class TelegramNotifier:
             "/optimize": self._cmd_optimize,
             "/pause": self._cmd_pause,
             "/resume": self._cmd_resume,
+            "/settings": self._cmd_settings,
         }
+
+        # /set can carry the key inline (/set max_loss_usd 10) or just the key
+        # (/set max_loss_usd — next message is the value).
+        if command.startswith("/set"):
+            try:
+                parts = msg.get("text", "").strip().split(None, 2)
+                if len(parts) >= 3:
+                    self._apply_set(parts[1], parts[2])
+                elif len(parts) == 2:
+                    self._pending_set_key = parts[1]
+                    safe_key = html.escape(parts[1])
+                    self._send(f"Enter new value for <code>{safe_key}</code>:")
+                else:
+                    self._send("Usage: /set &lt;key&gt; &lt;value&gt;\nSend /settings to see all keys.")
+            except Exception as e:
+                self._send(f"<b>Error</b>  <code>{html.escape(str(e))}</code>")
+            return
 
         handler = handlers.get(command)
         if handler:
@@ -604,7 +641,7 @@ class TelegramNotifier:
         elif text.startswith("/"):
             self._send(
                 "Unknown command. Available:\n"
-                "/status /positions /trades /balance /pnl /eod /closeall /optimize"
+                "/settings /set /status /positions /trades /balance /pnl /eod /closeall /optimize"
             )
 
     # ------------------------------------------------------------------
@@ -623,7 +660,7 @@ class TelegramNotifier:
 
     def _cmd_start(self) -> None:
         """Handle /start and /help commands."""
-        C = 13
+        C = 16
         cmd_rows = [
             f"{'/dashboard':<{C}}full system snapshot",
             f"{'/status':<{C}}engine &amp; algo state",
@@ -633,7 +670,9 @@ class TelegramNotifier:
             f"{'/pnl':<{C}}P&amp;L summary",
             f"{'/eod':<{C}}end-of-day report",
             f"{'/optimize':<{C}}run parameter grid search",
-            f"{'/pause':<{C}}halt new entries (open trades unaffected)",
+            f"{'/settings':<{C}}show all tunable settings",
+            f"{'/set key val':<{C}}change a setting live",
+            f"{'/pause':<{C}}halt new entries",
             f"{'/resume':<{C}}re-enable new entries",
             f"{'/closeall':<{C}}emergency: close all",
         ]
@@ -1306,6 +1345,95 @@ class TelegramNotifier:
         if suggested_lb is not None:
             rows.append(R("HL Suggestion", f"lookback ≈ {suggested_lb}  (2.5x HL)"))
         self._send(f"<b>PARAMETER OPTIMISATION  ·  {ts}</b>\n" + "\n".join(rows))
+
+    # ------------------------------------------------------------------
+    # Settings commands
+    # ------------------------------------------------------------------
+
+    # Keys that can be changed via /set, with their human label and type.
+    _SETTABLE: Dict[str, tuple] = {
+        # (display_label, type_fn, unit_hint)
+        "max_loss_usd":          ("Dollar Stop",         float, "USD"),
+        "profit_target_usd":     ("Profit Target",       float, "USD"),
+        "position_size_usd":     ("Position Size",       float, "USD"),
+        "entry_threshold":       ("Entry Z-score",       float, "σ"),
+        "exit_threshold":        ("Exit Z-score",        float, "σ"),
+        "stop_loss_threshold":   ("Z-score Stop",        float, "σ"),
+        "max_hold_minutes":      ("Max Hold",            float, "min"),
+        "daily_max_loss_usd":    ("Daily Loss Limit",    float, "USD"),
+        "lookback_period":       ("Lookback",            int,   "bars"),
+        "hedge_ratio":           ("Hedge Ratio β",       float, ""),
+        "min_entry_rr_multiple": ("Min R:R",             float, "×"),
+        "stop_loss_capital_pct": ("Stop % of Capital",   float, "%"),
+    }
+
+    def _cmd_settings(self) -> None:
+        """Show all tunable settings with current values."""
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        cfg = self.get_config_cb() if self.get_config_cb else {}
+        if not cfg:
+            self._send(f"<b>SETTINGS  ·  {ts}</b>\nConfig not available.")
+            return
+        R = self._R
+        rows = []
+        for key, (label, _, unit) in self._SETTABLE.items():
+            val = cfg.get(key)
+            if val is None:
+                val_str = "—"
+            elif isinstance(val, float):
+                val_str = f"{val:g} {unit}".strip()
+            else:
+                val_str = f"{val} {unit}".strip()
+            rows.append(R(label, f"{val_str}  <i>({key})</i>"))
+        rows += [
+            "",
+            "<i>To change: /set &lt;key&gt; &lt;value&gt;</i>",
+            "<i>Example: /set max_loss_usd 10</i>",
+        ]
+        self._send(f"<b>SETTINGS  ·  {ts}</b>\n" + "\n".join(rows))
+
+    def _apply_set(self, key: str, raw_value: str) -> None:
+        """Parse key/value, validate, call set_config_cb, and report result."""
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        key = key.strip().lower()
+        raw_value = raw_value.strip()
+
+        if key not in self._SETTABLE:
+            known = ", ".join(f"<code>{k}</code>" for k in self._SETTABLE)
+            self._send(
+                f"<b>Unknown setting:</b> <code>{html.escape(key)}</code>\n"
+                f"Settable keys:\n{known}"
+            )
+            return
+
+        label, type_fn, unit = self._SETTABLE[key]
+        try:
+            value = type_fn(raw_value)
+        except (ValueError, TypeError):
+            self._send(
+                f"<b>Invalid value for <code>{html.escape(key)}</code></b>\n"
+                f"Expected {type_fn.__name__}, got: <code>{html.escape(raw_value)}</code>"
+            )
+            return
+
+        if not self.set_config_cb:
+            self._send(f"<b>SET  ·  {ts}</b>\n<code>set_config_cb</code> not configured.")
+            return
+
+        result = self.set_config_cb(key, value)
+        R = self._R
+        if result.get("ok"):
+            rows = [
+                R(label, f"{value:g} {unit}".strip() if isinstance(value, float) else f"{value} {unit}".strip()),
+                "",
+                f"<i>{result.get('message', 'Saved.')}</i>",
+            ]
+            self._send(f"<b>SETTING UPDATED  ·  {ts}</b>\n" + "\n".join(rows))
+        else:
+            self._send(
+                f"<b>SET FAILED  ·  {ts}</b>\n"
+                f"<code>{html.escape(result.get('message', 'Unknown error'))}</code>"
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers

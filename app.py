@@ -301,6 +301,24 @@ def start_engine_loop():
             logger.warning("Persisting algo toggle failed: %s", e)
         return engine.state.algo_enabled
     _telegram.toggle_algo_cb = _toggle_algo_from_telegram
+
+    def _set_config_from_telegram(key: str, value) -> dict:
+        """Update a single config field, persist to DB, and hot-reload the engine."""
+        try:
+            if not hasattr(engine.config, key):
+                return {"ok": False, "message": f"Unknown config field: {key}"}
+            old_val = getattr(engine.config, key)
+            setattr(engine.config, key, value)
+            db.save_config(engine.config)
+            # Hot-reload so the engine picks up the change without restart.
+            engine.update_config(engine.config)
+            logger.info("Telegram SET %s: %s → %s", key, old_val, value)
+            return {"ok": True, "message": f"Was {old_val!r}. Saved and reloaded."}
+        except Exception as e:
+            logger.warning("Telegram SET %s failed: %s", key, e)
+            return {"ok": False, "message": str(e)}
+
+    _telegram.set_config_cb = _set_config_from_telegram
     # Start command polling in a background daemon thread
     _telegram.start_polling()
 

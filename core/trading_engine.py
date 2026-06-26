@@ -820,9 +820,17 @@ class TradingEngine:
         exit_type = None
         reason_tag = None
         reason_detail = None
-        if stop_usd > 0 and net_pnl <= -abs(stop_usd):
-            exit_type, reason_tag = "STOP_LOSS", "DOLLAR_STOP"
-            reason_detail = f"net ${net_pnl:.2f} <= -${stop_usd:.2f}"
+        if stop_usd > 0:
+            # _live_net_pnl deducts the full round-trip fee estimate (entry AND
+            # exit legs) so the trade "starts" already in a fee hole of ~$2-3.
+            # Adding that hole back makes max_loss_usd mean "stop after X of
+            # gross spread movement, independent of fees" — which is the natural
+            # user expectation when setting a dollar stop.
+            fee_hole = self._round_trip_fees(trade)
+            gross_stop_threshold = -(abs(stop_usd) + fee_hole)
+            if net_pnl <= gross_stop_threshold:
+                exit_type, reason_tag = "STOP_LOSS", "DOLLAR_STOP"
+                reason_detail = f"gross ${net_pnl + fee_hole:.2f} <= -${stop_usd:.2f} (net ${net_pnl:.2f})"
         elif target_usd > 0 and net_pnl >= target_usd:
             exit_type, reason_tag = "EXIT", "PROFIT_TARGET"
             reason_detail = f"net ${net_pnl:.2f} >= ${target_usd:.2f}"
