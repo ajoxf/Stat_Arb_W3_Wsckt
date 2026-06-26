@@ -296,19 +296,34 @@
                             <small class="text-secondary d-block mb-2">Exit when adverse drift &gt; X pts/min for N ticks — trend accelerating.</small>
                             <div class="row g-2">
                                 <div class="col-4">
-                                    <label class="form-label mb-0">pts/min</label>
-                                    <input type="number" class="form-control form-control-sm" id="velocity_exit_pts_per_min" name="velocity_exit_pts_per_min" value="{{ config.velocity_exit_pts_per_min }}" step="0.5" min="0.5">
-                                    <small class="text-secondary">Threshold</small>
+                                    <label class="form-label mb-0 d-flex justify-content-between">
+                                        <span>pts/min</span>
+                                        <span id="velocity_exit_pts_per_min_val" class="fw-bold text-primary">{{ config.velocity_exit_pts_per_min }}</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="velocity_exit_pts_per_min" name="velocity_exit_pts_per_min"
+                                           value="{{ config.velocity_exit_pts_per_min }}" step="0.5" min="0.5" max="10"
+                                           oninput="document.getElementById('velocity_exit_pts_per_min_val').textContent=parseFloat(this.value).toFixed(1)">
+                                    <small class="text-secondary d-flex justify-content-between"><span>0.5</span><span>Threshold</span><span>10</span></small>
                                 </div>
                                 <div class="col-4">
-                                    <label class="form-label mb-0">Ticks</label>
-                                    <input type="number" class="form-control form-control-sm" id="velocity_exit_n_ticks" name="velocity_exit_n_ticks" value="{{ config.velocity_exit_n_ticks }}" step="1" min="1" max="20">
-                                    <small class="text-secondary">To confirm</small>
+                                    <label class="form-label mb-0 d-flex justify-content-between">
+                                        <span>Ticks</span>
+                                        <span id="velocity_exit_n_ticks_val" class="fw-bold text-primary">{{ config.velocity_exit_n_ticks }}</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="velocity_exit_n_ticks" name="velocity_exit_n_ticks"
+                                           value="{{ config.velocity_exit_n_ticks }}" step="1" min="1" max="20"
+                                           oninput="document.getElementById('velocity_exit_n_ticks_val').textContent=this.value">
+                                    <small class="text-secondary d-flex justify-content-between"><span>1</span><span>To confirm</span><span>20</span></small>
                                 </div>
                                 <div class="col-4">
-                                    <label class="form-label mb-0">Window</label>
-                                    <input type="number" class="form-control form-control-sm" id="velocity_exit_window_ticks" name="velocity_exit_window_ticks" value="{{ config.velocity_exit_window_ticks }}" step="5" min="5" max="120">
-                                    <small class="text-secondary">Ticks (~0.5s ea)</small>
+                                    <label class="form-label mb-0 d-flex justify-content-between">
+                                        <span>Window</span>
+                                        <span id="velocity_exit_window_ticks_val" class="fw-bold text-primary">{{ config.velocity_exit_window_ticks }}</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="velocity_exit_window_ticks" name="velocity_exit_window_ticks"
+                                           value="{{ config.velocity_exit_window_ticks }}" step="5" min="5" max="120"
+                                           oninput="document.getElementById('velocity_exit_window_ticks_val').textContent=this.value">
+                                    <small class="text-secondary d-flex justify-content-between"><span>5</span><span>~0.5s ea</span><span>120</span></small>
                                 </div>
                             </div>
                         </div>
@@ -1644,8 +1659,11 @@
                 document.getElementById('hurst_exit_n_ticks').value = config.hurst_exit_n_ticks || 3;
                 document.getElementById('velocity_exit_enabled').checked = config.velocity_exit_enabled || false;
                 document.getElementById('velocity_exit_pts_per_min').value = config.velocity_exit_pts_per_min || 2.0;
+                document.getElementById('velocity_exit_pts_per_min_val').textContent = parseFloat(config.velocity_exit_pts_per_min || 2.0).toFixed(1);
                 document.getElementById('velocity_exit_n_ticks').value = config.velocity_exit_n_ticks || 5;
+                document.getElementById('velocity_exit_n_ticks_val').textContent = config.velocity_exit_n_ticks || 5;
                 document.getElementById('velocity_exit_window_ticks').value = config.velocity_exit_window_ticks || 20;
+                document.getElementById('velocity_exit_window_ticks_val').textContent = config.velocity_exit_window_ticks || 20;
                 document.getElementById('trailing_stop_pct').value = config.trailing_stop_pct || 0;
                 document.getElementById('trailing_stop_floor_pct').value = config.trailing_stop_floor_pct || 0;
                 document.getElementById('std_filter_enabled').checked = config.std_filter_enabled;
