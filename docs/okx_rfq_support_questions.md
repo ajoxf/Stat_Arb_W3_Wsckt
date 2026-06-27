@@ -17,7 +17,14 @@ want to execute both legs **atomically** through Block Trading / RFQ
 **$100k notional per leg** ($200k per structure), and we intend to drive it
 programmatically (create-rfq → poll quotes → execute-quote).
 
-Before we enable it on a live account, we'd appreciate confirmation on the
+A specific concern is **risk-driven (stop-loss) exits**, where we must close both
+legs **immediately**. The RFQ request→quote→execute cycle appears too slow for
+that, and on the order book we currently hit frequent **POST_ONLY rejections
+(`cancelSource=31`)** that leave one leg filled and the other unfilled (an orphan
+position). We want the lowest-latency way to close both legs safely — see
+**Section D**.
+
+Before we enable on a live account, we'd appreciate confirmation on the
 following. Numbered for easy point-by-point reply.
 
 ## A. Execution semantics (most important)
@@ -75,15 +82,33 @@ following. Numbered for easy point-by-point reply.
 14. **Rate limits.** What are the rate limits for `create-rfq`, `get quotes`
     (we poll), and `execute-quote`?
 
-## D. Testing
+## D. Urgent (stop-loss) closes, latency & avoiding orphan legs
 
-15. **Demo support.** Does **demo trading** (`x-simulated-trading: 1`) support the
-    full RFQ flow end-to-end (create → receive maker quotes → execute), and will
-    demo market makers actually respond to a 2-leg ETH/BTC-SWAP structure — or do
-    we need a designated counterparty to test against?
+15. **Lowest-latency atomic close.** For risk-driven exits we must close both
+    legs immediately. Is RFQ appropriate for this, or is the quote cycle too slow
+    — and if so, what is the **recommended low-latency mechanism to close a
+    two-leg position atomically** (or as close to atomic as possible)?
+16. **execute-quote latency.** Typical and worst-case time from `execute-quote`
+    submission to confirmed fill?
+17. **Market close endpoint.** Does `/api/v5/trade/close-position`
+    (`mgnMode`/`posSide`) market-close a position **immediately**, and what is its
+    latency vs a standard market order? Is it suitable for an emergency per-leg
+    flatten?
+18. **Server-side stop / algo orders.** Do you support **conditional/algo orders**
+    (e.g. stop-market via `/api/v5/trade/order-algo`) that trigger **at the
+    exchange** without a client round-trip? Are they **single-instrument only**
+    (i.e. no atomic multi-leg stop), and what is the trigger-to-fill latency?
+19. **Avoiding POST_ONLY rejection on closes.** We see frequent `cancelSource=31`
+    POST_ONLY rejections on closes, which orphan one leg. To **guarantee a fill**
+    on an urgent close, is a plain (non-post-only) limit crossing the spread, or a
+    market order, the recommended approach? Is there any **IOC/FOK** option that
+    guarantees both-legs-or-neither across two different instruments?
+20. **Lowest-latency order path.** For time-critical placement/cancellation, do
+    you recommend the **WebSocket** trade endpoint over REST, and is there a
+    measurable latency difference?
 
-We're ready to validate in demo as soon as we can confirm the above. Thank you —
-happy to share our `clRfqId` / structure format if that helps you advise.
+Thank you — happy to share our `clRfqId` / structure format if that helps you
+advise on the above.
 
 Best regards,
 [Name / Org / OKX UID]

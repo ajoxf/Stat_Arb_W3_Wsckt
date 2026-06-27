@@ -2380,19 +2380,27 @@ class TradingEngine:
             beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
             # After a POST_ONLY rejection fall back to MARKET to guarantee the close.
             # One rejection is enough — staying on limit just leaves the position open longer.
-            use_market = self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
+            # Urgent (stop) exits — STOP_LOSS / DOLLAR_STOP / DAILY_LOSS, i.e. any
+            # reason that isn't a clean profit/normal/time exit — must close NOW:
+            #   • straight to MARKET. A POST_ONLY limit can be cancelSource=31
+            #     rejected, which orphans one leg and delays the close — exactly
+            #     the risk we can't take on a stop. MARKET orders can't be
+            #     POST_ONLY-rejected and fill immediately, so the leg-risk window
+            #     collapses (and reduce_only caps any residual).
+            #   • never via RFQ — the request→quote→execute cycle is seconds, far
+            #     too slow when the spread is moving against us.
+            # Non-stop exits keep the maker-first (LIMIT/POST_ONLY) path to save fees.
+            _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD")
+            is_stop_exit = (trade.exit_reason or "").upper() not in _NON_URGENT_EXITS
+            use_market = is_stop_exit or (
+                self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
+            )
             self._last_exit_was_market = use_market  # propagate to fee calc in _close_position
             if use_market:
                 logger.warning(
-                    "Exit POST_ONLY rejection count=%d >= %d — using MARKET order to guarantee close",
-                    self._exit_postonly_reject_count, self._EXIT_POSTONLY_MARKET_AFTER,
+                    "Exit using MARKET to guarantee close (stop=%s, postonly_rejects=%d/%d)",
+                    is_stop_exit, self._exit_postonly_reject_count, self._EXIT_POSTONLY_MARKET_AFTER,
                 )
-            # Urgent (stop) exits must NOT wait seconds for an RFQ maker quote —
-            # leg in on the order book instead. Only clean profit/normal/time-based
-            # exits are eligible for atomic RFQ. Fail-safe: any reason not explicitly
-            # non-urgent (e.g. STOP_LOSS, DOLLAR_STOP, DAILY_LOSS) is treated as a stop.
-            _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD")
-            is_stop_exit = (trade.exit_reason or "").upper() not in _NON_URGENT_EXITS
             spread_order = await self.order_executor.execute_exit(
                 position_type=trade.position_type,
                 spot_tick=self.spot_tick,
