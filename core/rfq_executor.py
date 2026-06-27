@@ -49,6 +49,10 @@ class RFQResult:
     trade_id: str = ""
     quote_id: str = ""
     error: str = ""
+    # True only when execute-quote was attempted and its outcome is UNKNOWN
+    # (e.g. network timeout). The caller MUST NOT fall back to the order book in
+    # this case — the RFQ may have filled — and should reconcile positions.
+    ambiguous: bool = False
 
 
 class RFQExecutor:
@@ -126,12 +130,35 @@ class RFQExecutor:
                 error=f"no quotes received within {timeout}s for rfqId={rfq_id}",
             )
 
-        # 4. Best quote
+        # 4. Best quote — only consider quotes that price BOTH legs (a quote
+        # missing a leg would otherwise look "cheap" and execute at px=0).
         best = self._select_best_quote(
             quotes,
             spot_symbol, spot_side, spot_tick,
             futures_symbol, futures_side, futures_tick,
         )
+        if best is None:
+            await self.rfq_adapter.cancel_rfq(rfq_id)
+            return RFQResult(
+                success=False,
+                error=f"no quote covering both legs for rfqId={rfq_id}",
+            )
+
+        # 4b. Edge guard — refuse a quote whose markup vs mid exceeds the cap.
+        max_markup = float(getattr(self.config, 'rfq_max_markup_bps', 0.0) or 0.0)
+        if max_markup > 0:
+            markup_bps = self._quote_markup_bps(
+                best, spot_symbol, spot_side, spot_tick,
+                futures_symbol, futures_side, futures_tick,
+            )
+            if markup_bps > max_markup:
+                await self.rfq_adapter.cancel_rfq(rfq_id)
+                return RFQResult(
+                    success=False,
+                    error=(f"best quote markup {markup_bps:.1f}bps > "
+                           f"rfq_max_markup_bps {max_markup:.1f}bps — rejecting"),
+                )
+
         logger.info("[rfq_exec] selected quoteId=%s from %d quote(s): %s",
                     best.quote_id, len(quotes), best)
 
@@ -142,6 +169,15 @@ class RFQExecutor:
             futures_symbol, futures_side, futures_qty, futures_pos_side,
         )
         trade_data = await self.rfq_adapter.execute_quote(rfq_id, best.quote_id, exec_legs)
+        if trade_data and trade_data.get("_ambiguous"):
+            # Execute timed out — outcome unknown. Do NOT let the caller fall back.
+            return RFQResult(
+                success=False,
+                ambiguous=True,
+                quote_id=best.quote_id,
+                error=(f"execute-quote AMBIGUOUS (timeout) rfqId={rfq_id} "
+                       f"quoteId={best.quote_id} — reconcile positions"),
+            )
         if not trade_data:
             return RFQResult(
                 success=False,
@@ -222,20 +258,30 @@ class RFQExecutor:
         quotes: List["RFQQuote"],
         spot_symbol: str, spot_side: str, spot_tick: MarketTick,
         futures_symbol: str, futures_side: str, futures_tick: MarketTick,
-    ) -> "RFQQuote":
+    ) -> Optional["RFQQuote"]:
         """
         Select the quote with the lowest total slippage vs current mid prices.
 
         Slippage for BUY  leg = quoted_px − mid  (we pay above mid)
         Slippage for SELL leg = mid − quoted_px  (we receive below mid)
 
-        Lowest total slippage = best execution quality.
+        Lowest total slippage = best execution quality. Quotes that don't price
+        BOTH legs (px > 0 each) are discarded — otherwise a missing leg reads as
+        0 cost and would be "selected" then executed at px=0. Returns None when
+        no quote prices both legs.
         """
         mid = {
             spot_symbol: spot_tick.mid if spot_tick else 0.0,
             futures_symbol: futures_tick.mid if futures_tick else 0.0,
         }
         side_map = {spot_symbol: spot_side.upper(), futures_symbol: futures_side.upper()}
+
+        valid = [
+            q for q in quotes
+            if q.price_for(spot_symbol) > 0 and q.price_for(futures_symbol) > 0
+        ]
+        if not valid:
+            return None
 
         def cost(q: "RFQQuote") -> float:
             total = 0.0
@@ -246,7 +292,31 @@ class RFQExecutor:
                     total += (px - m) if side_map[sym] == "BUY" else (m - px)
             return total
 
-        return min(quotes, key=cost)
+        return min(valid, key=cost)
+
+    def _quote_markup_bps(
+        self,
+        quote: "RFQQuote",
+        spot_symbol: str, spot_side: str, spot_tick: MarketTick,
+        futures_symbol: str, futures_side: str, futures_tick: MarketTick,
+    ) -> float:
+        """Worst per-leg markup vs mid, in bps (the price we give up to the maker).
+
+        Positive = unfavourable (we pay above mid on a buy / receive below on a
+        sell). Returns the max across legs so a single bad leg trips the guard.
+        """
+        legs = (
+            (spot_symbol, spot_side.upper(), spot_tick.mid if spot_tick else 0.0),
+            (futures_symbol, futures_side.upper(), futures_tick.mid if futures_tick else 0.0),
+        )
+        worst = 0.0
+        for sym, side, m in legs:
+            px = quote.price_for(sym)
+            if not (m and px):
+                continue
+            slip = (px - m) if side == "BUY" else (m - px)
+            worst = max(worst, slip / m * 10000.0)
+        return worst
 
     def _parse_fills(
         self,

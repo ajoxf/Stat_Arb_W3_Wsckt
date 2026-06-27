@@ -116,10 +116,17 @@ class OKXRFQAdapter:
         path: str,
         params: Optional[Dict[str, str]] = None,
         data: Optional[Dict[str, Any]] = None,
+        timeout_sec: float = 15.0,
+        reraise_timeout: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
-        Single signed request with basic error logging.
+        Single signed request with basic error logging and a hard timeout so a
+        hung connection can't block the engine indefinitely.
+
         Returns the full response dict on success (code="0"), None on failure.
+        reraise_timeout=True re-raises asyncio.TimeoutError so a caller (e.g.
+        execute_quote) can treat a timeout as AMBIGUOUS rather than a clean
+        failure — the trade may have executed on the exchange.
         """
         import aiohttp
         if self._session is None:
@@ -135,7 +142,8 @@ class OKXRFQAdapter:
 
         try:
             async with self._session.request(
-                method, url, headers=headers, data=body or None
+                method, url, headers=headers, data=body or None,
+                timeout=aiohttp.ClientTimeout(total=timeout_sec),
             ) as resp:
                 result = await resp.json()
                 if result.get("code") != "0":
@@ -147,6 +155,11 @@ class OKXRFQAdapter:
                     )
                     return None
                 return result
+        except asyncio.TimeoutError:
+            logger.error("[rfq_adapter] TIMEOUT %s %s after %ss", method, path, timeout_sec)
+            if reraise_timeout:
+                raise
+            return None
         except Exception as exc:
             logger.error("[rfq_adapter] request error %s %s: %s", method, path, exc)
             return None
@@ -223,13 +236,27 @@ class OKXRFQAdapter:
           instId, sz, side, px (from the quote), posSide (if applicable)
 
         Returns the trade_data dict (with tTradeId and filled legs) on success.
+        On a network TIMEOUT the outcome is UNKNOWN — the exchange may have
+        filled — so we return {"_ambiguous": True} instead of None. The caller
+        must NOT fall back to the order book in that case (double-execution
+        risk); it should reconcile against actual positions.
         """
         payload: Dict[str, Any] = {
             "rfqId": rfq_id,
             "quoteId": quote_id,
             "legs": legs,
         }
-        result = await self._request("POST", "/api/v5/rfq/execute-quote", data=payload)
+        try:
+            result = await self._request(
+                "POST", "/api/v5/rfq/execute-quote", data=payload, reraise_timeout=True,
+            )
+        except asyncio.TimeoutError:
+            logger.critical(
+                "[rfq_adapter] execute-quote TIMED OUT — trade state UNKNOWN; do NOT "
+                "blindly retry/fall back, reconcile positions. rfqId=%s quoteId=%s",
+                rfq_id, quote_id,
+            )
+            return {"_ambiguous": True}
         if not result:
             return None
 

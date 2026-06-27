@@ -245,6 +245,11 @@ class TradingConfig:
     rfq_quote_timeout_sec: float = 10.0        # seconds to wait for quotes before fallback
     rfq_min_quotes: int = 1                    # minimum quotes needed before executing
     rfq_fallback_to_orderbook: bool = True     # fall back to order book if RFQ fails
+    # Reject a quote whose all-in markup vs mid exceeds this (per leg, bps); the
+    # trade then falls back to the order book. 0 = no guard (NOT recommended once
+    # RFQ is live — a wide maker quote can eat the whole edge). Calibrate from the
+    # demo validation: set above typical observed markup, below your per-trade edge.
+    rfq_max_markup_bps: float = 5.0
 
     # Self-learning: automatically apply Claude's parameter recommendations
     auto_tune_enabled: bool = False

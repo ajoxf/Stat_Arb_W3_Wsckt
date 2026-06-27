@@ -1,7 +1,10 @@
 # 13 — OKX RFQ / Block Trading: Feasibility, Validation & Integration Design
 
-Status: **research / proposal** (no code yet). Authored to answer "should we move
-the two-leg spread to atomic execution as we scale to $100k/leg?"
+Status: **implemented & reviewed.** An RFQ implementation already existed
+(`adapters/okx_rfq_adapter.py`, `core/rfq_executor.py`, wired in `app.py`,
+gated by `rfq_notional_threshold_usd`). A correctness review found a showstopper
+and several gaps — all fixed (see **§6**). RFQ remains **disabled** by default
+(`rfq_notional_threshold_usd = 0`); do the demo validation in §3 before enabling.
 
 ---
 
@@ -215,3 +218,28 @@ Bottom line: atomic execution is the correct *direction* for scale and removes
 our worst failure mode — but it's a strategy-cadence + cost change, not a free
 win. Validate the two numbers above and the build pays for itself or it doesn't,
 with no guesswork.
+
+---
+
+## 6. Implementation review & fixes applied
+
+The existing code was reviewed end-to-end (adapter → executor → OrderExecutor
+routing → engine exit logic → config). Findings and fixes:
+
+| # | Severity | Issue | Fix |
+|---|---|---|---|
+| 1 | 🔴 Showstopper | RFQ leg `sz` was sent in **base units**, but OKX RFQ wants **contracts** (~10× off for ETH, ~100× for BTC) → wrong trade size | `OrderExecutor._rfq_contracts()` converts base→contracts via ctVal (mirrors `place_order`) and passes contract sizes; falls back to the order book if it can't size |
+| 2 | 🟠 Safety | Stop exits routed *through* RFQ with up to a 10s quote wait | Engine flags urgent exits (anything not `EXIT`/`PROFIT_TARGET`/`MAX_HOLD`) and passes `allow_rfq=False` → stops always leg in on the order book |
+| 3 | 🟠 Safety | No markup ceiling — executed the least-bad quote however wide | `rfq_max_markup_bps` (default 5) — reject + fall back if the best quote's worst-leg markup exceeds it |
+| 4 | 🟡 Robustness | No HTTP timeout; an `execute-quote` hang left ambiguous state | 15s timeout on all RFQ calls; an execute timeout returns `ambiguous=True` → caller does **not** fall back (no double-execution), engine reconciles |
+| 5 | 🟡 Robustness | A quote missing a leg read as 0-cost and could execute at px=0 | `_select_best_quote` discards quotes that don't price both legs (returns `None` → fall back) |
+| 6 | 🟠 Blocker | RFQ config wasn't in `load_config`/`save_config`/schema → couldn't be enabled persistently | Added schema migration + load/save for all `rfq_*` fields (verified by round-trip test) |
+
+**Still required before enabling (not code — operational):**
+1. Demo validation per §3a — one RFQ at a known size; confirm the **fill size in
+   contracts matches intent** (this is the live check for fix #1) and measure
+   markup vs edge.
+2. Calibrate `rfq_max_markup_bps` from observed demo markups (above typical,
+   below edge).
+3. Confirm OKX leg fields (`tdMode`/`posSide`) against the current spec in demo.
+4. Set `rfq_notional_threshold_usd` high so only large clips route to RFQ.

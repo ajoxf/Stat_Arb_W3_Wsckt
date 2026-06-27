@@ -363,6 +363,21 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_min_cost_mult REAL DEFAULT 0.0")
             if 'min_entry_rr_multiple' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN min_entry_rr_multiple REAL DEFAULT 0.0")
+            # RFQ / Block trading config (atomic multi-leg execution)
+            if 'rfq_notional_threshold_usd' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_notional_threshold_usd REAL DEFAULT 0.0")
+            if 'rfq_anonymous' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_anonymous INTEGER DEFAULT 1")
+            if 'rfq_counterparties' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_counterparties TEXT DEFAULT ''")
+            if 'rfq_quote_timeout_sec' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_quote_timeout_sec REAL DEFAULT 10.0")
+            if 'rfq_min_quotes' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_min_quotes INTEGER DEFAULT 1")
+            if 'rfq_fallback_to_orderbook' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_fallback_to_orderbook INTEGER DEFAULT 1")
+            if 'rfq_max_markup_bps' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_max_markup_bps REAL DEFAULT 5.0")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -465,6 +480,13 @@ class DatabaseManager:
                     stop_loss_capital_pct=row["stop_loss_capital_pct"] if "stop_loss_capital_pct" in row.keys() else 0.0,
                     max_loss_usd=row["max_loss_usd"] if "max_loss_usd" in row.keys() else 0.0,
                     min_entry_rr_multiple=row["min_entry_rr_multiple"] if "min_entry_rr_multiple" in row.keys() else 0.0,
+                    rfq_notional_threshold_usd=row["rfq_notional_threshold_usd"] if "rfq_notional_threshold_usd" in row.keys() else 0.0,
+                    rfq_anonymous=bool(row["rfq_anonymous"]) if "rfq_anonymous" in row.keys() else True,
+                    rfq_counterparties=row["rfq_counterparties"] if "rfq_counterparties" in row.keys() else "",
+                    rfq_quote_timeout_sec=row["rfq_quote_timeout_sec"] if "rfq_quote_timeout_sec" in row.keys() else 10.0,
+                    rfq_min_quotes=row["rfq_min_quotes"] if "rfq_min_quotes" in row.keys() else 1,
+                    rfq_fallback_to_orderbook=bool(row["rfq_fallback_to_orderbook"]) if "rfq_fallback_to_orderbook" in row.keys() else True,
+                    rfq_max_markup_bps=row["rfq_max_markup_bps"] if "rfq_max_markup_bps" in row.keys() else 5.0,
                 )
 
             return TradingConfig()
@@ -531,7 +553,14 @@ class DatabaseManager:
                     max_hold_z_progress_min = ?,
                     stop_loss_capital_pct = ?,
                     max_loss_usd = ?,
-                    min_entry_rr_multiple = ?
+                    min_entry_rr_multiple = ?,
+                    rfq_notional_threshold_usd = ?,
+                    rfq_anonymous = ?,
+                    rfq_counterparties = ?,
+                    rfq_quote_timeout_sec = ?,
+                    rfq_min_quotes = ?,
+                    rfq_fallback_to_orderbook = ?,
+                    rfq_max_markup_bps = ?
                 WHERE id = 1
             """, (
                 config.asset,
@@ -591,6 +620,13 @@ class DatabaseManager:
                 config.stop_loss_capital_pct,
                 config.max_loss_usd,
                 config.min_entry_rr_multiple,
+                config.rfq_notional_threshold_usd,
+                int(config.rfq_anonymous),
+                config.rfq_counterparties,
+                config.rfq_quote_timeout_sec,
+                config.rfq_min_quotes,
+                int(config.rfq_fallback_to_orderbook),
+                config.rfq_max_markup_bps,
             ))
             logger.info("Config saved")
 

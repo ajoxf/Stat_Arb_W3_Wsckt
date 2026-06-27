@@ -2387,6 +2387,12 @@ class TradingEngine:
                     "Exit POST_ONLY rejection count=%d >= %d — using MARKET order to guarantee close",
                     self._exit_postonly_reject_count, self._EXIT_POSTONLY_MARKET_AFTER,
                 )
+            # Urgent (stop) exits must NOT wait seconds for an RFQ maker quote —
+            # leg in on the order book instead. Only clean profit/normal/time-based
+            # exits are eligible for atomic RFQ. Fail-safe: any reason not explicitly
+            # non-urgent (e.g. STOP_LOSS, DOLLAR_STOP, DAILY_LOSS) is treated as a stop.
+            _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD")
+            is_stop_exit = (trade.exit_reason or "").upper() not in _NON_URGENT_EXITS
             spread_order = await self.order_executor.execute_exit(
                 position_type=trade.position_type,
                 spot_tick=self.spot_tick,
@@ -2394,6 +2400,7 @@ class TradingEngine:
                 quantity=trade.quantity * beta,   # spot leg quantity
                 futures_quantity=trade.quantity,  # futures leg quantity
                 force_market=use_market,
+                allow_rfq=not is_stop_exit,
             )
             self._last_exit_postonly_rejected = spread_order.throttled if spread_order else False
 

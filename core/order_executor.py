@@ -160,6 +160,8 @@ class OrderExecutor:
         # RFQ executor — set via set_rfq_executor() when RFQ is configured.
         # None = order book always used regardless of notional size.
         self._rfq_executor = None
+        # Cache of instrument info (ctVal) for base->contracts sizing of RFQ legs.
+        self._ctval_cache: Dict[str, Dict[str, Any]] = {}
 
     def update_config(self, config: TradingConfig) -> None:
         """Update configuration."""
@@ -172,6 +174,40 @@ class OrderExecutor:
         self._rfq_executor = rfq_executor
         logger.info("[executor] RFQ executor registered (threshold=$%.0f)",
                     getattr(self.config, 'rfq_notional_threshold_usd', 0.0))
+
+    async def _rfq_contracts(
+        self, adapter: ExchangeAdapter, symbol: str, base_qty: float, price: float,
+    ) -> Optional[int]:
+        """Convert a base-currency quantity to integer OKX contracts for an RFQ leg.
+
+        OKX RFQ `sz` is denominated in CONTRACTS for SWAP/FUTURES (identical to
+        place_order), but leg.quantity is in base units — so the RFQ path MUST
+        convert or it would request the wrong size (~10x off for ETH, ~100x for
+        BTC). Mirrors OKXAdapter._prepare_order. Returns None if it can't size
+        safely, so the caller falls back to the order book rather than guessing.
+        """
+        try:
+            info = self._ctval_cache.get(symbol)
+            if not info:
+                info = await adapter.get_symbol_info(symbol)
+                if info:
+                    self._ctval_cache[symbol] = info
+            if not info:
+                return None
+            if info.get("ct_type") == "inverse":
+                ct_val_usd = float(info.get("ct_val_usd") or 0.0)
+                if ct_val_usd <= 0 or not price or price <= 0:
+                    return None
+                contracts = int(base_qty * price / ct_val_usd)
+            else:
+                ct_val = float(info.get("contract_val") or 0.0)
+                if ct_val <= 0:
+                    return None
+                contracts = int(base_qty / ct_val)
+            return contracts if contracts >= 1 else None
+        except Exception as e:
+            logger.warning("[executor] RFQ contract sizing failed for %s: %s", symbol, e)
+            return None
 
     async def execute_entry(
         self,
@@ -250,9 +286,13 @@ class OrderExecutor:
         quantity: float,
         futures_quantity: Optional[float] = None,
         force_market: bool = False,
+        allow_rfq: bool = True,
     ) -> Optional[SpreadOrder]:
         """
         Execute exit trade to close a spread position.
+
+        allow_rfq=False routes the exit to the order book even above the RFQ
+        notional threshold — set by the engine for urgent stop exits.
 
         Close LONG spread: Sell spot, Buy futures
         Close SHORT spread: Buy spot, Sell futures
@@ -310,7 +350,7 @@ class OrderExecutor:
         await self._reconcile_exit_with_exchange(spread_order)
 
         return await self._execute_spread(spread_order, spot_tick, futures_tick,
-                                           force_market=force_market)
+                                           force_market=force_market, allow_rfq=allow_rfq)
 
     async def _reconcile_exit_with_exchange(self, spread_order: SpreadOrder) -> None:
         """
@@ -462,17 +502,23 @@ class OrderExecutor:
         spot_tick: MarketTick,
         futures_tick: MarketTick,
         force_market: bool = False,
+        allow_rfq: bool = True,
     ) -> SpreadOrder:
-        """Execute a spread order via RFQ (atomic) or order book, depending on notional."""
+        """Execute a spread order via RFQ (atomic) or order book, depending on notional.
+
+        allow_rfq=False forces the order-book path even above the RFQ notional
+        threshold — used for urgent (stop) exits, where waiting seconds for a
+        maker quote is more dangerous than legging in on the book.
+        """
         self._executing = True
         self.active_order = spread_order
 
         try:
             # ── RFQ routing ──────────────────────────────────────────────────
             # Route to atomic RFQ execution when per-leg notional >= threshold.
-            # force_market bypasses RFQ (used for emergency exits).
+            # force_market or allow_rfq=False bypass RFQ (emergency / stop exits).
             rfq_threshold = getattr(self.config, 'rfq_notional_threshold_usd', 0.0)
-            if not force_market and rfq_threshold > 0 and spot_tick and futures_tick:
+            if not force_market and allow_rfq and rfq_threshold > 0 and spot_tick and futures_tick:
                 spot_notional = spread_order.spot_leg.quantity * (spot_tick.mid or 0.0)
                 fut_notional = spread_order.futures_leg.quantity * (futures_tick.mid or 0.0)
                 per_leg_notional = max(spot_notional, fut_notional)
@@ -490,49 +536,72 @@ class OrderExecutor:
                         sl = spread_order.spot_leg
                         fl = spread_order.futures_leg
                         label = ("ENTRY" if spread_order.is_entry else "EXIT") + f" {spread_order.position_type}"
-                        rfq_result: RFQResult = await self._rfq_executor.execute_spread_rfq(
-                            spot_symbol=sl.symbol,
-                            futures_symbol=fl.symbol,
-                            spot_side=sl.side,
-                            futures_side=fl.side,
-                            spot_qty=sl.quantity,
-                            futures_qty=fl.quantity,
-                            spot_pos_side=sl.pos_side,
-                            futures_pos_side=fl.pos_side,
-                            spot_tick=spot_tick,
-                            futures_tick=futures_tick,
-                            label=label,
-                        )
-                        if rfq_result.success:
-                            # Populate SpreadOrder from atomic fills
-                            sl.filled_price = rfq_result.spot_filled_price
-                            sl.filled_qty = rfq_result.spot_filled_qty
-                            sl.status = LegStatus.FILLED
-                            fl.filled_price = rfq_result.futures_filled_price
-                            fl.filled_qty = rfq_result.futures_filled_qty
-                            fl.status = LegStatus.FILLED
-                            logger.info(
-                                "[executor] RFQ atomic fill: %s @ %.4f | %s @ %.4f "
-                                "(tTradeId=%s)",
-                                sl.symbol, sl.filled_price,
-                                fl.symbol, fl.filled_price,
-                                rfq_result.trade_id,
-                            )
-                            return spread_order
-
-                        # RFQ failed
-                        fallback = getattr(self.config, 'rfq_fallback_to_orderbook', True)
-                        if not fallback:
+                        # OKX RFQ sz is in CONTRACTS — convert from base units first.
+                        spot_contracts = await self._rfq_contracts(
+                            self.spot_adapter, sl.symbol, sl.quantity, spot_tick.mid or 0.0)
+                        fut_contracts = await self._rfq_contracts(
+                            self.futures_adapter, fl.symbol, fl.quantity, futures_tick.mid or 0.0)
+                        if spot_contracts is None or fut_contracts is None:
                             logger.error(
-                                "[executor] RFQ failed and rfq_fallback_to_orderbook=False — "
-                                "aborting: %s", rfq_result.error,
+                                "[executor] RFQ contract sizing failed (spot=%s fut=%s) — "
+                                "falling back to order book", spot_contracts, fut_contracts,
                             )
-                            return spread_order  # legs not FILLED → engine treats as failure
-                        logger.warning(
-                            "[executor] RFQ failed (%s) — falling back to order book",
-                            rfq_result.error,
-                        )
-                        # Fall through to order-book path below
+                            # Fall through to order-book path below (safe: nothing executed)
+                        else:
+                            rfq_result: RFQResult = await self._rfq_executor.execute_spread_rfq(
+                                spot_symbol=sl.symbol,
+                                futures_symbol=fl.symbol,
+                                spot_side=sl.side,
+                                futures_side=fl.side,
+                                spot_qty=spot_contracts,    # CONTRACTS for OKX RFQ sz
+                                futures_qty=fut_contracts,  # CONTRACTS for OKX RFQ sz
+                                spot_pos_side=sl.pos_side,
+                                futures_pos_side=fl.pos_side,
+                                spot_tick=spot_tick,
+                                futures_tick=futures_tick,
+                                label=label,
+                            )
+                            if rfq_result.success:
+                                # Populate SpreadOrder from atomic fills
+                                sl.filled_price = rfq_result.spot_filled_price
+                                sl.filled_qty = rfq_result.spot_filled_qty
+                                sl.status = LegStatus.FILLED
+                                fl.filled_price = rfq_result.futures_filled_price
+                                fl.filled_qty = rfq_result.futures_filled_qty
+                                fl.status = LegStatus.FILLED
+                                logger.info(
+                                    "[executor] RFQ atomic fill: %s @ %.4f | %s @ %.4f "
+                                    "(tTradeId=%s)",
+                                    sl.symbol, sl.filled_price,
+                                    fl.symbol, fl.filled_price,
+                                    rfq_result.trade_id,
+                                )
+                                return spread_order
+
+                            # AMBIGUOUS execute (timeout) — outcome unknown. Do NOT fall
+                            # back (would risk double-execution). Leave legs unfilled so
+                            # the engine's position reconciler verifies and acts.
+                            if rfq_result.ambiguous:
+                                logger.critical(
+                                    "[executor] RFQ execute AMBIGUOUS — NOT falling back; "
+                                    "engine will reconcile positions: %s", rfq_result.error,
+                                )
+                                return spread_order  # legs not FILLED → treated as failure
+
+                            # Clean RFQ failure (no quote / markup too high / create
+                            # failed) — nothing executed, so order-book fallback is safe.
+                            fallback = getattr(self.config, 'rfq_fallback_to_orderbook', True)
+                            if not fallback:
+                                logger.error(
+                                    "[executor] RFQ failed and rfq_fallback_to_orderbook=False — "
+                                    "aborting: %s", rfq_result.error,
+                                )
+                                return spread_order  # legs not FILLED → engine treats as failure
+                            logger.warning(
+                                "[executor] RFQ failed (%s) — falling back to order book",
+                                rfq_result.error,
+                            )
+                            # Fall through to order-book path below
 
             # ── Order-book path ──────────────────────────────────────────────
             if force_market:
