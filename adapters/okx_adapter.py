@@ -67,11 +67,51 @@ class OKXAdapter(ExchangeAdapter):
         self._positions_cache: Optional[List[Position]] = None
         self._positions_cache_ts: float = 0.0
         self._POSITIONS_TTL: float = 5.0  # seconds
+        # Signed-request timestamps are corrected by this measured offset so a
+        # drifted host clock doesn't trigger OKX 50102 "Timestamp request expired".
+        self._clock_offset_s: float = 0.0
+
+    def _make_session(self) -> aiohttp.ClientSession:
+        """Build an HTTP session hardened for long-running use on Windows.
+
+        enable_cleanup_closed actively reaps connections the peer/OS dropped so a
+        stale pooled connection isn't reused (the WinError 10053
+        'connection aborted by the software in your host machine' we hit). A
+        bounded keepalive and a total timeout stop a hung socket from blocking.
+        """
+        connector = aiohttp.TCPConnector(
+            limit=20,
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True,
+            keepalive_timeout=30,
+        )
+        return aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=15),
+        )
+
+    async def _sync_clock(self) -> None:
+        """Measure local-vs-OKX clock offset so signed timestamps are
+        server-relative. /api/v5/public/time is unauthenticated, so this works
+        even when the host clock is the problem."""
+        try:
+            server_ms = await self.get_server_time_ms()
+            if server_ms:
+                self._clock_offset_s = time.time() - server_ms / 1000.0
+                if abs(self._clock_offset_s) > 5:
+                    logger.warning(
+                        "[okx] REST clock offset %.1fs vs OKX server — timestamps "
+                        "auto-corrected. Resync the OS clock for a permanent fix "
+                        "(Windows: w32tm /resync /force).", self._clock_offset_s)
+        except Exception as e:
+            logger.debug("[okx] clock sync failed (non-fatal): %s", e)
 
     async def connect(self) -> bool:
         """Establish connection to OKX."""
         try:
-            self._session = aiohttp.ClientSession()
+            self._session = self._make_session()
+            # Correct for any host clock drift BEFORE the first signed request.
+            await self._sync_clock()
 
             # Test connection with account info
             result = await self._request("GET", "/api/v5/account/balance")
@@ -100,8 +140,9 @@ class OKXAdapter(ExchangeAdapter):
         logger.info("Disconnected from OKX")
 
     def _get_timestamp(self) -> str:
-        """Get ISO timestamp for signing."""
-        now = datetime.utcnow()
+        """Get ISO timestamp for signing, corrected by the measured server-clock
+        offset so a drifted host clock doesn't cause OKX 50102 'Timestamp expired'."""
+        now = datetime.utcfromtimestamp(time.time() - self._clock_offset_s)
         return now.strftime("%Y-%m-%dT%H:%M:%S.") + now.strftime("%f")[:3] + "Z"
 
     def _sign(self, timestamp: str, method: str, path: str, body: str = "") -> str:
@@ -148,7 +189,7 @@ class OKXAdapter(ExchangeAdapter):
         probing for optional instrument data.
         """
         if not self._session:
-            self._session = aiohttp.ClientSession()
+            self._session = self._make_session()
 
         url = self.base_url + path
         body = json.dumps(data) if data else ""
@@ -157,9 +198,10 @@ class OKXAdapter(ExchangeAdapter):
             path = path + "?" + "&".join(f"{k}={v}" for k, v in params.items())
             url = self.base_url + path
 
-        headers = self._get_headers(method, path, body)
-
         for attempt in range(3):
+            # Rebuild headers each attempt so a retry after a wait always carries
+            # a fresh, clock-corrected timestamp — never a stale one (50102).
+            headers = self._get_headers(method, path, body)
             try:
                 async with self._session.request(
                     method, url, headers=headers, data=body if data else None
@@ -181,6 +223,15 @@ class OKXAdapter(ExchangeAdapter):
                         await asyncio.sleep(wait)
                         continue
 
+                    # 50102 = timestamp expired (host clock drift or a delayed send).
+                    # Re-measure the clock offset and retry with a fresh timestamp —
+                    # the request was rejected by OKX, so retrying is always safe.
+                    if result.get("code") == "50102" and attempt < 2:
+                        logger.warning("OKX 50102 timestamp expired on %s %s — resyncing clock, retrying",
+                                       method, path)
+                        await self._sync_clock()
+                        continue
+
                     if result.get("code") != "0":
                         error = result.get("msg", "Unknown error")
                         data_arr = result.get("data", [])
@@ -199,6 +250,18 @@ class OKXAdapter(ExchangeAdapter):
 
                     return result
 
+            except (aiohttp.ClientConnectionError, aiohttp.ClientOSError, asyncio.TimeoutError) as e:
+                # Connection aborted / timed out (e.g. WinError 10053 on a stale
+                # pooled connection). The hardened connector reaps the dead socket;
+                # we retry ONLY idempotent GETs — a POST may already have reached
+                # the exchange, so retrying it could double-execute an order.
+                logger.warning("OKX connection error on %s %s (attempt %d/3): %s",
+                               method, path, attempt + 1, e)
+                self._set_error(str(e))
+                if method.upper() == "GET" and attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                return None
             except Exception as e:
                 logger.exception("OKX request error: %s %s", method, path)
                 self._set_error(str(e))
