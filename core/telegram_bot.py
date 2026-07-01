@@ -577,6 +577,10 @@ class TelegramNotifier:
 
         text = msg.get("text", "").strip().lower()
         command = text.split("@")[0]  # Strip bot username suffix if present
+        # The command TOKEN only (first word). Needed because a prefix test like
+        # startswith("/set") also matches "/settings" — which used to swallow
+        # /settings into the /set branch and show the usage text instead.
+        cmd_word = command.split()[0] if command.split() else ""
 
         # If we're waiting for a free-text value after /set <key>, treat any
         # non-command message as the value input.
@@ -608,8 +612,9 @@ class TelegramNotifier:
         }
 
         # /set can carry the key inline (/set max_loss_usd 10) or just the key
-        # (/set max_loss_usd — next message is the value).
-        if command.startswith("/set"):
+        # (/set max_loss_usd — next message is the value). Exact-match the token
+        # so "/settings" is NOT captured here.
+        if cmd_word == "/set":
             try:
                 parts = msg.get("text", "").strip().split(None, 2)
                 if len(parts) >= 3:
@@ -624,7 +629,7 @@ class TelegramNotifier:
                 self._send(f"<b>Error</b>  <code>{html.escape(str(e))}</code>")
             return
 
-        handler = handlers.get(command)
+        handler = handlers.get(cmd_word)
         if handler:
             try:
                 handler()
@@ -1386,7 +1391,10 @@ class TelegramNotifier:
                 val_str = f"{val:g} {unit}".strip()
             else:
                 val_str = f"{val} {unit}".strip()
-            rows.append(R(label, f"{val_str}  <i>({key})</i>"))
+            # Keep the key OUTSIDE the <code> value — Telegram HTML rejects tags
+            # nested inside <code>, which silently drops the whole message to
+            # unformatted plain text (raw tags shown to the user).
+            rows.append(R(label, val_str) + f"  <i>{html.escape(key)}</i>")
         rows += [
             "",
             "<i>To change: /set &lt;key&gt; &lt;value&gt;</i>",
