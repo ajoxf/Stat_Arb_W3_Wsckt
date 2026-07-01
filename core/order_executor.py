@@ -162,6 +162,12 @@ class OrderExecutor:
         self._rfq_executor = None
         # Cache of instrument info (ctVal) for base->contracts sizing of RFQ legs.
         self._ctval_cache: Dict[str, Dict[str, Any]] = {}
+        # Live in-memory tick provider (set by the engine). Lets order pricing
+        # read the freshest WS tick with ZERO latency instead of a REST get_tick
+        # — the last REST hop in the hot path and the main remaining cause of
+        # POST_ONLY (cancelSource=31) rejections.
+        self._live_tick_provider: Optional[Callable[[str], Optional[MarketTick]]] = None
+        self._live_tick_max_age_s: float = 2.0
 
     def update_config(self, config: TradingConfig) -> None:
         """Update configuration."""
@@ -174,6 +180,29 @@ class OrderExecutor:
         self._rfq_executor = rfq_executor
         logger.info("[executor] RFQ executor registered (threshold=$%.0f)",
                     getattr(self.config, 'rfq_notional_threshold_usd', 0.0))
+
+    def set_live_tick_provider(self, provider: Callable[[str], Optional[MarketTick]]) -> None:
+        """Register a callable(symbol)->MarketTick returning the engine's latest
+        WS-streamed tick, used to price limit legs with no REST round-trip."""
+        self._live_tick_provider = provider
+
+    async def _snapshot_tick(self, symbol: str, adapter: ExchangeAdapter) -> Optional[MarketTick]:
+        """Freshest tick for pricing a leg: prefer the in-memory live WS tick
+        (zero latency), fall back to a REST fetch only if it's missing or stale."""
+        if self._live_tick_provider is not None:
+            try:
+                t = self._live_tick_provider(symbol)
+                if t is not None:
+                    ts = getattr(t, "timestamp", None)
+                    age = (datetime.utcnow() - ts).total_seconds() if ts else 0.0
+                    if age <= self._live_tick_max_age_s:
+                        return t
+            except Exception:
+                pass
+        try:
+            return await adapter.get_tick(symbol)
+        except Exception:
+            return None
 
     async def _rfq_contracts(
         self, adapter: ExchangeAdapter, symbol: str, base_qty: float, price: float,
@@ -937,7 +966,7 @@ class OrderExecutor:
             # not the cumulative latency of both placements (~800ms). This is the fix for
             # cancelSource=31 rejections caused by stale prices at order arrival.
             try:
-                _fresh_spot = await self.spot_adapter.get_tick(self.config.spot_symbol)
+                _fresh_spot = await self._snapshot_tick(self.config.spot_symbol, self.spot_adapter)
                 if _fresh_spot:
                     self._price_leg(spread_order.spot_leg, _fresh_spot,
                                     1.0 if spread_order.throttled else 0.0)
@@ -978,7 +1007,7 @@ class OrderExecutor:
         # Per-leg futures snap: spot placement took ~600ms; re-snap futures now so
         # its price is only the current HTTP round-trip stale at placement time.
         try:
-            _fresh_fut = await self.futures_adapter.get_tick(self.config.futures_symbol)
+            _fresh_fut = await self._snapshot_tick(self.config.futures_symbol, self.futures_adapter)
             if _fresh_fut:
                 self._price_leg(spread_order.futures_leg, _fresh_fut,
                                 1.0 if spread_order.throttled else 0.0)

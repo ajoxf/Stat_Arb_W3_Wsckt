@@ -314,6 +314,10 @@ class TradingEngine:
         # Initialize order executor if we have both adapters
         if spot and futures:
             self.order_executor = OrderExecutor(self.config, spot, futures)
+            # Let the executor price limit legs off the freshest in-memory WS
+            # tick (zero latency) instead of a REST get_tick — cuts POST_ONLY
+            # (cancelSource=31) rejections from stale order prices.
+            self.order_executor.set_live_tick_provider(self._live_tick_for)
             logger.debug("Order executor initialized (mode=%s)", self.config.order_execution_mode)
 
             # Mark that we need to apply leverage settings when engine starts
@@ -332,6 +336,16 @@ class TradingEngine:
         ws_manager.add_tick_callback(self._on_websocket_tick)
 
         logger.debug("WebSocket manager set (streaming mode)")
+
+    def _live_tick_for(self, symbol: str) -> Optional[MarketTick]:
+        """Latest in-memory tick for a symbol — updated on every WS message (or
+        REST poll). Used by the order executor to price limit legs with no REST
+        round-trip. Returns None for an unknown symbol so the executor falls back."""
+        if symbol == self.config.spot_symbol:
+            return self.spot_tick
+        if symbol == self.config.futures_symbol:
+            return self.futures_tick
+        return None
 
     def _on_websocket_tick(self, symbol: str, tick: MarketTick) -> None:
         """Handle incoming WebSocket tick."""
