@@ -237,9 +237,10 @@ class TradingConfig:
     # OKX RFQ instead of the live order book, eliminating legging risk entirely.
     # Both legs fill in a single matching event from a market maker's quote.
     # Set rfq_notional_threshold_usd = 0 to disable (order book always used).
-    # OKX minimum for BTC/ETH-USDT-SWAP is typically $50k–$500k per leg;
-    # attempting an RFQ below minimum returns an error and falls back to order book.
-    rfq_notional_threshold_usd: float = 0.0   # 0 = disabled
+    # OKX RFQ minimum at VIP4 is ~$100k notional per leg, so set the threshold at
+    # or above that once demo-validated — below it OKX rejects the RFQ (we then
+    # fall back to the order book). Keep 0 (disabled) until the demo loop passes.
+    rfq_notional_threshold_usd: float = 0.0   # 0 = disabled; set 100000 after validation
     rfq_anonymous: bool = True                 # hide identity from market makers
     rfq_counterparties: str = ""               # comma-separated OKX trader codes; empty = all makers
     rfq_quote_timeout_sec: float = 10.0        # seconds to wait for quotes before fallback

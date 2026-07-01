@@ -1,10 +1,12 @@
 # 13 — OKX RFQ / Block Trading: Feasibility, Validation & Integration Design
 
-Status: **implemented & reviewed.** An RFQ implementation already existed
-(`adapters/okx_rfq_adapter.py`, `core/rfq_executor.py`, wired in `app.py`,
-gated by `rfq_notional_threshold_usd`). A correctness review found a showstopper
-and several gaps — all fixed (see **§6**). RFQ remains **disabled** by default
-(`rfq_notional_threshold_usd = 0`); do the demo validation in §3 before enabling.
+Status: **implemented, reviewed, and aligned to OKX's answers — pending demo
+validation.** All code gaps are closed (§6, §7). RFQ remains **disabled** by
+default (`rfq_notional_threshold_usd = 0`). To go live: run
+`scripts/rfq_demo_validate.py` (§7), then set `rfq_notional_threshold_usd = 100000`
+(OKX RFQ min at VIP4 ≈ $100k/leg). Quote consumption uses REST polling — fine for
+infrequent large clips; the `/ws/v5/business` push channel is a later latency
+optimization, best added after validation confirms makers actually quote.
 
 ---
 
@@ -243,3 +245,54 @@ routing → engine exit logic → config). Findings and fixes:
    below edge).
 3. Confirm OKX leg fields (`tdMode`/`posSide`) against the current spec in demo.
 4. Set `rfq_notional_threshold_usd` high so only large clips route to RFQ.
+
+---
+
+## 7. OKX answers integrated + how to validate & enable
+
+OKX confirmed our core semantics (sz in contracts, atomic all-or-none, close =
+opposite side + same posSide, margin reserved atomically) and that our stop-loss
+design is correct (urgent closes = market/IOC on the order book, **not** RFQ).
+Three of their answers required code, now applied:
+
+| OKX point | Change |
+|---|---|
+| #9/#11 RFQ is **not broadcast** — you must name counterparties | `get_counterparties()` + `_resolve_counterparties()`; `create-rfq` always names makers; empty → fall back |
+| #3 execute-quote is **accept-as-is** | execute legs echo the quote's own size + price (`RFQQuote.size_for`) |
+| #7 reconcile on **blockTdId** | fills anchored on `blockTdId` (fallback `tTradeId`) |
+
+**Still open (external, not code):** block-trade **fees** at VIP4 (OKX skipped
+that question) and a real **maker-liquidity** confirmation for a 2-perp ETH+BTC
+structure. Working assumption: **min ≈ $100k notional/leg at VIP4.**
+
+**Quote consumption:** REST polling (`_poll_quotes`). OKX recommends the
+`/ws/v5/business` `rfqs`/`quotes` push channel for latency, but for *infrequent
+$100k clips* REST polling is adequate. Add the WS channel only if validation shows
+quote latency actually costs us — it's a pure optimization, not a correctness gap.
+
+### Demo-validate the full loop
+
+Run against OKX **demo** (no real money), from the repo root with demo API keys:
+
+```
+python scripts/rfq_demo_validate.py            # create → quotes → CANCEL (safe)
+python scripts/rfq_demo_validate.py --execute  # ... → EXECUTE a demo fill
+```
+
+It checks, in order: counterparties available → $100k→contracts sizing →
+create-rfq accepted → **do quotes come back?** → **quote size == our contract
+count** (the live proof of the sz-in-contracts fix) + markup/latency → (with
+`--execute`) atomic fill + `blockTdId` to reconcile both legs in `/trade/fills`.
+
+Caveat: OKX demo may have no makers responding to RFQs. If the quote step returns
+nothing, that's usually a demo/liquidity fact (confirm with the account manager or
+do one small **live** RFQ), not a bug — the create/execute/reconcile mechanics
+still validate.
+
+### Enable (after validation passes)
+
+1. `rfq_notional_threshold_usd = 100000` (route only ≥$100k/leg to RFQ).
+2. `rfq_max_markup_bps` = calibrated from observed demo markups (above typical,
+   below your edge).
+3. Keep the order book + market stops for everything below the threshold and for
+   all urgent exits.
