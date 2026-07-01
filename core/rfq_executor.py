@@ -64,12 +64,25 @@ class RFQExecutor:
     execute_spread_rfq() when the per-leg notional check passes.
     """
 
-    def __init__(self, rfq_adapter: "OKXRFQAdapter", config: TradingConfig):
+    def __init__(self, rfq_adapter: "OKXRFQAdapter", config: TradingConfig, quote_ws=None):
         self.rfq_adapter = rfq_adapter
         self.config = config
+        # Optional OKXRFQWebSocket for push-based quote consumption (OKX's
+        # recommended low-latency path). None => REST polling. Lazily connected
+        # on first RFQ so app.py setup stays synchronous.
+        self.quote_ws = quote_ws
         # Available maker codes, fetched once. OKX RFQ is NOT broadcast-to-all —
         # create-rfq must name counterparties or no maker sees the request.
         self._counterparties_cache: Optional[List[str]] = None
+
+    async def _ensure_quote_ws(self) -> None:
+        """Connect the quote WebSocket on first use (kept alive by its own
+        reconnect loop thereafter). Failure is non-fatal — we REST-poll instead."""
+        if self.quote_ws is not None and not self.quote_ws.is_connected:
+            try:
+                await self.quote_ws.connect()
+            except Exception as e:
+                logger.warning("[rfq_exec] quote WS connect failed — REST polling: %s", e)
 
     def update_config(self, config: TradingConfig) -> None:
         self.config = config
@@ -140,6 +153,10 @@ class RFQExecutor:
             spot_symbol, spot_side, spot_qty, spot_pos_side,
             futures_symbol, futures_side, futures_qty, futures_pos_side,
         )
+
+        # Ensure the quotes WS is up (subscribed) before we create the RFQ, so no
+        # maker quote is missed. Non-fatal — falls back to REST polling.
+        await self._ensure_quote_ws()
 
         # 2. Create RFQ
         rfq_id = await self.rfq_adapter.create_rfq(
@@ -270,7 +287,12 @@ class RFQExecutor:
     async def _poll_quotes(
         self, rfq_id: str, timeout_sec: float, min_quotes: int
     ) -> List["RFQQuote"]:
-        """Poll for active quotes every 500ms until min_quotes met or timeout."""
+        """Return active quotes for the RFQ. Prefers the WS push cache (OKX's
+        recommended low-latency path); falls back to REST polling if the quote
+        WebSocket isn't connected."""
+        if self.quote_ws is not None and self.quote_ws.is_connected:
+            return await self.quote_ws.wait_for_quotes(rfq_id, min_quotes, timeout_sec)
+
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout_sec
         poll_interval = 0.5

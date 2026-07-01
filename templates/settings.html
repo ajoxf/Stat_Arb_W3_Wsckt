@@ -172,6 +172,19 @@
                     </div>
 
                     <div class="row mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label">RFQ Min Notional (USD)</label>
+                            <input type="number" class="form-control" id="rfq_notional_threshold_usd" name="rfq_notional_threshold_usd" value="{{ config.rfq_notional_threshold_usd }}" step="10000" min="0">
+                            <small class="text-secondary">Route trades with per-leg notional &ge; this to atomic RFQ/Block. <strong>0 = off</strong> (order book always). OKX min ≈ $100k/leg at VIP4.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">RFQ Max Markup (bps)</label>
+                            <input type="number" class="form-control" id="rfq_max_markup_bps" name="rfq_max_markup_bps" value="{{ config.rfq_max_markup_bps }}" step="0.5" min="0">
+                            <small class="text-secondary">Reject a maker quote whose worst-leg markup vs mid exceeds this, then fall back to the order book.</small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
                         <div class="col-md-12">
                             <label class="form-label">Exit Signal Mode</label>
                             <select class="form-select" id="exit_signal_mode" name="exit_signal_mode">
@@ -1518,6 +1531,8 @@
             z_reset_gate_enabled: document.getElementById('z_reset_gate_enabled').checked,
             min_std_multiple: parseFloat(document.getElementById('min_std_multiple').value),
             min_entry_rr_multiple: parseFloat(document.getElementById('min_entry_rr_multiple').value) || 0,
+            rfq_notional_threshold_usd: parseFloat(document.getElementById('rfq_notional_threshold_usd').value) || 0,
+            rfq_max_markup_bps: parseFloat(document.getElementById('rfq_max_markup_bps').value) || 0,
             position_size_usd: parseFloat(document.getElementById('position_size_usd').value),
             max_position_size_usd: parseFloat(document.getElementById('max_position_size_usd').value),
             spot_leverage: parseInt(document.getElementById('spot_leverage').value),

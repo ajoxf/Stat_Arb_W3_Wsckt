@@ -396,11 +396,15 @@ def start_engine_loop():
         # eliminating legging risk. Disabled by default (threshold=0).
         if getattr(config, 'rfq_notional_threshold_usd', 0.0) > 0:
             from adapters.okx_rfq_adapter import OKXRFQAdapter
+            from adapters.okx_rfq_ws import OKXRFQWebSocket
             from core.rfq_executor import RFQExecutor
             rfq_adapter = OKXRFQAdapter(api_key, secret_key, passphrase, is_demo)
-            rfq_exec = RFQExecutor(rfq_adapter, config)
+            # Push-based quote consumption on /ws/v5/business (OKX-recommended);
+            # lazily connected on the first RFQ, REST polling is the fallback.
+            rfq_quote_ws = OKXRFQWebSocket(api_key, secret_key, passphrase, is_demo)
+            rfq_exec = RFQExecutor(rfq_adapter, config, quote_ws=rfq_quote_ws)
             engine.set_rfq_executor(rfq_exec)
-            logger.info("RFQ executor configured (threshold=$%.0f, timeout=%ss, fallback=%s)",
+            logger.info("RFQ executor configured (threshold=$%.0f, timeout=%ss, fallback=%s, ws_quotes=on)",
                         config.rfq_notional_threshold_usd,
                         config.rfq_quote_timeout_sec,
                         config.rfq_fallback_to_orderbook)

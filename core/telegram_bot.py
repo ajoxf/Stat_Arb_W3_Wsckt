@@ -1365,6 +1365,8 @@ class TelegramNotifier:
         "hedge_ratio":           ("Hedge Ratio β",       float, ""),
         "min_entry_rr_multiple": ("Min R:R",             float, "×"),
         "stop_loss_capital_pct": ("Stop % of Capital",   float, "%"),
+        "rfq_notional_threshold_usd": ("RFQ Min Notional", float, "USD"),
+        "rfq_max_markup_bps":    ("RFQ Max Markup",       float, "bps"),
     }
 
     def _cmd_settings(self) -> None:

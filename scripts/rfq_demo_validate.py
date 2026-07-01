@@ -47,18 +47,24 @@ async def _to_contracts(rest: OKXAdapter, symbol: str, notional: float):
     return contracts, mid, ct_val
 
 
-async def main(notional: float, do_execute: bool, timeout: float) -> None:
+async def main(notional: float, do_execute: bool, timeout: float, is_demo: bool) -> None:
     key = os.getenv("OKX_API_KEY")
     sec = os.getenv("OKX_SECRET_KEY")
     pw = os.getenv("OKX_PASSPHRASE")
     if not (key and sec and pw):
-        raise SystemExit("Set OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSPHRASE (DEMO keys).")
+        raise SystemExit("Set OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSPHRASE.")
 
-    rest = OKXAdapter(key, sec, pw, is_testnet=True)
+    rest = OKXAdapter(key, sec, pw, is_testnet=is_demo)
     await rest.connect()
-    rfq = OKXRFQAdapter(key, sec, pw, is_testnet=True)
+    rfq = OKXRFQAdapter(key, sec, pw, is_testnet=is_demo)
 
-    print("== OKX RFQ demo validation ==  (DEMO / no real money)\n")
+    env = "DEMO" if is_demo else "LIVE"
+    print(f"== OKX RFQ validation ==  ({env})")
+    if not is_demo:
+        print("   LIVE market. Default run creates an RFQ and CANCELS it (NO fill — safe).")
+        if do_execute:
+            print(f"   ⚠ --execute WILL place a REAL ~${notional:,.0f}/leg block trade.")
+    print()
 
     # [1] counterparties
     cps = await rfq.get_counterparties()
@@ -160,9 +166,10 @@ async def main(notional: float, do_execute: bool, timeout: float) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Demo-validate the OKX RFQ full loop.")
+    ap = argparse.ArgumentParser(description="Validate the OKX RFQ full loop (live by default).")
     ap.add_argument("--notional", type=float, default=100000.0, help="USD notional per leg (default 100k)")
-    ap.add_argument("--execute", action="store_true", help="actually execute the best quote (demo fill)")
+    ap.add_argument("--execute", action="store_true", help="execute the best quote (REAL fill on --live)")
     ap.add_argument("--timeout", type=float, default=15.0, help="seconds to wait for quotes")
+    ap.add_argument("--demo", action="store_true", help="use OKX demo (x-simulated-trading) instead of live")
     args = ap.parse_args()
-    asyncio.run(main(args.notional, args.execute, args.timeout))
+    asyncio.run(main(args.notional, args.execute, args.timeout, args.demo))
