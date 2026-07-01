@@ -67,9 +67,28 @@ class RFQExecutor:
     def __init__(self, rfq_adapter: "OKXRFQAdapter", config: TradingConfig):
         self.rfq_adapter = rfq_adapter
         self.config = config
+        # Available maker codes, fetched once. OKX RFQ is NOT broadcast-to-all —
+        # create-rfq must name counterparties or no maker sees the request.
+        self._counterparties_cache: Optional[List[str]] = None
 
     def update_config(self, config: TradingConfig) -> None:
         self.config = config
+
+    async def _resolve_counterparties(self) -> List[str]:
+        """Counterparties to send the RFQ to: the configured list if set, else
+        every available maker (fetched once and cached). Empty => RFQ can't get
+        a quote, so the caller falls back to the order book."""
+        raw = str(getattr(self.config, 'rfq_counterparties', "") or "")
+        configured = [c.strip() for c in raw.split(",") if c.strip()]
+        if configured:
+            return configured
+        if self._counterparties_cache is None:
+            try:
+                self._counterparties_cache = await self.rfq_adapter.get_counterparties()
+            except Exception as e:
+                logger.warning("[rfq_exec] get_counterparties failed: %s", e)
+                self._counterparties_cache = []
+        return self._counterparties_cache
 
     async def execute_spread_rfq(
         self,
@@ -97,15 +116,23 @@ class RFQExecutor:
         timeout = float(getattr(self.config, 'rfq_quote_timeout_sec', 10.0))
         min_quotes = int(getattr(self.config, 'rfq_min_quotes', 1))
         anonymous = bool(getattr(self.config, 'rfq_anonymous', True))
-        raw_cps = str(getattr(self.config, 'rfq_counterparties', "") or "")
-        counterparties = [c.strip() for c in raw_cps.split(",") if c.strip()] or None
+
+        # OKX RFQ is not broadcast — we must name counterparties or no maker sees
+        # it. Empty list => cannot get a quote, so fall back to the order book.
+        counterparties = await self._resolve_counterparties()
+        if not counterparties:
+            return RFQResult(
+                success=False,
+                error="no RFQ counterparties available (none configured / none returned) "
+                      "— cannot request a quote",
+            )
 
         logger.info(
-            "[rfq_exec] %s RFQ: %s %s qty=%s | %s %s qty=%s | timeout=%ss anonymous=%s",
+            "[rfq_exec] %s RFQ: %s %s qty=%s | %s %s qty=%s | timeout=%ss anonymous=%s cps=%d",
             label or "SPREAD",
             spot_side, spot_symbol, spot_qty,
             futures_side, futures_symbol, futures_qty,
-            timeout, anonymous,
+            timeout, anonymous, len(counterparties),
         )
 
         # 1. Build legs
@@ -220,7 +247,9 @@ class RFQExecutor:
         spot_symbol: str, spot_side: str, spot_qty: float, spot_pos_side: Optional[str],
         fut_symbol: str, fut_side: str, fut_qty: float, fut_pos_side: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """Merge quoted prices into execute-quote legs."""
+        """Build execute-quote legs, accepting the quote 'as-is': price AND size
+        come from the quote object (OKX matches on the exact rfqId/quoteId), with
+        our request as a fallback only if the quote omits a field."""
         legs = []
         for symbol, side, qty, pos_side in (
             (spot_symbol, spot_side, spot_qty, spot_pos_side),
@@ -229,7 +258,7 @@ class RFQExecutor:
             px = quote.price_for(symbol)
             leg: Dict[str, Any] = {
                 "instId": symbol,
-                "sz": str(qty),
+                "sz": quote.size_for(symbol) or str(qty),
                 "side": side.lower(),
                 "px": str(px),
             }
@@ -357,6 +386,8 @@ class RFQExecutor:
             futures_symbol=futures_symbol,
             futures_filled_price=fut_px,
             futures_filled_qty=fut_q,
-            trade_id=trade_data.get("tTradeId", ""),
+            # blockTdId is the OKX anchor for reconciling both legs in /trade/fills
+            # (struc-block-trades push uses it too); fall back to tTradeId.
+            trade_id=trade_data.get("blockTdId") or trade_data.get("tTradeId", ""),
             quote_id=quote.quote_id,
         )

@@ -46,6 +46,16 @@ class RFQQuote:
                 return float(leg.get("px", 0.0) or 0.0)
         return 0.0
 
+    def size_for(self, inst_id: str) -> str:
+        """Return the maker's quoted size (contracts) for an instrument as a
+        string, or '' if absent. Executing 'as-is' means echoing the quote's own
+        size rather than re-deriving it from our request."""
+        for leg in self.legs:
+            if leg.get("instId") == inst_id:
+                sz = leg.get("sz")
+                return str(sz) if sz not in (None, "") else ""
+        return ""
+
     def is_active(self) -> bool:
         return self.state == "active"
 
@@ -170,6 +180,24 @@ class OKXRFQAdapter:
             self._session = None
 
     # ------------------------------------------------------------------ RFQ
+
+    async def get_counterparties(self) -> List[str]:
+        """Return available block-trading counterparty codes (makers).
+
+        create-rfq is NOT broadcast-to-all — an RFQ only reaches the makers you
+        name, so these codes must be passed to create_rfq(counterparties=...).
+        Returns the trader codes; empty list if none are available.
+        """
+        result = await self._request("GET", "/api/v5/rfq/counterparties")
+        if not result:
+            return []
+        codes: List[str] = []
+        for cp in result.get("data", []):
+            code = cp.get("traderCode") or cp.get("traderName") or ""
+            if code:
+                codes.append(code)
+        logger.info("[rfq_adapter] %d counterparties available", len(codes))
+        return codes
 
     async def create_rfq(
         self,
