@@ -580,7 +580,10 @@ class TradingEngine:
         # stop). These are dollar/time based and independent of the z-score, so
         # they must be evaluated even when the generator returns NONE. Skipped
         # while an order is already in flight to avoid double-firing.
-        if (self.state.algo_enabled and self.open_trade
+        # NOT gated on algo_enabled: a held position must keep its stop/target
+        # even when the algo is toggled off — disabling the algo stops NEW
+        # entries, it must never strand an open position without its stop.
+        if (self.open_trade
                 and self.state.current_position != "NONE"
                 and not self._executing_trade):
             override = self._check_override_exit(signal)
@@ -592,19 +595,27 @@ class TradingEngine:
         if self.on_signal:
             self.on_signal(signal)
 
-        # Execute trading logic if algo enabled
-        if self.state.algo_enabled and signal.signal_type != "NONE":
+        # Execute trading logic. An EXIT/STOP_LOSS on an OPEN position always
+        # runs — even with the algo off — so a held position is never left
+        # without its stop or profit-take. NEW entries (LONG/SHORT) still
+        # require the algo to be enabled.
+        in_position = (self.open_trade is not None
+                       and self.state.current_position != "NONE")
+        if signal.signal_type in ("EXIT", "STOP_LOSS") and in_position:
             await self._process_signal(signal)
-        elif not self.state.algo_enabled and signal.signal_type != "NONE":
-            # Signal fired but algo is off — show once in the blocked panel
-            prev = self.signal_generator.last_blocked_signal
-            if not prev or prev.get('reason') != 'Algo disabled':
-                self.signal_generator.last_blocked_signal = {
-                    'timestamp': datetime.utcnow().isoformat(),
-                    'would_be_signal': signal.signal_type,
-                    'zscore': round(signal.zscore, 4),
-                    'reason': 'Algo disabled',
-                }
+        elif signal.signal_type in ("LONG", "SHORT"):
+            if self.state.algo_enabled:
+                await self._process_signal(signal)
+            else:
+                # Entry signal while algo off — show once in the blocked panel.
+                prev = self.signal_generator.last_blocked_signal
+                if not prev or prev.get('reason') != 'Algo disabled':
+                    self.signal_generator.last_blocked_signal = {
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'would_be_signal': signal.signal_type,
+                        'zscore': round(signal.zscore, 4),
+                        'reason': 'Algo disabled',
+                    }
 
     async def _get_spot_tick(self) -> Optional[MarketTick]:
         """Get current spot price."""
