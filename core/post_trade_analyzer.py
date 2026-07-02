@@ -184,8 +184,43 @@ class PostTradeAnalyzer:
         self.auto_tuner = auto_tuner
         self._api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
         self._credits_exhausted: bool = False
+        # Set by app.py: (inst_id, begin_ms, end_ms) -> list[fill dict] with real
+        # fee + execType (M/T). None => analysis uses config-estimated fees.
+        self.fills_fetcher = None
         if not self._api_key:
             logger.warning("ANTHROPIC_API_KEY not set — post-trade analysis disabled")
+
+    def _gather_real_fills(self, trade: "Trade", config: "TradingConfig"):
+        """Pull ACTUAL OKX fills for both legs over the trade window and reduce to
+        per-leg real fee + maker/taker. Returns a dict {spot,futures} or None."""
+        if not self.fills_fetcher or not trade.entry_time or not trade.exit_time:
+            return None
+        try:
+            et = trade.entry_time.replace(tzinfo=None) if trade.entry_time.tzinfo else trade.entry_time
+            xt = trade.exit_time.replace(tzinfo=None) if trade.exit_time.tzinfo else trade.exit_time
+            begin_ms = int(et.timestamp() * 1000) - 10_000
+            end_ms = int(xt.timestamp() * 1000) + 30_000
+        except Exception:
+            return None
+        legs: Dict[str, Any] = {}
+        for label, sym in (("spot", config.spot_symbol), ("futures", config.futures_symbol)):
+            try:
+                fills = self.fills_fetcher(sym, begin_ms, end_ms) or []
+            except Exception:
+                fills = []
+            if not fills:
+                legs[label] = None
+                continue
+            total_fee = sum(abs(f.get("fee", 0.0)) for f in fills)
+            ex = [f.get("execType", "") for f in fills]
+            n_m, n_t = ex.count("M"), ex.count("T")
+            kind = ("maker" if n_t == 0 and n_m > 0 else
+                    "taker" if n_m == 0 and n_t > 0 else
+                    f"mixed ({n_m} maker / {n_t} taker)")
+            legs[label] = {"symbol": sym, "fee_usd": total_fee, "kind": kind, "n_fills": len(fills)}
+        if legs.get("spot") is None and legs.get("futures") is None:
+            return None
+        return legs
 
     # ── Public ───────────────────────────────────────────────────────────────
 
@@ -223,7 +258,8 @@ class PostTradeAnalyzer:
             past_learnings: List[Dict[str, Any]] = self.db.get_recent_learnings(limit=10)
             config = self.db.get_config()
 
-            prompt = self._build_prompt(trade, recent_trades, past_learnings, config)
+            real_fills = self._gather_real_fills(trade, config)
+            prompt = self._build_prompt(trade, recent_trades, past_learnings, config, real_fills)
 
             message = client.messages.create(
                 model=_ANALYSIS_MODEL,
@@ -310,6 +346,7 @@ class PostTradeAnalyzer:
         recent_trades: List["Trade"],
         past_learnings: List[Dict[str, Any]],
         config: "TradingConfig",
+        real_fills: Optional[Dict[str, Any]] = None,
     ) -> str:
         # ── Duration ──
         duration_secs = None
@@ -525,6 +562,45 @@ class PostTradeAnalyzer:
             f"{reason}: {cnt}" for reason, cnt in exit_reasons.most_common()
         )
 
+        # ── REAL OKX fills (actual fee + maker/taker, from fills-history) ──
+        if real_fills:
+            _lines, _real_total = [], 0.0
+            for _lbl in ("spot", "futures"):
+                _leg = real_fills.get(_lbl)
+                if _leg:
+                    _real_total += _leg["fee_usd"]
+                    _lines.append(
+                        f"  {_lbl:<8} {_leg['symbol']}: ${_leg['fee_usd']:.4f} fee  ·  "
+                        f"{_leg['kind']}  ·  {_leg['n_fills']} fill(s)")
+                else:
+                    _lines.append(f"  {_lbl:<8} (no fills returned by OKX)")
+            real_fills_block = (
+                "\n".join(_lines)
+                + f"\n  REAL round-trip fee (OKX): ${_real_total:.4f}   |   "
+                  f"engine estimate: ${fees_usd:.4f}")
+        else:
+            real_fills_block = ("  (real OKX fill data unavailable — the fee numbers above "
+                                "are the engine's estimate, not confirmed maker/taker)")
+
+        # ── Dollar-stop diagnosis (operator's #1 concern) ──
+        is_stop = (trade.exit_reason or "").upper() in ("DOLLAR_STOP", "STOP_LOSS", "DAILY_LOSS")
+        if is_stop:
+            diverged = xz > ez
+            stop_block = (
+                f"This exit was a STOP ({trade.exit_reason}). Diagnose it directly:\n"
+                f"  - Z-score went {trade.entry_zscore:+.2f} -> {trade.exit_zscore:+.2f} "
+                f"({'DIVERGED further from zero' if diverged else 'was reverting'}; "
+                f"{z_rev_pct:+.0f}% back toward zero).\n"
+                f"  - Spread moved {spread_move:+.6f} (~${spread_move_usd:+.2f}); "
+                f"net ${net_usd:+.2f} = gross ${gross_usd:+.2f} minus ${fees_usd:.2f} fees.\n"
+                f"  - Decide: REAL divergence (z kept widening -> the stop correctly capped a loser) "
+                f"or NOISE the stop cut before it could revert (z barely moved / already turning)?\n"
+                f"  - If noise: say how much wider the dollar stop should be, in $ AND as % of the "
+                f"${notional:,.0f} notional, to survive normal fluctuation (entry std {e_std:.6f})."
+            )
+        else:
+            stop_block = "  (not a stop exit)"
+
         return f"""You are reviewing a crypto trading strategy for someone who is not a financial or technical expert.
 RULES:
 1. Plain English only — no jargon, no acronyms, no formulas.
@@ -535,6 +611,15 @@ RULES:
    the suggested number, and in one sentence why that specific change is justified
    by the data (reference win rate, streak, cost ratio, or trade count).
 4. Do not pad with generic advice. Every point must be earned by the numbers.
+5. Frame it as "WHAT WORKED / WHAT DIDN'T" with cause and effect — e.g. "the round-trip cost was
+   $X; the trade lost because it was stopped out when the gap widened from 2.8 to 3.4 instead of
+   reverting." Prefer the REAL OKX FILLS numbers (actual fee, maker vs taker) over estimates.
+6. REGIME NOTE (operator's standing guidance): even when the Hurst reading is above 0.5
+   ("trending"), this ETH/BTC pair still tends to mean-revert in practice. Do NOT recommend
+   disabling entries or the strategy just because Hurst shows trending — weight actual reversion
+   outcomes (z-reversion %, win rate) over the Hurst number.
+7. The operator's BIGGEST concern is the DOLLAR STOP firing too early. If this was a stop, work
+   through the STOP DIAGNOSIS section and say plainly whether it cut a real loser or noise.
 
 Use the four-section format and call record_trade_analysis to record your analysis.
 
@@ -560,8 +645,14 @@ Entry latency:        {entry_lat}
 Exit latency:         {exit_lat}
 Cost-to-Opp ratio:    {cor}  (round-trip cost {total_cost_bps:.1f} bps vs {abs(gross_pnl_bps):.1f} bps gross move)
 
-═══ FEE EFFICIENCY ═══
+═══ FEE EFFICIENCY (engine estimate) ═══
 {fee_efficiency_block}
+
+═══ REAL OKX FILLS (actual fee & maker/taker — use these numbers) ═══
+{real_fills_block}
+
+═══ STOP DIAGNOSIS ═══
+{stop_block}
 
 ═══ EXPECTED VALUE (EV) ANALYSIS ═══
 {ev_block}
@@ -602,11 +693,15 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 Four sections. Every sentence must contain at least one number from the data above.
 
 what_happened       — Net P&L $, hold time, gross vs fees ($ and %), z-reversion %, exit reason.
-                      If taker drag > $0, state how much of the gross profit was consumed by the
-                      maker→taker fee upgrade (e.g. "POST_ONLY rejection cost an extra $0.09").
+                      Use the REAL OKX FILLS numbers: state the actual round-trip fee and whether
+                      each leg filled as MAKER or TAKER (e.g. "we paid $0.41 total — ETH leg maker,
+                      BTC leg taker because the exit crossed"). If this was a stop, say it was
+                      stopped out and whether the gap widened or was reverting when it fired.
 why                 — Win rate last-5 vs last-20, profit factor, streak, EV/trade (from EV section),
                       break-even win rate vs actual win rate, cost-to-opp ratio vs target (<0.30),
-                      avg win vs avg loss. Explain whether this strategy has positive expected value.
+                      avg win vs avg loss. If a stop: from STOP DIAGNOSIS, state plainly whether it
+                      cut a real divergence or noise that would have reverted. Remember the regime
+                      note — a "trending" Hurst reading does not mean this pair stopped reverting.
 what_could_be_better — Specific numbers: R:R ratio, whether actual win rate exceeds break-even win
                        rate, fee % vs 25% target, avg hold winners vs losers, whether position size
                        fits current EV per trade. If taker drag appeared, comment on exit limit price

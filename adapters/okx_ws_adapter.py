@@ -224,6 +224,9 @@ class OKXWebSocketAdapter(ExchangeAdapter):
     async def get_tick(self, symbol: str) -> Optional[MarketTick]:
         return await self._rest.get_tick(symbol)
 
+    async def get_fills(self, inst_id: str, begin_ms=None, end_ms=None, limit: int = 100):
+        return await self._rest.get_fills(inst_id, begin_ms, end_ms, limit)
+
     async def get_orderbook(
         self, symbol: str, depth: int = 5
     ) -> Optional[Dict[str, Any]]:

@@ -73,6 +73,25 @@ auto_tuner = AutoTuner(db, engine=None, socketio=socketio)
 # Post-trade AI analyzer (fires after every real closed trade)
 post_trade_analyzer = PostTradeAnalyzer(db, socketio, auto_tuner=auto_tuner)
 
+
+def _fetch_recent_fills(inst_id: str, begin_ms=None, end_ms=None):
+    """Sync bridge so the analyzer thread can pull REAL OKX fills (fee +
+    maker/taker) via the engine's event loop. Returns [] on any problem so
+    analysis degrades to config estimates."""
+    try:
+        adapter = getattr(engine, "futures_adapter", None) or getattr(engine, "spot_adapter", None)
+        if not adapter or not loop:
+            return []
+        fut = asyncio.run_coroutine_threadsafe(
+            adapter.get_fills(inst_id, begin_ms, end_ms), loop)
+        return fut.result(timeout=10) or []
+    except Exception as _e:
+        logger.debug("Analyzer fills fetch failed for %s: %s", inst_id, _e)
+        return []
+
+
+post_trade_analyzer.fills_fetcher = _fetch_recent_fills
+
 # Initialize trading engine
 config = db.get_config()
 engine = TradingEngine(config)

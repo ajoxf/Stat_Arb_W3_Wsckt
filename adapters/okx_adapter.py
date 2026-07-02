@@ -1352,6 +1352,46 @@ class OKXAdapter(ExchangeAdapter):
 
         return None
 
+    async def get_fills(
+        self,
+        inst_id: str,
+        begin_ms: Optional[int] = None,
+        end_ms: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return actual fills for an instrument with REAL fee + maker/taker flag.
+
+        Uses /api/v5/trade/fills-history (last ~3 months). begin/end are Unix ms
+        bounds on fill time. Each fill dict: ordId, side, fillPx, fillSz,
+        fee (negative = fee paid), feeCcy, execType ('M' maker / 'T' taker), ts.
+        Empty list on error so callers degrade to estimates.
+        """
+        params: Dict[str, str] = {
+            "instType": _detect_inst_type(inst_id),
+            "instId": inst_id,
+            "limit": str(limit),
+        }
+        if begin_ms:
+            params["begin"] = str(int(begin_ms))
+        if end_ms:
+            params["end"] = str(int(end_ms))
+        result = await self._request("GET", "/api/v5/trade/fills-history", params=params)
+        if not result or result.get("code") != "0":
+            return []
+        fills: List[Dict[str, Any]] = []
+        for f in result.get("data", []):
+            fills.append({
+                "ordId": f.get("ordId", ""),
+                "side": f.get("side", ""),
+                "fillPx": float(f.get("fillPx") or 0),
+                "fillSz": float(f.get("fillSz") or 0),
+                "fee": float(f.get("fee") or 0),
+                "feeCcy": f.get("feeCcy", ""),
+                "execType": f.get("execType", ""),
+                "ts": int(f.get("ts") or 0),
+            })
+        return fills
+
     async def get_order_history(self, symbol: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Fetch recent order history from OKX.
