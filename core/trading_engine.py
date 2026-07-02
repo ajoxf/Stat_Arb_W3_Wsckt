@@ -557,6 +557,25 @@ class TradingEngine:
         signal = self.signal_generator.generate_signal()
         self.state.last_signal = signal
 
+        # Z-reset gate auto-clear (runs EVERY tick). Once z has returned to the
+        # ±exit_threshold band the spread has genuinely reverted, so release the
+        # post-stop same-side block. This MUST live here, not in _open_position:
+        # that block-check only runs when a same-side entry signal is present —
+        # i.e. z at the extreme (|z| >= entry_threshold) — where z can never be
+        # inside ±exit_threshold. Without this, the gate would arm on the first
+        # stop and NEVER clear for the rest of the session, silently killing all
+        # same-side entries even after the spread fully reverted (and crossed 0).
+        if self._z_reset_block_direction:
+            _reset_z = getattr(self.config, 'exit_threshold', 0.5) or 0.5
+            _zc = signal.zscore
+            _cleared = ((_zc >= -_reset_z) if self._z_reset_block_direction == "SHORT"
+                        else (_zc <= _reset_z))
+            if _cleared:
+                logger.info(
+                    "Z-reset gate cleared for %s (z=%.4f back inside ±%.2f) — same-side entry allowed",
+                    self._z_reset_block_direction, _zc, _reset_z)
+                self._z_reset_block_direction = None
+
         # Engine-level fast-exit overrides (profit target / max hold / dollar
         # stop). These are dollar/time based and independent of the z-score, so
         # they must be evaluated even when the generator returns NONE. Skipped
