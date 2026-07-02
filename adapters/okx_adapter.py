@@ -18,6 +18,10 @@ from models import MarketTick, OrderResult, Position, AccountInfo
 
 logger = logging.getLogger(__name__)
 
+# Re-measure the OKX clock offset at least this often so a drifting host clock
+# never accumulates past OKX's ±30s signing window between syncs.
+_CLOCK_RESYNC_SEC = 120.0
+
 
 def _detect_inst_type(symbol: str) -> str:
     """Classify an OKX instId by its segment shape.
@@ -70,6 +74,7 @@ class OKXAdapter(ExchangeAdapter):
         # Signed-request timestamps are corrected by this measured offset so a
         # drifted host clock doesn't trigger OKX 50102 "Timestamp request expired".
         self._clock_offset_s: float = 0.0
+        self._last_clock_sync: float = 0.0  # monotonic-ish; drives periodic re-sync
 
     def _make_session(self) -> aiohttp.ClientSession:
         """Build an HTTP session hardened for long-running use on Windows.
@@ -94,6 +99,9 @@ class OKXAdapter(ExchangeAdapter):
         """Measure local-vs-OKX clock offset so signed timestamps are
         server-relative. /api/v5/public/time is unauthenticated, so this works
         even when the host clock is the problem."""
+        # Stamp FIRST so the public/time request below (which re-enters _request)
+        # doesn't see a stale sync time and recurse.
+        self._last_clock_sync = time.time()
         try:
             server_ms = await self.get_server_time_ms()
             if server_ms:
@@ -190,6 +198,13 @@ class OKXAdapter(ExchangeAdapter):
         """
         if not self._session:
             self._session = self._make_session()
+
+        # Keep the clock offset fresh (drift guard). _sync_clock stamps
+        # _last_clock_sync at its top, so the public/time call it makes won't
+        # re-enter this branch. Skipped for public/time itself to be safe.
+        if (not path.startswith("/api/v5/public/time")
+                and time.time() - self._last_clock_sync > _CLOCK_RESYNC_SEC):
+            await self._sync_clock()
 
         url = self.base_url + path
         body = json.dumps(data) if data else ""

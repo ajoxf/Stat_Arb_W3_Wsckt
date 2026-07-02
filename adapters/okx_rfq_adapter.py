@@ -20,10 +20,15 @@ import hashlib
 import base64
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
+
+# Re-measure the OKX clock offset at least this often so a drifting host clock
+# never accumulates past OKX's ±30s signing window between RFQ requests.
+_CLOCK_RESYNC_SEC = 120.0
 
 
 class RFQQuote:
@@ -89,11 +94,38 @@ class OKXRFQAdapter:
         self.passphrase = passphrase
         self.is_testnet = is_testnet
         self._session = None  # aiohttp.ClientSession — created lazily
+        # Signed timestamps are corrected by this measured offset so a drifted
+        # host clock doesn't trigger OKX 50102 "Timestamp request expired".
+        self._clock_offset_s: float = 0.0
+        self._last_clock_sync: float = 0.0
 
     # ------------------------------------------------------------------ auth
 
+    async def _sync_clock(self) -> None:
+        """Measure local-vs-OKX clock offset so signed RFQ timestamps are
+        server-relative. /api/v5/public/time is unauthenticated, so it works
+        even when the host clock is the problem."""
+        import aiohttp
+        # Stamp FIRST so a concurrent caller doesn't also fire a sync.
+        self._last_clock_sync = time.time()
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(self.BASE_URL + "/api/v5/public/time",
+                                 timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    d = await r.json()
+                    server_ms = float(d["data"][0]["ts"])
+                    self._clock_offset_s = time.time() - server_ms / 1000.0
+                    if abs(self._clock_offset_s) > 5:
+                        logger.warning(
+                            "[rfq_adapter] clock offset %.1fs vs OKX server — "
+                            "RFQ timestamps auto-corrected.", self._clock_offset_s)
+        except Exception as e:
+            logger.debug("[rfq_adapter] clock sync failed (non-fatal): %s", e)
+
     def _get_timestamp(self) -> str:
-        now = datetime.utcnow()
+        # Corrected by the measured server-clock offset so a drifted host clock
+        # doesn't cause OKX 50102 "Timestamp request expired".
+        now = datetime.utcfromtimestamp(time.time() - self._clock_offset_s)
         return now.strftime("%Y-%m-%dT%H:%M:%S.") + now.strftime("%f")[:3] + "Z"
 
     def _sign(self, timestamp: str, method: str, path: str, body: str = "") -> str:
@@ -142,37 +174,51 @@ class OKXRFQAdapter:
         if self._session is None:
             self._session = aiohttp.ClientSession()
 
+        # Keep the clock offset fresh (drift guard) before signing.
+        if time.time() - self._last_clock_sync > _CLOCK_RESYNC_SEC:
+            await self._sync_clock()
+
         full_path = path
         if params:
             full_path = path + "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
         url = self.BASE_URL + full_path
         body = json.dumps(data) if data else ""
-        headers = self._get_headers(method, full_path, body)
 
-        try:
-            async with self._session.request(
-                method, url, headers=headers, data=body or None,
-                timeout=aiohttp.ClientTimeout(total=timeout_sec),
-            ) as resp:
-                result = await resp.json()
-                if result.get("code") != "0":
-                    logger.error(
-                        "[rfq_adapter] %s %s — code=%s msg=%s data=%s",
-                        method, path,
-                        result.get("code"), result.get("msg"),
-                        result.get("data"),
-                    )
-                    return None
-                return result
-        except asyncio.TimeoutError:
-            logger.error("[rfq_adapter] TIMEOUT %s %s after %ss", method, path, timeout_sec)
-            if reraise_timeout:
-                raise
-            return None
-        except Exception as exc:
-            logger.error("[rfq_adapter] request error %s %s: %s", method, path, exc)
-            return None
+        # One retry: a 50102 "timestamp expired" means the clock drifted since
+        # the last sync — resync and re-sign. RFQ create/execute are NOT retried
+        # blindly elsewhere, but a 50102 is rejected by OKX before matching, so
+        # re-signing the SAME request is safe.
+        for attempt in range(2):
+            headers = self._get_headers(method, full_path, body)
+            try:
+                async with self._session.request(
+                    method, url, headers=headers, data=body or None,
+                    timeout=aiohttp.ClientTimeout(total=timeout_sec),
+                ) as resp:
+                    result = await resp.json()
+                    if result.get("code") == "50102" and attempt == 0:
+                        logger.warning("[rfq_adapter] 50102 timestamp expired on %s %s "
+                                       "— resyncing clock, retrying", method, path)
+                        await self._sync_clock()
+                        continue
+                    if result.get("code") != "0":
+                        logger.error(
+                            "[rfq_adapter] %s %s — code=%s msg=%s data=%s",
+                            method, path,
+                            result.get("code"), result.get("msg"),
+                            result.get("data"),
+                        )
+                        return None
+                    return result
+            except asyncio.TimeoutError:
+                logger.error("[rfq_adapter] TIMEOUT %s %s after %ss", method, path, timeout_sec)
+                if reraise_timeout:
+                    raise
+                return None
+            except Exception as exc:
+                logger.error("[rfq_adapter] request error %s %s: %s", method, path, exc)
+                return None
 
     async def disconnect(self) -> None:
         if self._session:
