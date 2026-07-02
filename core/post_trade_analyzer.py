@@ -38,55 +38,25 @@ _MAX_TOKENS = 2048
 _ANALYSIS_TOOL = {
     "name": "record_trade_analysis",
     "description": (
-        "Record a data-rich, plain-English post-trade analysis. "
-        "Every sentence must include specific numbers from the trade data provided. "
-        "No jargon, but do not omit numbers — dollars, percentages, durations, z-scores, "
-        "win rates, and counts must all appear where relevant. "
-        "Write as if briefing a smart non-trader who wants the full picture in plain language."
+        "Record a SHORT post-trade verdict plus structured recommendations. "
+        "The exact numbers (P&L, fees, z-scores, win rate, cost ratio) are shown to the "
+        "operator separately as a scorecard, so DO NOT re-list them. Your job is the concise "
+        "judgement on top of those numbers, and any actionable parameter changes."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "what_happened": {
+            "verdict": {
                 "type": "string",
                 "description": (
-                    "3-4 sentences covering the full factual outcome with every key number. "
-                    "MUST include: net P&L in dollars, hold time, gross P&L vs fees/slippage cost, "
-                    "entry gap size (z-score) and exit gap size, and the exit reason. "
-                    "Example style: 'The trade made $1.15 net ($1.56 gross minus $0.41 in fees) "
-                    "and closed in 48 seconds. We entered when the ETH-BTC price gap was 2.80 "
-                    "standard deviations wide and exited at 1.53 — the gap closed 45% of the way "
-                    "back to normal. Fees and slippage consumed 26% of the gross profit.'"
-                )
-            },
-            "why": {
-                "type": "string",
-                "description": (
-                    "3-4 sentences explaining the cause with supporting numbers from both "
-                    "this trade and the recent history. "
-                    "MUST reference: win rate (last-5 and last-20), profit factor, current streak, "
-                    "cost-to-opportunity ratio, and whether the market was behaving normally. "
-                    "Example style: 'The gap closed quickly because the market was behaving "
-                    "normally — prices snapping back is what this strategy depends on. "
-                    "Across the last 20 trades the win rate is 60% with a profit factor of 1.4, "
-                    "meaning for every $1 lost we make $1.40 on wins. "
-                    "This is the 3rd win in a row. The fee cost was 36% of gross profit — "
-                    "higher than the healthy target of under 25%.'"
-                )
-            },
-            "what_could_be_better": {
-                "type": "string",
-                "description": (
-                    "3-4 sentences with specific, numbered improvements. "
-                    "MUST include concrete numbers: what entry gap threshold would have improved "
-                    "the reward vs risk, what the cost ratio was vs target, what the current "
-                    "position size is and whether it is appropriate given recent performance, "
-                    "and any pattern visible across the last N trades. "
-                    "Example style: 'We entered at a gap of 2.80 — waiting for 3.00 would give "
-                    "7% more profit potential for the same risk. Fees were 36% of gross vs the "
-                    "target of under 25%; switching to limit orders on exit could save ~5 bps. "
-                    "The last 5 trades all closed within 5 minutes, suggesting the position "
-                    "size of $1,000 could be increased once fees are under control.'"
+                    "1-2 sentences, MAX ~45 words. The numbers are already on the scorecard — "
+                    "do NOT restate them all. Say only (a) what worked or didn't and WHY in "
+                    "cause->effect terms, and (b) if this was a stop, whether it cut a REAL "
+                    "divergence (z kept widening) or NOISE that would have reverted (z barely "
+                    "moved / already turning). Each clause must cite at least one number. "
+                    "Example: 'Stopped when the gap widened 2.8->3.4 instead of reverting — a "
+                    "real divergence, so the stop worked. Taker fees ($0.41, 36% of gross) were "
+                    "the only avoidable cost.'"
                 )
             },
             "recommendations": {
@@ -159,8 +129,8 @@ _ANALYSIS_TOOL = {
             },
         },
         "required": [
-            "what_happened", "why", "what_could_be_better",
-            "recommendations", "health_score", "confidence_score", "summary",
+            "verdict", "recommendations",
+            "health_score", "confidence_score", "summary",
         ],
     },
 }
@@ -259,7 +229,7 @@ class PostTradeAnalyzer:
             config = self.db.get_config()
 
             real_fills = self._gather_real_fills(trade, config)
-            prompt = self._build_prompt(trade, recent_trades, past_learnings, config, real_fills)
+            prompt, scorecard = self._build_prompt(trade, recent_trades, past_learnings, config, real_fills)
 
             message = client.messages.create(
                 model=_ANALYSIS_MODEL,
@@ -279,6 +249,11 @@ class PostTradeAnalyzer:
             if not analysis_data:
                 logger.warning("No tool_use block for trade %s", trade.id)
                 return
+
+            # Attach the exact, system-computed scorecard so every consumer
+            # (Telegram, dashboard, DB) shows the same numbers — never the LLM's.
+            analysis_data = dict(analysis_data)
+            analysis_data["scorecard"] = scorecard
 
             recs = analysis_data.get("recommendations", [])
             logger.info(
@@ -601,27 +576,55 @@ class PostTradeAnalyzer:
         else:
             stop_block = "  (not a stop exit)"
 
-        return f"""You are reviewing a crypto trading strategy for someone who is not a financial or technical expert.
-RULES:
-1. Plain English only — no jargon, no acronyms, no formulas.
-2. Every sentence must contain specific numbers pulled from the data below.
-   Vague statements like "fees were high" are not acceptable.
-   Correct: "Fees consumed $0.41 of the $1.56 gross profit — that is 26%."
-3. Recommendations must be sharp and actionable: state the current number,
-   the suggested number, and in one sentence why that specific change is justified
-   by the data (reference win rate, streak, cost ratio, or trade count).
-4. Do not pad with generic advice. Every point must be earned by the numbers.
-5. Frame it as "WHAT WORKED / WHAT DIDN'T" with cause and effect — e.g. "the round-trip cost was
-   $X; the trade lost because it was stopped out when the gap widened from 2.8 to 3.4 instead of
-   reverting." Prefer the REAL OKX FILLS numbers (actual fee, maker vs taker) over estimates.
-6. REGIME NOTE (operator's standing guidance): even when the Hurst reading is above 0.5
-   ("trending"), this ETH/BTC pair still tends to mean-revert in practice. Do NOT recommend
-   disabling entries or the strategy just because Hurst shows trending — weight actual reversion
-   outcomes (z-reversion %, win rate) over the Hurst number.
-7. The operator's BIGGEST concern is the DOLLAR STOP firing too early. If this was a stop, work
-   through the STOP DIAGNOSIS section and say plainly whether it cut a real loser or noise.
+        # ── SCORECARD (exact, system-computed — shown to the operator verbatim;
+        #    the LLM is told NOT to re-list these) ──
+        _kind_short = {"maker": "maker", "taker": "taker"}
+        if real_fills:
+            _rt, _parts = 0.0, []
+            for _lbl in ("spot", "futures"):
+                _leg = real_fills.get(_lbl)
+                if _leg:
+                    _rt += _leg["fee_usd"]
+                    _parts.append(f"{_lbl} {_kind_short.get(_leg['kind'], _leg['kind'])}")
+            real_fee_str = f"${_rt:.4f} ({', '.join(_parts)})" if _parts else f"~${fees_usd:.2f} (est)"
+        else:
+            real_fee_str = f"~${fees_usd:.2f} (engine est, unconfirmed)"
 
-Use the four-section format and call record_trade_analysis to record your analysis.
+        scorecard = [
+            {"label": "Result",     "value": f"{outcome} · net ${net_usd:+.2f} ({trade.pnl_percent:+.2f}% notional, {roc_pct:+.2f}% cap)"},
+            {"label": "P&L split",  "value": f"gross ${gross_usd:+.2f} − fees ${fees_usd:.2f} ({fee_pct_of_gross:.0f}% of gross)"},
+            {"label": "Real fees",  "value": real_fee_str},
+            {"label": "Z-score",    "value": f"{trade.entry_zscore:+.2f} → {trade.exit_zscore:+.2f} (reverted {z_rev_pct:.0f}%)"},
+            {"label": "Spread",     "value": f"{spread_move:+.6f} (~${spread_move_usd:+.2f})"},
+            {"label": "Hold",       "value": duration_str},
+            {"label": "Cost ratio", "value": f"{cor} ({total_cost_bps:.1f}bps cost vs {abs(gross_pnl_bps):.1f}bps move)"},
+            {"label": "Exit",       "value": str(trade.exit_reason)},
+            {"label": "Win rate",   "value": f"{wr_last5:.0%} last-5 · {wr_last20:.0%} last-20 ({wr_trend})"},
+            {"label": "Prof.factor","value": f"{profit_factor} · EV ${expected_val:+.2f}/trade"},
+            {"label": "Streak",     "value": f"{'+' if streak >= 0 else ''}{streak}"},
+        ]
+        if is_stop:
+            scorecard.insert(4, {
+                "label": "Stop check",
+                "value": f"z {'DIVERGED (widened)' if xz > ez else 'was reverting'}, {z_rev_pct:+.0f}% toward 0",
+            })
+
+        prompt = f"""You are reviewing a statistical-arbitrage trade. The operator ALREADY sees a
+scorecard of exact numbers (P&L, fees, z-scores, win rate, cost ratio). Your output is
+the short judgement ON TOP of those numbers — not a re-listing of them.
+RULES:
+1. verdict = 1-2 sentences, ~45 words MAX. Do NOT restate the scorecard numbers; cite only
+   the 1-2 numbers that drive your judgement.
+2. Frame it "what worked / what didn't" with cause→effect. Prefer the REAL OKX FILLS numbers
+   (actual fee, maker vs taker) over the engine estimate.
+3. REGIME NOTE (standing guidance): even when Hurst reads above 0.5 ("trending"), this ETH/BTC
+   pair still tends to mean-revert. Do NOT recommend disabling entries or the strategy on the
+   Hurst number alone — weight actual reversion outcomes (z-reversion %, win rate) instead.
+4. The operator's BIGGEST concern is the DOLLAR STOP firing too early. If this was a stop, use
+   the STOP DIAGNOSIS section and state plainly in the verdict: real divergence, or noise cut early?
+5. Recommendations must be sharp: current number → problem → suggested number → why. No padding.
+
+Call record_trade_analysis to record your analysis.
 
 ═══ THIS TRADE · {outcome} ═══
 Asset:                {trade.asset}
@@ -689,28 +692,20 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 ═══ ACCUMULATED LEARNINGS (most recent first) ═══
 {chr(10).join(learnings_lines) if learnings_lines else "  (no prior learnings)"}
 
-═══ ANALYSIS FORMAT ═══
-Four sections. Every sentence must contain at least one number from the data above.
-
-what_happened       — Net P&L $, hold time, gross vs fees ($ and %), z-reversion %, exit reason.
-                      Use the REAL OKX FILLS numbers: state the actual round-trip fee and whether
-                      each leg filled as MAKER or TAKER (e.g. "we paid $0.41 total — ETH leg maker,
-                      BTC leg taker because the exit crossed"). If this was a stop, say it was
-                      stopped out and whether the gap widened or was reverting when it fired.
-why                 — Win rate last-5 vs last-20, profit factor, streak, EV/trade (from EV section),
-                      break-even win rate vs actual win rate, cost-to-opp ratio vs target (<0.30),
-                      avg win vs avg loss. If a stop: from STOP DIAGNOSIS, state plainly whether it
-                      cut a real divergence or noise that would have reverted. Remember the regime
-                      note — a "trending" Hurst reading does not mean this pair stopped reverting.
-what_could_be_better — Specific numbers: R:R ratio, whether actual win rate exceeds break-even win
-                       rate, fee % vs 25% target, avg hold winners vs losers, whether position size
-                       fits current EV per trade. If taker drag appeared, comment on exit limit price
-                       aggressiveness and whether wider exit limits would reduce POST_ONLY rejections.
-recommendations     — Up to 4 items. Each rationale: current number → problem → suggested number
-                      → why that number → expected improvement. No vague statements.
+═══ OUTPUT ═══
+verdict          — 1-2 sentences, ~45 words MAX. The scorecard already lists the numbers; cite only
+                   the 1-2 that drive the judgement. What worked / what didn't, cause→effect. If a
+                   stop: from STOP DIAGNOSIS, state plainly — real divergence or noise cut early?
+                   Prefer REAL OKX FILLS (actual fee, maker vs taker) over estimates. Honour the
+                   regime note (a "trending" Hurst reading does not mean this pair stopped reverting).
+summary          — ONE short headline line (used in logs), e.g. "Stop cut a real loser; fees fine."
+recommendations  — Up to 4. Each rationale: current number → problem → suggested number → why → expected
+                   improvement. No vague statements.
   PARAMETER_CHANGE     — numeric setting, auto-applied at 3+ consensus, conf ≥0.70
   FILTER_TOGGLE        — hurst_enabled or std_filter_enabled, needs 5+ consensus
   POSITION_SIZE_CHANGE — reduce position_size_usd only, needs 4+ consensus
   OBSERVATION          — human-review note with supporting numbers, shown on dashboard
+health_score     — 0-100 composite.   confidence_score — 1-10 for THIS analysis.
 
 Call record_trade_analysis now."""
+        return prompt, scorecard

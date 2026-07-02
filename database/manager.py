@@ -980,7 +980,7 @@ class DatabaseManager:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trade_id,
-                analysis.get("what_happened") or analysis.get("root_cause", ""),
+                analysis.get("verdict") or analysis.get("what_happened") or analysis.get("root_cause", ""),
                 analysis.get("why") or analysis.get("patterns", ""),
                 analysis.get("what_could_be_better") or analysis.get("execution_quality", ""),
                 analysis.get("regime_assessment", ""),

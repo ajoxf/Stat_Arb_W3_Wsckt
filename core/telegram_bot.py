@@ -358,16 +358,17 @@ class TelegramNotifier:
             logger.error("Error building trade exit notification: %s", e)
 
     def notify_trade_analysis(self, trade_id: int, analysis: dict) -> None:
-        """Send AI post-trade analysis results to Telegram."""
+        """Send AI post-trade analysis to Telegram: exact NUMBERS first
+        (system-computed scorecard), then a 1-2 line verdict, then recs."""
         if not self.is_ready() or not self._notify_trades:
             return
         try:
+            esc             = html.escape
             health          = analysis.get("health_score", 0)
             conf            = analysis.get("confidence_score", 0)
-            what_happened   = (analysis.get("what_happened") or "—")[:500]
-            why             = (analysis.get("why") or "—")[:500]
-            what_better     = (analysis.get("what_could_be_better") or "—")[:500]
-            summary         = (analysis.get("summary") or "—")[:300]
+            verdict         = (analysis.get("verdict") or analysis.get("summary")
+                               or analysis.get("what_happened") or "—")[:400]
+            scorecard       = analysis.get("scorecard") or []
             recs            = analysis.get("recommendations") or []
 
             if health >= 70:
@@ -380,44 +381,32 @@ class TelegramNotifier:
             R = self._R
             SEP = "─" * 24
 
-            rows = [
-                f"<b>🔬 AI Trade Review  ·  Trade #{trade_id}</b>",
-                SEP,
-                R("Health", f"{health_icon} {health}/100"),
-                R("Confidence", f"{conf}/10"),
-                "",
-                "<b>What worked or didn't work?</b>",
-                f"<i>{what_happened}</i>",
-                "",
-                "<b>Why?</b>",
-                f"<i>{why}</i>",
-                "",
-                "<b>What could have been better?</b>",
-                f"<i>{what_better}</i>",
-            ]
+            # ── NUMBERS FIRST (exact scorecard) ──
+            rows = [f"<b>🔬 AI Trade Review · #{trade_id}</b>", SEP]
+            for item in scorecard:
+                rows.append(R(esc(str(item.get("label", ""))),
+                              esc(str(item.get("value", "")))))
+            rows.append(R("Health", f"{health_icon} {health}/100  ·  conf {conf}/10"))
+
+            # ── THEN a 1-2 line verdict ──
+            rows += ["", "<b>Verdict</b>", f"<i>{esc(verdict)}</i>"]
 
             if recs:
                 rows += ["", "<b>Recommendations</b>"]
                 for rec in recs[:4]:
                     rtype     = rec.get("type", "")
-                    rationale = (rec.get("rationale") or "")[:350]
+                    rationale = esc((rec.get("rationale") or "")[:350])
+                    param     = esc(str(rec.get("param", "")))
+                    cur       = esc(str(rec.get("current_value", "")))
+                    sug       = esc(str(rec.get("suggested_value", "")))
                     if rtype == "PARAMETER_CHANGE":
-                        param = rec.get("param", "")
-                        cur   = rec.get("current_value", "")
-                        sug   = rec.get("suggested_value", "")
                         rows.append(f"  ⚙️ <code>{param}</code>: {cur} → <b>{sug}</b>  <i>{rationale}</i>")
                     elif rtype == "FILTER_TOGGLE":
-                        param = rec.get("param", "")
-                        sug   = rec.get("suggested_value", "")
                         rows.append(f"  🔀 Toggle <code>{param}</code> → <b>{sug}</b>  <i>{rationale}</i>")
                     elif rtype == "POSITION_SIZE_CHANGE":
-                        cur  = rec.get("current_value", "")
-                        sug  = rec.get("suggested_value", "")
                         rows.append(f"  📏 Position size: ${cur} → <b>${sug}</b>  <i>{rationale}</i>")
                     elif rtype == "OBSERVATION":
                         rows.append(f"  💡 <i>{rationale}</i>")
-
-            rows += ["", SEP, f"<i>{summary}</i>"]
 
             self._send("\n".join(rows))
         except Exception as e:
