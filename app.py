@@ -326,6 +326,13 @@ def start_engine_loop():
         try:
             if not hasattr(engine.config, key):
                 return {"ok": False, "message": f"Unknown config field: {key}"}
+            # Guard: β is structural — block changes while a position is open or
+            # the algo is on (would corrupt the trade / fire an unintended entry).
+            if key == 'hedge_ratio':
+                _blk = _hedge_ratio_change_blocked(value)
+                if _blk:
+                    logger.warning("Rejected hedge_ratio change via Telegram: %s", _blk)
+                    return {"ok": False, "message": _blk}
             old_val = getattr(engine.config, key)
             setattr(engine.config, key, value)
             db.save_config(engine.config)
@@ -709,6 +716,37 @@ def get_config():
     return jsonify(config.to_dict())
 
 
+def _hedge_ratio_change_blocked(new_beta):
+    """Return a rejection message if changing the hedge ratio (β) right now is
+    unsafe, else None.
+
+    β defines the spread itself (spread = futures − β × spot). Changing it
+    recomputes the ENTIRE cached spread history → new rolling mean/std/z in one
+    step, which:
+      * corrupts an OPEN trade (its entry z, stop, sizing and P&L were all set
+        under the old β), and
+      * can immediately fire an unintended entry off the freshly recomputed
+        series while the algo is running.
+    So β may only change when flat AND with the algo off.
+    """
+    try:
+        old_beta = float(getattr(engine.config, 'hedge_ratio', 1.0) or 1.0)
+        nb = float(new_beta)
+    except (TypeError, ValueError):
+        return None  # not a number — let normal validation handle it
+    if abs(nb - old_beta) <= 1e-9:
+        return None  # unchanged — nothing to guard
+    if engine.open_trade is not None or engine.state.current_position not in (None, "", "NONE"):
+        return ("Hedge-ratio change blocked: a position is OPEN. Changing β recomputes the "
+                "spread history and corrupts the open trade's z-score, stop and P&L. "
+                "Close the position first, then change β.")
+    if engine.state.algo_enabled:
+        return ("Hedge-ratio change blocked: the algo is ON. Changing β recomputes the full "
+                "spread history and can immediately trigger an unintended entry. "
+                "Disable the algo, change β, then re-enable it.")
+    return None
+
+
 @app.route('/api/config', methods=['POST'])
 def save_config():
     """Save configuration."""
@@ -726,6 +764,15 @@ def save_config():
         # time the user saves any unrelated setting. Also honor the '***'
         # sentinel sent by the Telegram panel to mean "keep the saved token".
         existing = db.get_config()
+
+        # Guard: β (hedge_ratio) is structural — it may only change when flat and
+        # with the algo off, or it corrupts an open trade / fires an unintended one.
+        if 'hedge_ratio' in data:
+            _blk = _hedge_ratio_change_blocked(data.get('hedge_ratio'))
+            if _blk:
+                logger.warning("Rejected hedge_ratio change via web: %s", _blk)
+                return jsonify({'success': False, 'error': _blk}), 409
+
         telegram_fields = (
             'telegram_enabled', 'telegram_bot_token', 'telegram_chat_id',
             'telegram_notify_trades', 'telegram_notify_signals', 'telegram_notify_errors',
