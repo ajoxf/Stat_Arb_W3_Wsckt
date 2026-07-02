@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 # never accumulates past OKX's ±30s signing window between syncs.
 _CLOCK_RESYNC_SEC = 120.0
 
+# Circuit breaker: after this many consecutive REST connection failures, stop
+# hammering OKX for a cooldown (fail fast). Prevents a transient outage / rate-
+# limit from being amplified by retries + continuous dashboard polling into a
+# self-sustaining storm. Order execution is on the WebSocket, so it is unaffected.
+_BREAKER_FAIL_THRESHOLD = 5
+_BREAKER_COOLDOWN_SEC = 15.0
+
 
 def _detect_inst_type(symbol: str) -> str:
     """Classify an OKX instId by its segment shape.
@@ -75,6 +82,22 @@ class OKXAdapter(ExchangeAdapter):
         # drifted host clock doesn't trigger OKX 50102 "Timestamp request expired".
         self._clock_offset_s: float = 0.0
         self._last_clock_sync: float = 0.0  # monotonic-ish; drives periodic re-sync
+        # REST circuit-breaker state.
+        self._consec_conn_failures: int = 0
+        self._breaker_open_until: float = 0.0
+
+    def _trip_breaker(self) -> None:
+        """Record a REST connection failure and open the circuit breaker once too
+        many pile up, so we stop hammering OKX for a cooldown."""
+        self._consec_conn_failures += 1
+        if self._consec_conn_failures >= _BREAKER_FAIL_THRESHOLD:
+            self._breaker_open_until = time.time() + _BREAKER_COOLDOWN_SEC
+            if self._consec_conn_failures == _BREAKER_FAIL_THRESHOLD:
+                logger.error(
+                    "OKX REST circuit breaker OPEN — %d consecutive connection failures; "
+                    "pausing non-critical REST for %.0fs to stop hammering OKX. Order "
+                    "execution (WebSocket) is unaffected.",
+                    self._consec_conn_failures, _BREAKER_COOLDOWN_SEC)
 
     def _make_session(self) -> aiohttp.ClientSession:
         """Build an HTTP session hardened for long-running use on Windows.
@@ -199,6 +222,14 @@ class OKXAdapter(ExchangeAdapter):
         if not self._session:
             self._session = self._make_session()
 
+        # Circuit breaker: if REST connections are failing, fail fast for a
+        # cooldown instead of hammering OKX (which amplifies rate-limits and
+        # stacks 10s Flask timeouts). public/time is exempt so the clock-sync
+        # canary can still probe and drive recovery.
+        if (time.time() < self._breaker_open_until
+                and not path.startswith("/api/v5/public/time")):
+            return None
+
         # Keep the clock offset fresh (drift guard). _sync_clock stamps
         # _last_clock_sync at its top, so the public/time call it makes won't
         # re-enter this branch. Skipped for public/time itself to be safe.
@@ -263,6 +294,13 @@ class OKXAdapter(ExchangeAdapter):
                                            method, path, error, result)
                         self._set_error(error)
 
+                    # A completed round-trip (even an API error) proves the
+                    # connection is healthy — clear any tripped circuit breaker.
+                    if self._breaker_open_until or self._consec_conn_failures:
+                        if self._breaker_open_until:
+                            logger.info("OKX REST circuit breaker CLOSED — connection recovered")
+                        self._consec_conn_failures = 0
+                        self._breaker_open_until = 0.0
                     return result
 
             except (aiohttp.ClientConnectionError, aiohttp.ClientOSError, asyncio.TimeoutError) as e:
@@ -276,6 +314,7 @@ class OKXAdapter(ExchangeAdapter):
                 if method.upper() == "GET" and attempt < 2:
                     await asyncio.sleep(0.5 * (attempt + 1))
                     continue
+                self._trip_breaker()   # gave up on a connection error
                 return None
             except Exception as e:
                 logger.exception("OKX request error: %s %s", method, path)
