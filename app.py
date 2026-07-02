@@ -4403,14 +4403,16 @@ if __name__ == '__main__':
     app.logger.setLevel(logging.WARNING)
 
     # Run Flask app with SocketIO (threading mode).
-    # Debug + reloader are OFF by default for production: the reloader spawns a
-    # SECOND process and the debugger adds overhead — a real CPU drain on a small
-    # instance. Enable only for local dev with FLASK_DEBUG=1. We set app.debug
-    # explicitly so this value wins over any ambient FLASK_ENV auto-config and the
-    # startup banner reflects the truth.
-    _flask_debug = os.getenv('FLASK_DEBUG', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+    # Debug + reloader OFF by default. The reloader spawns a SECOND process —
+    # i.e. a DUPLICATE live trading engine (double OKX connections, double orders)
+    # — so it must never switch on by accident in production. We read a DEDICATED
+    # var (STATARB_DEBUG), NOT FLASK_DEBUG, precisely so an ambient FLASK_DEBUG /
+    # FLASK_ENV left in the shell can't silently re-enable it. use_reloader is
+    # forced from the same flag, so even an ambient FLASK_DEBUG cannot spawn the
+    # duplicate. Set STATARB_DEBUG=1 only for local dev.
+    _flask_debug = os.getenv('STATARB_DEBUG', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
     app.debug = _flask_debug
-    logger.info("Flask debug mode: %s (set FLASK_DEBUG=1 to enable for dev)",
+    logger.info("Flask debug mode: %s (set STATARB_DEBUG=1 to enable for dev)",
                 "ON" if _flask_debug else "OFF")
     socketio.run(
         app,
