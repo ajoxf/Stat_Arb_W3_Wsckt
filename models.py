@@ -169,6 +169,11 @@ class TradingConfig:
     paper_trading: bool = True
     algo_enabled: bool = False
 
+    # Periodic AI health monitor (the "[AI MONITOR]" log verdicts). Off by
+    # default — it watches operational metrics (WS/position/fees), not code
+    # logic, and calls the Anthropic API every interval. Set True to re-enable.
+    ai_monitor_enabled: bool = False
+
     # Order execution mode: "MARKET" or "LIMIT"
     # Separate modes for entries vs exits to optimize fee/slippage tradeoff
     order_execution_mode: str = "MARKET"  # Legacy field, kept for backward compatibility

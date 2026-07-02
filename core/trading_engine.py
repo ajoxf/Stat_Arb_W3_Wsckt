@@ -451,11 +451,17 @@ class TradingEngine:
             self._task = asyncio.create_task(self._main_loop())
             logger.info("REST polling task created successfully")
 
-        # Spin up the periodic AI health monitor.
-        try:
-            self.ai_monitor.start()
-        except Exception:
-            logger.exception("AI monitor failed to start (continuing)")
+        # Spin up the periodic AI health monitor only if explicitly enabled.
+        # Off by default: it watches ops metrics (WS/position/fees), never code
+        # logic, so it can't catch bugs like a mis-gated exit — and it calls the
+        # Anthropic API every interval.
+        if getattr(self.config, 'ai_monitor_enabled', False):
+            try:
+                self.ai_monitor.start()
+            except Exception:
+                logger.exception("AI monitor failed to start (continuing)")
+        else:
+            logger.info("AI monitor disabled (ai_monitor_enabled=False)")
 
     async def stop(self) -> None:
         """Stop the trading engine."""
