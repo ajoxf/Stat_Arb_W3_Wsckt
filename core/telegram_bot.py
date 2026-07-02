@@ -472,15 +472,29 @@ class TelegramNotifier:
             logger.error("Error building signal notification: %s", e)
 
     def notify_error(self, error_msg: str) -> None:
-        """Send a critical error notification."""
+        """Send a system alert in a readable, wrapping form.
+
+        The old format wrapped the whole body in <pre>, which Telegram renders
+        as non-wrapping monospace — a long sentence ran off-screen on mobile.
+        This renders normal (wrapping) text, a short header + time, and splits
+        any 'Suggested action:' tail onto its own line.
+        """
         if not self.is_ready() or not self._notify_errors:
             return
         try:
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            self._send(
-                "<b>SYSTEM ERROR</b>\n"
-                f"<pre>{ts}\n\n{error_msg[:500]}</pre>"
-            )
+            ts = datetime.now(timezone.utc).strftime("%H:%M UTC")
+            body = (error_msg or "").strip()
+            action = ""
+            for marker in ("Suggested action:", "Suggested Action:", "Action:"):
+                if marker in body:
+                    body, _, action = body.partition(marker)
+                    body, action = body.strip(), action.strip()
+                    break
+            rows = [f"⚠️ <b>System Alert</b>  ·  <i>{ts}</i>", "",
+                    html.escape(body[:600])]
+            if action:
+                rows.append(f"\n💡 <b>Action:</b> {html.escape(action[:250])}")
+            self._send("\n".join(rows))
         except Exception as e:
             logger.error("Error building error notification: %s", e)
 
