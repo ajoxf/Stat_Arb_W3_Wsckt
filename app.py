@@ -4402,13 +4402,21 @@ if __name__ == '__main__':
     logging.getLogger('socketio').setLevel(logging.ERROR)
     app.logger.setLevel(logging.WARNING)
 
-    # Run Flask app with SocketIO (threading mode)
-    # use_reloader=False and debug=False for stable single-process operation
+    # Run Flask app with SocketIO (threading mode).
+    # Debug + reloader are OFF by default for production: the reloader spawns a
+    # SECOND process and the debugger adds overhead — a real CPU drain on a small
+    # instance. Enable only for local dev with FLASK_DEBUG=1. We set app.debug
+    # explicitly so this value wins over any ambient FLASK_ENV auto-config and the
+    # startup banner reflects the truth.
+    _flask_debug = os.getenv('FLASK_DEBUG', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+    app.debug = _flask_debug
+    logger.info("Flask debug mode: %s (set FLASK_DEBUG=1 to enable for dev)",
+                "ON" if _flask_debug else "OFF")
     socketio.run(
         app,
         host='0.0.0.0',
         port=port,
-        debug=False,  # Disable debug mode for production stability
-        use_reloader=False,
+        debug=_flask_debug,
+        use_reloader=_flask_debug,
         allow_unsafe_werkzeug=True
     )
