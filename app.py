@@ -56,6 +56,14 @@ logging.getLogger('engineio').setLevel(logging.ERROR)
 logging.getLogger('socketio').setLevel(logging.ERROR)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 
+# Neutralize ambient Flask dev-mode env vars BEFORE the app is created, so a
+# leftover FLASK_DEBUG / FLASK_ENV in the shell can never flip production into
+# debug/reloader (the reloader spawns a DUPLICATE live trading engine, and the
+# Werkzeug debugger is a remote-code-exec risk on a 0.0.0.0-bound server).
+# Debug is opt-in ONLY via STATARB_DEBUG in the run block at the bottom.
+for _flask_env_var in ('FLASK_DEBUG', 'FLASK_ENV'):
+    os.environ.pop(_flask_env_var, None)
+
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'crypto-arb-secret-key')
