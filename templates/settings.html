@@ -111,18 +111,18 @@
                     <div class="row mb-2">
                         <div class="col-12 mb-2">
                             <h6 class="text-secondary mb-1"><i class="bi bi-lightning-charge me-2"></i>Fast-Exit Overrides</h6>
-                            <small class="text-secondary">Exit on dollars/time instead of waiting for Z to fully revert &mdash; protects profit in trending markets. All P&L is <strong>NET</strong> (after round-trip fees). Set to <strong>0</strong> to disable. Z-score exit/stop-loss remain active as backstops.
+                            <small class="text-secondary">Exit on dollars/time instead of waiting for Z to fully revert &mdash; protects profit in trending markets. All P&L is <strong>NET</strong> (after round-trip fees). Set to <strong>0</strong> to disable. Z-score exit/stop-loss remain active as backstops &mdash; but note the <strong>Dollar Stop below usually fires first</strong>, so raising the Z-score Stop alone (e.g. to 7) will <em>not</em> give a trade more room to revert; widen the dollar stop (lower R:R and/or higher %-capital cap) instead.
                             <br><strong>Scale-invariant (recommended)</strong> &mdash; these auto-adjust to position size, volatility and the pair, so they keep working unchanged as you scale up. They take precedence over the fixed-$ fields below when set.</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Profit Target (&sigma;-fraction)</label>
                             <input type="number" class="form-control" id="profit_target_sigma_frac" name="profit_target_sigma_frac" value="{{ config.profit_target_sigma_frac }}" step="0.05" min="0" max="2">
-                            <small class="text-secondary">Fraction of expected reversion. <strong>0.6&ndash;0.7</strong> recommended (target = f &times; |Z<sub>entry</sub>| &times; &sigma; &times; qty)</small>
+                            <small class="text-secondary">Fraction of expected reversion. <strong>0.5&ndash;0.7</strong> recommended &mdash; lower = quicker, smaller, higher-probability wins (target = f &times; |Z<sub>entry</sub>| &times; &sigma; &times; qty; floored by Cost Floor below)</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Max Hold (&times; half-life)</label>
                             <input type="number" class="form-control" id="max_hold_halflife_mult" name="max_hold_halflife_mult" value="{{ config.max_hold_halflife_mult }}" step="0.5" min="0" max="20">
-                            <small class="text-secondary">Multiple of measured half-life. <strong>4&ndash;6&times;</strong> recommended. Only exits if P&L &gt; 0 <em>and</em> Z-progress below gate</small>
+                            <small class="text-secondary">Multiple of measured half-life. <strong>4&times;</strong> typical (range 2&ndash;6): ~4&times; &asymp; 94% reverted. Only exits if P&L &gt; 0 <em>and</em> Z-progress below gate</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Max Hold Z-Progress Gate</label>
@@ -132,12 +132,12 @@
                         <div class="col-md-4">
                             <label class="form-label">Dollar Stop (% capital)</label>
                             <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.1" min="0" max="20">
-                            <small class="text-secondary">% of capital-at-risk per trade. <strong>0.5&ndash;1.0</strong> recommended</small>
+                            <small class="text-secondary">% of capital-at-risk per trade &mdash; the hard <strong>catastrophe ceiling</strong>. Effective stop = the <em>tighter</em> of this and (target &divide; R:R). <strong>1.0&ndash;1.5</strong> at $100k+; at small size this is dollar-tiny, so set <strong>0</strong> and let R:R set the stop until you scale.</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Min Reward / Risk (R:R)</label>
                             <input type="number" class="form-control" id="min_entry_rr_multiple" name="min_entry_rr_multiple" value="{{ config.min_entry_rr_multiple }}" step="0.1" min="0" max="10">
-                            <small class="text-secondary">Block entry if profit target &divide; stop &lt; this. <strong>1.5</strong> recommended. <strong>0</strong> = off</small>
+                            <small class="text-secondary"><strong>Sets the dollar stop:</strong> stop&nbsp;=&nbsp;target&nbsp;&divide;&nbsp;R:R. <strong>Higher R:R &rarr; TIGHTER stop</strong> (fires sooner, more shakeouts); lower &rarr; wider stop (more room to revert). Effective stop is the <em>tighter</em> of this and the %-capital cap. <strong>0.8&ndash;1.0</strong> for mean-reversion room; <strong>0</strong> = use only the %-capital cap.</small>
                         </div>
                     </div>
                     <div class="row mb-3">

@@ -93,7 +93,9 @@ class TradingConfig:
     # Max hold:
     #   scale-invariant = multiple of the measured mean-reversion half-life:
     #     exit when periods_held >= halflife_mult × half_life (and net P&L > 0)
-    #   recommended halflife_mult ≈ 1.5–2.0.
+    #   recommended halflife_mult ≈ 4 (range 2–6; ~4× half-lives ≈ 94% reverted).
+    #   Only fires on a profitable, stalled trade — the Z-progress gate below
+    #   still protects a position that is actively reverting.
     max_hold_halflife_mult: float = 0.0
     max_hold_minutes: float = 0.0    # fixed-minutes fallback
     # Z-progress gate: MAX_HOLD is suppressed while the trade is actively
@@ -155,9 +157,12 @@ class TradingConfig:
     # raise (e.g. 30%) for more safety margin against liquidation on volatile pairs.
     m2m_buffer_pct: float = 10.0
 
-    # Minimum reward/risk ratio required before entering.
-    # Reward = expected profit target USD; Risk = stop loss USD.
-    # 0.0 = disabled (backwards compatible); typical value 1.5.
+    # Reward/risk multiple. NOTE: this SETS the dollar stop, it is not a pure
+    # entry gate — _effective_exit_targets derives stop$ = profit_target$ / this,
+    # and the effective stop is the TIGHTER of that and the %-capital cap. So a
+    # HIGHER value = a TIGHTER stop (fires sooner); a LOWER value = a wider stop
+    # (more room to revert). 0.0 = disabled (stop then comes only from the
+    # %-capital cap / max_loss_usd). ~0.8–1.0 gives mean-reversion room.
     min_entry_rr_multiple: float = 0.0
 
     # Trading mode
