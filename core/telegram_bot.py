@@ -388,6 +388,19 @@ class TelegramNotifier:
                               esc(str(item.get("value", "")))))
             rows.append(R("Health", f"{health_icon} {health}/100  ·  conf {conf}/10"))
 
+            # ── SETTINGS & LOGIC AUDIT (deterministic — the bug/misconfig catcher) ──
+            diags = analysis.get("diagnostics") or []
+            shown = [d for d in diags if d.get("severity") in ("HIGH", "MED")]
+            if shown:
+                _ic = {"HIGH": "🔴", "MED": "🟠", "LOW": "⚪"}
+                rows += ["", "<b>⚙️ Audit</b>"]
+                for d in shown[:5]:
+                    ic = _ic.get(d.get("severity"), "•")
+                    rows.append(f"  {ic} <i>{esc(str(d.get('finding', ''))[:220])}</i>")
+                _low = sum(1 for d in diags if d.get("severity") == "LOW")
+                if _low:
+                    rows.append(f"  <i>+{_low} low-severity note(s)</i>")
+
             # ── THEN a 1-2 line verdict ──
             rows += ["", "<b>Verdict</b>", f"<i>{esc(verdict)}</i>"]
 

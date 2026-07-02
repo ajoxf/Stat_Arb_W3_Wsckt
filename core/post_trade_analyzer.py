@@ -229,7 +229,8 @@ class PostTradeAnalyzer:
             config = self.db.get_config()
 
             real_fills = self._gather_real_fills(trade, config)
-            prompt, scorecard = self._build_prompt(trade, recent_trades, past_learnings, config, real_fills)
+            prompt, scorecard, diagnostics = self._build_prompt(
+                trade, recent_trades, past_learnings, config, real_fills)
 
             message = client.messages.create(
                 model=_ANALYSIS_MODEL,
@@ -250,10 +251,18 @@ class PostTradeAnalyzer:
                 logger.warning("No tool_use block for trade %s", trade.id)
                 return
 
-            # Attach the exact, system-computed scorecard so every consumer
-            # (Telegram, dashboard, DB) shows the same numbers — never the LLM's.
+            # Attach the exact, system-computed scorecard + settings/logic audit
+            # so every consumer (Telegram, dashboard, DB) shows the same findings —
+            # never the LLM's paraphrase.
             analysis_data = dict(analysis_data)
             analysis_data["scorecard"] = scorecard
+            analysis_data["diagnostics"] = [
+                {"severity": s, "area": a, "finding": m} for s, a, m in diagnostics
+            ]
+            if diagnostics:
+                _highs = sum(1 for s, _, _ in diagnostics if s == "HIGH")
+                logger.info("Post-trade audit: trade=%d findings=%d (HIGH=%d)",
+                            trade.id, len(diagnostics), _highs)
 
             recs = analysis_data.get("recommendations", [])
             logger.info(
@@ -609,6 +618,19 @@ class PostTradeAnalyzer:
                 "value": f"z {'DIVERGED (widened)' if xz > ez else 'was reverting'}, {z_rev_pct:+.0f}% toward 0",
             })
 
+        # ── SETTINGS & LOGIC AUDIT (deterministic — "did the machinery and the
+        #    config behave sensibly?"). These are exact, system-computed findings;
+        #    the LLM confirms/prioritises them and looks for trends across trades. ──
+        round_trip_cost_usd = (total_cost_bps / 10000.0) * notional if notional else 0.0
+        diagnostics = PostTradeAnalyzer._diagnostics(
+            trade, recent_trades, config, gross_usd, fees_usd, notional, round_trip_cost_usd)
+        if diagnostics:
+            _sev = {"HIGH": 0, "MED": 1, "LOW": 2}
+            _dg = sorted(diagnostics, key=lambda x: _sev.get(x[0], 3))
+            audit_block = "\n".join(f"  [{s}] ({a}) {msg}" for s, a, msg in _dg)
+        else:
+            audit_block = "  (no settings/logic issues detected)"
+
         prompt = f"""You are reviewing a statistical-arbitrage trade. The operator ALREADY sees a
 scorecard of exact numbers (P&L, fees, z-scores, win rate, cost ratio). Your output is
 the short judgement ON TOP of those numbers — not a re-listing of them.
@@ -692,20 +714,131 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 ═══ ACCUMULATED LEARNINGS (most recent first) ═══
 {chr(10).join(learnings_lines) if learnings_lines else "  (no prior learnings)"}
 
+═══ SETTINGS & LOGIC AUDIT (deterministic — treat as ground truth) ═══
+These are exact, system-computed checks on the config coherence and how the trade
+actually executed. [HIGH] = likely bug or edge-killer, [MED] = worth fixing, [LOW] = FYI.
+{audit_block}
+
 ═══ OUTPUT ═══
-verdict          — 1-2 sentences, ~45 words MAX. The scorecard already lists the numbers; cite only
-                   the 1-2 that drive the judgement. What worked / what didn't, cause→effect. If a
-                   stop: from STOP DIAGNOSIS, state plainly — real divergence or noise cut early?
-                   Prefer REAL OKX FILLS (actual fee, maker vs taker) over estimates. Honour the
-                   regime note (a "trending" Hurst reading does not mean this pair stopped reverting).
-summary          — ONE short headline line (used in logs), e.g. "Stop cut a real loser; fees fine."
-recommendations  — Up to 4. Each rationale: current number → problem → suggested number → why → expected
-                   improvement. No vague statements.
-  PARAMETER_CHANGE     — numeric setting, auto-applied at 3+ consensus, conf ≥0.70
+This review is NOT just about P&L — it is a CONFIG + LOGIC audit. Weigh the AUDIT
+section above and the RECENT TRADE HISTORY for TRENDS (recurring manual closes, stops,
+sub-cost trades, a disabled target, leg imbalance), and turn the findings into fixes.
+verdict          — 1-2 sentences, ~45 words MAX. The scorecard lists the numbers; cite only the
+                   1-2 that drive the judgement. Lead with any HIGH audit finding if present
+                   (e.g. "no profit target set", "closed manually — auto-exit didn't fire").
+summary          — ONE short headline line (used in logs), e.g. "No profit target set; manual close x3."
+recommendations  — Up to 4, HIGH audit findings FIRST. Each rationale: current state → why it's wrong →
+                   the exact fix → expected effect. Address settings/logic issues, not just tuning.
+  PARAMETER_CHANGE     — numeric setting (incl. profit_target_sigma_frac, profit_target_min_cost_mult,
+                         min_entry_rr_multiple, exit_signal_mode, lookback_period, entry/exit/stop
+                         thresholds). Auto-applied only for whitelisted params at 3+ consensus.
   FILTER_TOGGLE        — hurst_enabled or std_filter_enabled, needs 5+ consensus
   POSITION_SIZE_CHANGE — reduce position_size_usd only, needs 4+ consensus
-  OBSERVATION          — human-review note with supporting numbers, shown on dashboard
-health_score     — 0-100 composite.   confidence_score — 1-10 for THIS analysis.
+  OBSERVATION          — a settings/logic/trend finding for human review (use this for anything from
+                         the AUDIT that isn't a single clean numeric change), param = short label.
+health_score     — 0-100 composite (a HIGH audit finding should pull this DOWN).   confidence_score 1-10.
 
 Call record_trade_analysis now."""
-        return prompt, scorecard
+        return prompt, scorecard, diagnostics
+
+    # ── Settings / logic audit ────────────────────────────────────────────────
+    @staticmethod
+    def _diagnostics(trade, recent_trades, config, gross_usd, fees_usd,
+                     notional, round_trip_cost_usd):
+        """Deterministic config-coherence + execution-anomaly + cross-trade-trend
+        checks — the part that actually catches bugs and misconfigurations. Each
+        item is (severity, area, message); severity in HIGH/MED/LOW. No LLM: these
+        are exact, so they never hallucinate. The LLM only prioritises/synthesises."""
+        d = []
+        gf = lambda k, dv=0.0: (getattr(config, k, dv) or dv)
+
+        # ── SETTINGS coherence ──
+        sig_frac = gf('profit_target_sigma_frac')
+        fixed_tgt = gf('profit_target_usd')
+        if sig_frac <= 0 and fixed_tgt <= 0:
+            d.append(("HIGH", "settings",
+                      "No profit target set (profit_target_sigma_frac=0 AND profit_target_usd=0) — "
+                      "trades have no dollar profit-take; a stalled winner round-trips instead of "
+                      "banking. Set profit_target_sigma_frac ~0.5."))
+        if gf('min_entry_rr_multiple') <= 0:
+            d.append(("LOW", "settings",
+                      "min_entry_rr_multiple=0 — the stop is the %-capital cap only, not derived "
+                      "from the target; target and stop are decoupled."))
+        mode = getattr(config, 'exit_signal_mode', 'zscore') or 'zscore'
+        if mode in ('spread', 'hybrid'):
+            d.append(("MED", "settings",
+                      f"exit_signal_mode='{mode}': the profit exit waits for the live spread to "
+                      f"cross the ENTRY-time mean, not for z to reach ±exit_threshold — z can "
+                      f"revert to ~0 without an exit firing. Set 'zscore' if you expect z exits."))
+
+        max_rev_usd = abs(trade.entry_zscore) * (trade.entry_spread_std or 0.0) * (trade.quantity or 0.0)
+        cost_mult = gf('profit_target_min_cost_mult')
+        if cost_mult > 0 and round_trip_cost_usd > 0 and max_rev_usd > 0:
+            floor_usd = cost_mult * round_trip_cost_usd
+            if floor_usd > max_rev_usd:
+                d.append(("HIGH", "settings",
+                          f"Cost-floored target ${floor_usd:.2f} exceeds what a FULL reversion is "
+                          f"worth (~${max_rev_usd:.2f}) at this entry z/σ — the target is "
+                          f"unreachable; the trade can only exit on z or the stop. σ is too small "
+                          f"vs cost, or lower profit_target_min_cost_mult."))
+
+        # reward/risk of THIS trade (max reversion vs the effective stop)
+        stop_ref = None
+        cap_pct, cap = gf('stop_loss_capital_pct'), (trade.capital_locked_usd or 0.0)
+        if cap_pct > 0 and cap > 0:
+            stop_ref = cap_pct / 100.0 * cap
+        elif gf('max_loss_usd') > 0:
+            stop_ref = gf('max_loss_usd')
+        if stop_ref and stop_ref > 0 and max_rev_usd > 0:
+            reward = max(max_rev_usd - round_trip_cost_usd, 0.0)
+            rr = reward / stop_ref
+            if rr < 1.0:
+                be = stop_ref / (stop_ref + reward) * 100 if (stop_ref + reward) > 0 else 100.0
+                d.append(("MED", "settings",
+                          f"Reward/risk ≈ {rr:.2f}: a full reversion nets only ~${reward:.2f} vs a "
+                          f"${stop_ref:.2f} stop — breakeven win rate ~{be:.0f}%. Thin edge vs cost."))
+
+        # ── EXECUTION anomalies (this trade) ──
+        reason = (trade.exit_reason or "").upper()
+        if reason == "MANUAL":
+            d.append(("HIGH", "execution",
+                      "Closed MANUALLY — an automated exit did not fire. Check the algo toggle and "
+                      "exit_signal_mode; a live position must auto-close on its own exit condition."))
+        if gross_usd and abs(gross_usd) > 0 and (fees_usd / abs(gross_usd)) > 0.30:
+            d.append(("LOW", "execution",
+                      f"Fees were {fees_usd / abs(gross_usd) * 100:.0f}% of gross — high drag; "
+                      f"prefer maker (limit) exits over market where stop timing allows."))
+
+        beta = max(gf('hedge_ratio', 1.0), 1e-9)
+        la = abs((trade.entry_spot_price or 0.0) * (trade.quantity or 0.0) * beta)
+        lb = abs((trade.entry_futures_price or 0.0) * (trade.quantity or 0.0))
+        if la > 0 and lb > 0:
+            imb = abs(la - lb) / ((la + lb) / 2.0) * 100.0
+            if imb > 5.0:
+                d.append(("MED", "execution",
+                          f"Legs ~{imb:.0f}% imbalanced at entry (${la:,.0f} vs ${lb:,.0f}) — likely "
+                          f"contract rounding at small size; adds directional (non-neutral) exposure "
+                          f"and P&L noise. Shrinks as you scale up."))
+
+        # ── TRENDS across recent trades ──
+        n = len(recent_trades)
+        if n >= 3:
+            manual = sum(1 for t in recent_trades if (t.exit_reason or "").upper() == "MANUAL")
+            if manual >= 2:
+                d.append(("HIGH", "trend",
+                          f"{manual}/{n} recent trades closed MANUALLY — the bot is not reliably "
+                          f"auto-exiting; treat as a logic/config issue, not a one-off."))
+            stops = sum(1 for t in recent_trades if (t.exit_reason or "").upper()
+                        in ("DOLLAR_STOP", "STOP_LOSS", "DAILY_LOSS"))
+            if stops >= max(3, n // 2):
+                d.append(("MED", "trend",
+                          f"{stops}/{n} recent exits were stops — entries may be too early or the "
+                          f"stop too tight for normal noise."))
+            subcost = sum(1 for t in recent_trades
+                          if t.pnl_gross_usd and round_trip_cost_usd > 0
+                          and abs(t.pnl_gross_usd) < round_trip_cost_usd)
+            if subcost >= max(3, n // 2):
+                d.append(("MED", "trend",
+                          f"{subcost}/{n} recent trades' gross move was below the ~${round_trip_cost_usd:.2f} "
+                          f"round-trip cost — the pair's σ is often too small to clear costs here."))
+        return d
