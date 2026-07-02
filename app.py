@@ -512,6 +512,14 @@ if hasattr(signal, 'SIGTERM'):
 _last_regime_snapshot: float = 0.0
 _REGIME_SNAPSHOT_INTERVAL_S = 60.0
 
+# Liveness heartbeat for the external watchdog (scripts/watchdog.py). Written
+# from the engine's tick path, so a STALE file means the async loop hung or WS
+# ticks stopped flowing (loop starvation, CPU throttling) — exactly the failure
+# a crash-only restart can't catch. The watchdog restarts the process on it.
+_last_heartbeat: float = 0.0
+_HEARTBEAT_INTERVAL_S = 10.0
+_HEARTBEAT_FILE = os.getenv('HEARTBEAT_FILE', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'heartbeat.txt'))
+
 
 def on_tick_callback(spot_tick: MarketTick, futures_tick: MarketTick):
     """Handle tick updates."""
@@ -520,6 +528,19 @@ def on_tick_callback(spot_tick: MarketTick, futures_tick: MarketTick):
     # next valid tick will refresh state.
     if spot_tick is None or futures_tick is None:
         return
+
+    # Liveness heartbeat (throttled). A stale file = loop hung / ticks stopped →
+    # the watchdog restarts us. Cheap, fail-safe, never blocks the tick path.
+    global _last_heartbeat
+    _hb_now = time.time()
+    if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL_S:
+        _last_heartbeat = _hb_now
+        try:
+            with open(_HEARTBEAT_FILE, 'w') as _hf:
+                _hf.write(str(int(_hb_now)))
+        except Exception:
+            pass
+
     try:
         tick_data = {
             'spot': spot_tick.to_dict(),

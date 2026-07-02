@@ -53,3 +53,6 @@ htmlcov/
 
 # Claude Code agent working directories
 .claude/worktrees/
+
+# Watchdog liveness heartbeat (runtime)
+heartbeat.txt
