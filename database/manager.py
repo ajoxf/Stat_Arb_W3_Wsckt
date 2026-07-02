@@ -217,6 +217,41 @@ class DatabaseManager:
                 ON spread_history (asset, timestamp DESC)
             """)
 
+            # Regime/edge snapshots — a long-term, low-cadence (~1/min) time
+            # series of the DERIVED stats (sigma in bps, edge ratio + pass/fail,
+            # z, hurst, half-life, beta drift, cost). Unlike spread_history (raw
+            # + short rolling) and signal_log (only when a signal fires), this
+            # captures the QUIET no-edge periods too, so we can measure how often
+            # the pair is actually tradeable (sigma_bps >= required) over days.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS regime_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    asset TEXT,
+                    spot_price REAL,
+                    futures_price REAL,
+                    beta_configured REAL,
+                    beta_live REAL,
+                    beta_drift_pct REAL,
+                    spread REAL,
+                    spread_mean REAL,
+                    spread_std REAL,
+                    sigma_bps REAL,
+                    zscore REAL,
+                    hurst REAL,
+                    half_life REAL,
+                    regime TEXT,
+                    cost_bps REAL,
+                    edge_ratio REAL,
+                    edge_required REAL,
+                    edge_pass INTEGER
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_regime_snapshots_asset_time
+                ON regime_snapshots (asset, timestamp DESC)
+            """)
+
             # Post-trade AI analysis log (raw JSON / text)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS trade_analysis (
@@ -1190,6 +1225,51 @@ class DatabaseManager:
                 INSERT INTO spread_history (asset, spot_price, futures_price, spread)
                 VALUES (?, ?, ?, ?)
             """, (asset, spot_price, futures_price, spread))
+
+    # ── Regime / edge snapshots (long-term tradeability time series) ──────────
+    _REGIME_COLS = (
+        "asset", "spot_price", "futures_price", "beta_configured", "beta_live",
+        "beta_drift_pct", "spread", "spread_mean", "spread_std", "sigma_bps",
+        "zscore", "hurst", "half_life", "regime", "cost_bps", "edge_ratio",
+        "edge_required", "edge_pass",
+    )
+
+    def save_regime_snapshot(self, data: Dict[str, Any]) -> None:
+        """Append one regime/edge snapshot. `data` keys mirror _REGIME_COLS;
+        missing keys are stored NULL. Append-only, fail-safe for the caller."""
+        cols = self._REGIME_COLS
+        placeholders = ", ".join("?" for _ in cols)
+        with self._get_connection() as conn:
+            conn.cursor().execute(
+                f"INSERT INTO regime_snapshots ({', '.join(cols)}) VALUES ({placeholders})",
+                tuple(data.get(c) for c in cols),
+            )
+
+    def get_regime_snapshots(
+        self, asset: str, since_iso: Optional[str] = None, limit: int = 100000
+    ) -> List[Dict[str, Any]]:
+        """Return regime snapshots for an asset, oldest first. Optionally only
+        rows at/after `since_iso` (an ISO timestamp string)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if since_iso:
+                cursor.execute(
+                    "SELECT * FROM regime_snapshots WHERE asset = ? AND timestamp >= ? "
+                    "ORDER BY timestamp DESC LIMIT ?", (asset, since_iso, limit))
+            else:
+                cursor.execute(
+                    "SELECT * FROM regime_snapshots WHERE asset = ? "
+                    "ORDER BY timestamp DESC LIMIT ?", (asset, limit))
+            return [dict(r) for r in reversed(cursor.fetchall())]
+
+    def cleanup_old_regime_snapshots(self, keep_days: int = 120) -> int:
+        """Delete snapshots older than keep_days. Returns rows removed."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM regime_snapshots "
+                "WHERE timestamp < datetime('now', ?)", (f"-{int(keep_days)} days",))
+            return cursor.rowcount
 
     def get_spread_history(self, asset: str, limit: int = 500) -> List[Dict[str, Any]]:
         """

@@ -367,6 +367,14 @@ def start_engine_loop():
     keep_count = max(config.lookback_period * 2, 2000)
     db.cleanup_old_spread_history(config.asset, keep_count=keep_count)
 
+    # Trim the long-term regime snapshots too (keeps ~4 months at ~1/min).
+    try:
+        removed = db.cleanup_old_regime_snapshots(keep_days=120)
+        if removed:
+            logger.info("Pruned %d old regime snapshots (>120d)", removed)
+    except Exception as e:
+        logger.debug("regime snapshot cleanup skipped: %s", e)
+
     # Recover open position from database (real trades only — paper positions
     # are not carried over after a restart since they have no real exchange state)
     open_trades = db.get_trades(limit=1, open_only=True)
@@ -491,6 +499,13 @@ if hasattr(signal, 'SIGTERM'):
 
 
 # Callback functions for engine events
+
+# Throttle for the long-term regime/edge snapshot logger (~1 write/min). Ticks
+# fire many times a second; we only persist a derived-stats row once per interval.
+_last_regime_snapshot: float = 0.0
+_REGIME_SNAPSHOT_INTERVAL_S = 60.0
+
+
 def on_tick_callback(spot_tick: MarketTick, futures_tick: MarketTick):
     """Handle tick updates."""
     # Engine Reset (and the brief window during adapter rebuild) can leave one
@@ -517,6 +532,46 @@ def on_tick_callback(spot_tick: MarketTick, futures_tick: MarketTick):
         futures_price=futures_tick.mid,
         spread=spread,
     )
+
+    # Long-term regime/edge snapshot (~1/min). Fail-safe: never break the tick
+    # path. Captures the DERIVED stats — including quiet no-edge periods — so we
+    # can later measure how often the pair actually clears the edge bar.
+    global _last_regime_snapshot
+    _now = time.time()
+    if _now - _last_regime_snapshot >= _REGIME_SNAPSHOT_INTERVAL_S:
+        _last_regime_snapshot = _now
+        try:
+            st = engine.signal_generator.get_state()
+            if st.get('data_ready'):
+                spot = spot_tick.mid
+                fut = futures_tick.mid
+                beta_cfg = st.get('hedge_ratio') or getattr(config, 'hedge_ratio', 1.0) or 1.0
+                beta_live = (fut / spot) if spot else 0.0
+                bxs = st.get('beta_x_spot') or (beta_cfg * spot)
+                sstd = st.get('spread_std') or 0.0
+                sigma_bps = (sstd / bxs * 10000.0) if bxs else 0.0
+                db.save_regime_snapshot({
+                    'asset': config.asset,
+                    'spot_price': spot,
+                    'futures_price': fut,
+                    'beta_configured': beta_cfg,
+                    'beta_live': beta_live,
+                    'beta_drift_pct': ((beta_live - beta_cfg) / beta_cfg * 100.0) if beta_cfg else 0.0,
+                    'spread': st.get('spread'),
+                    'spread_mean': st.get('spread_mean'),
+                    'spread_std': sstd,
+                    'sigma_bps': sigma_bps,
+                    'zscore': st.get('zscore'),
+                    'hurst': st.get('hurst'),
+                    'half_life': st.get('half_life'),
+                    'regime': st.get('regime'),
+                    'cost_bps': st.get('round_trip_cost_bps'),
+                    'edge_ratio': st.get('std_ratio'),
+                    'edge_required': st.get('std_ratio_required'),
+                    'edge_pass': 1 if st.get('std_filter_ok') else 0,
+                })
+        except Exception as e:
+            logger.debug("regime snapshot skipped: %s", e)
 
 
 def on_signal_callback(signal: Signal):
