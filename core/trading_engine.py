@@ -133,12 +133,15 @@ class TradingEngine:
         self._exit_postonly_reject_count: int = 0
         self._EXIT_POSTONLY_RETRY_SEC = 10       # retry quickly — no exchange cooldown needed
         self._EXIT_POSTONLY_MARKET_AFTER = 1     # fall back to MARKET after just 1 rejection
-        # DOLLAR_STOP only: try MAKER first (save the taker fee) up to N attempts, then
-        # MARKET to guarantee the close. Counts every non-filling maker attempt
-        # (cancelSource=31 rejection OR a rest-without-fill timeout) so the stop still
-        # escalates to a guaranteed market close in bounded time (~N × retry interval).
+        # DOLLAR_STOP only: fire ONE quick maker probe (saves the taker fee IF the book
+        # is momentarily calm), then MARKET to guarantee the close. Live evidence showed
+        # that on a real stop the spread is diverging — exactly when a maker exit crosses
+        # the book and is post-only-rejected — so extra attempts saved $0 and just delayed
+        # the close ~30s while the loss swung. One probe keeps the upside with a bounded
+        # ~2s delay. Counts any non-filling probe (rejection OR rest-timeout).
         self._dollar_stop_maker_attempts: int = 0
-        self._DOLLAR_STOP_MAKER_ATTEMPTS = 3
+        self._DOLLAR_STOP_MAKER_ATTEMPTS = 1     # one quick probe, then market
+        self._DOLLAR_STOP_RETRY_SEC = 2          # don't linger between probe and market fallback
         self._ENTRY_POSTONLY_RETRY_SEC = 10      # POST_ONLY price-crossed rejection — no exchange cooldown, retry quickly
         # Set True by _execute_exit_orders when the exit actually used MARKET (taker fee).
         # Read by _close_position fee calc and _round_trip_fees for accurate fee accounting.
@@ -1400,9 +1403,14 @@ class TradingEngine:
         # Other failure: use standard _exit_retry_interval_sec.
         if not self.state.paper_trading and self._last_exit_attempt:
             elapsed = (datetime.utcnow() - self._last_exit_attempt).total_seconds()
-            interval = (self._EXIT_POSTONLY_RETRY_SEC
-                        if self._exit_postonly_reject_count > 0
-                        else self._exit_retry_interval_sec)
+            # A DOLLAR_STOP is mid-close: don't linger between the maker probe and the
+            # market fallback — a diverging stop must not wait the full 10s.
+            if self.open_trade and (self.open_trade.exit_reason or "").upper() == "DOLLAR_STOP":
+                interval = self._DOLLAR_STOP_RETRY_SEC
+            elif self._exit_postonly_reject_count > 0:
+                interval = self._EXIT_POSTONLY_RETRY_SEC
+            else:
+                interval = self._exit_retry_interval_sec
             if elapsed < interval:
                 return
 
