@@ -133,6 +133,12 @@ class TradingEngine:
         self._exit_postonly_reject_count: int = 0
         self._EXIT_POSTONLY_RETRY_SEC = 10       # retry quickly — no exchange cooldown needed
         self._EXIT_POSTONLY_MARKET_AFTER = 1     # fall back to MARKET after just 1 rejection
+        # DOLLAR_STOP only: try MAKER first (save the taker fee) up to N attempts, then
+        # MARKET to guarantee the close. Counts every non-filling maker attempt
+        # (cancelSource=31 rejection OR a rest-without-fill timeout) so the stop still
+        # escalates to a guaranteed market close in bounded time (~N × retry interval).
+        self._dollar_stop_maker_attempts: int = 0
+        self._DOLLAR_STOP_MAKER_ATTEMPTS = 3
         self._ENTRY_POSTONLY_RETRY_SEC = 10      # POST_ONLY price-crossed rejection — no exchange cooldown, retry quickly
         # Set True by _execute_exit_orders when the exit actually used MARKET (taker fee).
         # Read by _close_position fee calc and _round_trip_fees for accurate fee accounting.
@@ -1434,6 +1440,20 @@ class TradingEngine:
                 self._executing_trade = False
 
             if not exit_ok:
+                # DOLLAR_STOP maker phase: count every failed MAKER attempt — a
+                # cancelSource=31 rejection OR a rest-without-fill timeout (the latter
+                # does NOT set _last_exit_postonly_rejected below) — so the stop still
+                # escalates to a guaranteed MARKET close after N tries instead of
+                # resting forever while the spread runs.
+                if (trade.exit_reason or "").upper() == "DOLLAR_STOP" and not self._last_exit_was_market:
+                    self._dollar_stop_maker_attempts += 1
+                    logger.warning(
+                        "DOLLAR_STOP maker attempt %d/%d did not fill — %s",
+                        self._dollar_stop_maker_attempts, self._DOLLAR_STOP_MAKER_ATTEMPTS,
+                        "MARKET on next attempt"
+                        if self._dollar_stop_maker_attempts >= self._DOLLAR_STOP_MAKER_ATTEMPTS
+                        else "retrying maker",
+                    )
                 if self._last_exit_postonly_rejected:
                     self._exit_postonly_reject_count += 1
                     logger.warning(
@@ -1455,6 +1475,7 @@ class TradingEngine:
 
         self._last_exit_attempt = None           # Clear retry timer on success
         self._exit_postonly_reject_count = 0     # Clear POST_ONLY rejection counter on success
+        self._dollar_stop_maker_attempts = 0     # Clear DOLLAR_STOP maker-attempt counter on success
         trade.is_open = False
 
         # ── Realized P&L from ACTUAL fills (now that the executor has stamped
@@ -2418,15 +2439,31 @@ class TradingEngine:
             #     too slow when the spread is moving against us.
             # Non-stop exits keep the maker-first (LIMIT/POST_ONLY) path to save fees.
             _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD")
-            is_stop_exit = (trade.exit_reason or "").upper() not in _NON_URGENT_EXITS
-            use_market = is_stop_exit or (
-                self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
-            )
+            exit_reason_u = (trade.exit_reason or "").upper()
+            is_stop_exit = exit_reason_u not in _NON_URGENT_EXITS
+            is_dollar_stop = exit_reason_u == "DOLLAR_STOP"
+            # DOLLAR_STOP is the frequent, fee-heavy exit — try MAKER first (up to N
+            # attempts) to save the taker fee, then fall back to MARKET to guarantee the
+            # close. STOP_LOSS / DAILY_LOSS stay straight-to-MARKET (genuinely urgent).
+            # RFQ stays off for every stop (allow_rfq below) — even a maker DOLLAR_STOP
+            # goes to the order book, never the slow request→quote→execute cycle.
+            if is_dollar_stop:
+                use_market = self._dollar_stop_maker_attempts >= self._DOLLAR_STOP_MAKER_ATTEMPTS
+            elif is_stop_exit:
+                use_market = True
+            else:
+                use_market = self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
             self._last_exit_was_market = use_market  # propagate to fee calc in _close_position
             if use_market:
                 logger.warning(
-                    "Exit using MARKET to guarantee close (stop=%s, postonly_rejects=%d/%d)",
-                    is_stop_exit, self._exit_postonly_reject_count, self._EXIT_POSTONLY_MARKET_AFTER,
+                    "Exit using MARKET to guarantee close (reason=%s, dollar_stop_maker=%d/%d, postonly_rejects=%d/%d)",
+                    exit_reason_u, self._dollar_stop_maker_attempts, self._DOLLAR_STOP_MAKER_ATTEMPTS,
+                    self._exit_postonly_reject_count, self._EXIT_POSTONLY_MARKET_AFTER,
+                )
+            elif is_dollar_stop:
+                logger.info(
+                    "DOLLAR_STOP trying MAKER (attempt %d/%d) to save the taker fee before MARKET fallback",
+                    self._dollar_stop_maker_attempts + 1, self._DOLLAR_STOP_MAKER_ATTEMPTS,
                 )
             spread_order = await self.order_executor.execute_exit(
                 position_type=trade.position_type,
@@ -2599,6 +2636,7 @@ class TradingEngine:
         self._last_entry_throttled = False
         self._last_exit_postonly_rejected = False
         self._exit_postonly_reject_count = 0
+        self._dollar_stop_maker_attempts = 0
         self._last_exit_attempt = None
         self._tick_fail_count = 0  # Reset tick failure counter too
         logger.info("Engine reset (running=%s, algo=%s)", was_running, algo_was_enabled)
