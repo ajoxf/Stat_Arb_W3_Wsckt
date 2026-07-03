@@ -1291,62 +1291,99 @@ class OrderExecutor:
 
     async def _cancel_if_one_leg_failed(self, spread_order: SpreadOrder) -> None:
         """
-        Cancel the remaining open leg if one leg was cancelled/failed.
+        Settle the remaining open leg when one leg was cancelled/failed.
 
-        This is CRITICAL for preventing orphan positions when POST_ONLY orders
-        are rejected by the exchange (cancelled because they would cross the spread).
+        CRITICAL for preventing orphan positions when POST_ONLY orders are rejected
+        (cancelled because they would cross the spread). Delegates to
+        _settle_failed_leg_counterpart, which cancels the still-open leg AND verifies
+        the real fill afterwards so a partial fill can't silently leak.
         """
         failed_states = (LegStatus.FAILED, LegStatus.CANCELLED)
 
-        # If spot failed but futures is still open, cancel futures
+        # If spot failed but futures is still open, settle futures
         if spread_order.spot_leg.status in failed_states and spread_order.futures_leg.status == LegStatus.OPEN:
-            logger.warning("Spot leg failed/cancelled - cancelling futures leg to prevent orphan")
-            try:
-                cancelled = await self.futures_adapter.cancel_order(
-                    spread_order.futures_leg.symbol,
-                    spread_order.futures_leg.order_id,
-                )
-                if cancelled:
-                    spread_order.futures_leg.status = LegStatus.CANCELLED
-                    logger.info("Futures leg cancelled successfully - no orphan")
-                else:
-                    # Check if it filled while we tried to cancel
-                    status = await self.futures_adapter.get_order_status(
-                        spread_order.futures_leg.symbol,
-                        spread_order.futures_leg.order_id
-                    )
-                    if status and status["state"] == "filled":
-                        spread_order.futures_leg.status = LegStatus.FILLED
-                        spread_order.futures_leg.filled_qty = status["filled_qty"]
-                        spread_order.futures_leg.filled_price = status["filled_price"]
-                        logger.error("ORPHAN: Futures filled while spot was cancelled - LEG RISK!")
-            except Exception as e:
-                logger.error("Error cancelling futures after spot failure: %s", e)
+            logger.warning("Spot leg failed/cancelled - settling futures leg to prevent orphan")
+            await self._settle_failed_leg_counterpart(
+                spread_order.futures_leg, self.futures_adapter, "futures", "spot",
+            )
 
-        # If futures failed but spot is still open, cancel spot
+        # If futures failed but spot is still open, settle spot
         if spread_order.futures_leg.status in failed_states and spread_order.spot_leg.status == LegStatus.OPEN:
-            logger.warning("Futures leg failed/cancelled - cancelling spot leg to prevent orphan")
+            logger.warning("Futures leg failed/cancelled - settling spot leg to prevent orphan")
+            await self._settle_failed_leg_counterpart(
+                spread_order.spot_leg, self.spot_adapter, "spot", "futures",
+            )
+
+    async def _settle_failed_leg_counterpart(
+        self, leg: LegOrder, adapter: ExchangeAdapter, label: str, other_label: str,
+    ) -> None:
+        """
+        The `other_label` leg failed/cancelled (e.g. a POST_ONLY reject), so this
+        `leg` must not stay live. Cancel it — then ALWAYS re-check the actual fill.
+
+        A POST_ONLY order can rest and PARTIALLY fill in the ~tens-of-ms gap before
+        our cancel lands; cancel_order then cancels only the *remainder* and returns
+        success. The old code trusted that success and declared "no orphan", so the
+        filled sliver leaked as a naked, unhedged 20x position — the root cause of the
+        stuck-orphan incidents (a leg leaked ~1 contract per rejection storm).
+
+        We now verify filled_qty (state=="filled" alone misses partials: a partly
+        filled order reads state=="canceled" with accFillSz>0). If anything leaked,
+        flatten it immediately via close-position (reduce-only, whole-position,
+        units-agnostic) and fail the entry so it retries flat — never carry an
+        unintended sliver forward. The engine's orphan reconciler is the backstop if
+        the flatten races the position becoming visible.
+        """
+        try:
+            cancelled = await adapter.cancel_order(leg.symbol, leg.order_id)
+        except Exception as e:
+            logger.error("Error cancelling %s leg after %s failure: %s", label, other_label, e)
+            cancelled = False
+
+        # Cancel success does NOT imply zero fill — re-read the real state.
+        filled_qty = 0.0
+        state = None
+        try:
+            status = await adapter.get_order_status(leg.symbol, leg.order_id)
+            if status:
+                filled_qty = float(status.get("filled_qty") or 0)
+                state = status.get("state")
+        except Exception as e:
+            logger.error("Could not read %s leg status after cancel: %s", label, e)
+
+        if filled_qty > 0:
+            logger.error(
+                "LEG LEAK: %s leg filled %.6f (state=%s) despite %s failing — "
+                "flattening the naked sliver reduce-only and failing the entry",
+                label, filled_qty, state, other_label,
+            )
             try:
-                cancelled = await self.spot_adapter.cancel_order(
-                    spread_order.spot_leg.symbol,
-                    spread_order.spot_leg.order_id,
-                )
-                if cancelled:
-                    spread_order.spot_leg.status = LegStatus.CANCELLED
-                    logger.info("Spot leg cancelled successfully - no orphan")
+                pos_side_arg = leg.pos_side.upper() if leg.pos_side else None
+                result = await adapter.close_position(leg.symbol, pos_side=pos_side_arg)
+                if result.success:
+                    logger.warning("LEG LEAK flattened: %s %s closed reduce-only", label, leg.symbol)
                 else:
-                    # Check if it filled while we tried to cancel
-                    status = await self.spot_adapter.get_order_status(
-                        spread_order.spot_leg.symbol,
-                        spread_order.spot_leg.order_id
+                    logger.error(
+                        "LEG LEAK flatten FAILED for %s %s: %s — orphan reconciler will retry",
+                        label, leg.symbol, result.error,
                     )
-                    if status and status["state"] == "filled":
-                        spread_order.spot_leg.status = LegStatus.FILLED
-                        spread_order.spot_leg.filled_qty = status["filled_qty"]
-                        spread_order.spot_leg.filled_price = status["filled_price"]
-                        logger.error("ORPHAN: Spot filled while futures was cancelled - LEG RISK!")
             except Exception as e:
-                logger.error("Error cancelling spot after futures failure: %s", e)
+                logger.error("LEG LEAK flatten error for %s %s: %s", label, leg.symbol, e)
+            # Mark terminal so the entry fails cleanly (both legs failed → retry flat).
+            # Leave filled_qty=0 so the engine sees 0% fill and stays flat — which
+            # matches reality after the flatten.
+            leg.status = LegStatus.CANCELLED
+        elif cancelled:
+            leg.status = LegStatus.CANCELLED
+            logger.info("%s leg cancelled cleanly (no fill) - no orphan", label.capitalize())
+        else:
+            # Cancel unconfirmed and no fill seen — order may still be live. Leave it
+            # OPEN so the status loop / timeout handler retries rather than falsely
+            # declaring it dead (which would itself risk an orphan).
+            logger.warning(
+                "%s leg cancel unconfirmed and no fill detected — leaving OPEN for retry",
+                label.capitalize(),
+            )
 
     async def _handle_timeout(self, spread_order: SpreadOrder) -> None:
         """Handle timeout - cancel unfilled orders and close any partial fills."""
