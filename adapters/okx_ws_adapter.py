@@ -494,8 +494,8 @@ class OKXWebSocketAdapter(ExchangeAdapter):
             logger.error("[ws_adapter] amend_order error: %s", e)
             return False
 
-    async def close_position(self, symbol: str) -> OrderResult:
-        return await self._rest.close_position(symbol)
+    async def close_position(self, symbol: str, pos_side: Optional[str] = None) -> OrderResult:
+        return await self._rest.close_position(symbol, pos_side=pos_side)
 
     # ------------------------------------------------------------------
     # ExchangeAdapter: positions — WS cache first, REST fallback

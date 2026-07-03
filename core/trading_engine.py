@@ -1911,7 +1911,8 @@ class TradingEngine:
         Close futures positions the engine has no record of (orphan state).
 
         Called after N consecutive mismatch detections to limit losses on stuck
-        positions. Uses a market order with explicit posSide for hedge-mode accounts.
+        positions. Uses OKX's close-position endpoint (instId + posSide) so the
+        exchange sizes the reduce internally — no contract/coin conversion here.
         """
         if not self.futures_adapter:
             logger.error("Cannot auto-close orphans: no futures adapter")
@@ -1920,7 +1921,7 @@ class TradingEngine:
         for pos in orphan_positions:
             symbol = pos['symbol']
             side = pos['side']    # "LONG" or "SHORT"
-            qty = pos['quantity'] # contracts (as reported by exchange)
+            qty = pos['quantity'] # base coin (BTC) as reported by OKX; for logging only
 
             # Safety: only auto-close SWAP / dated FUTURES positions.
             # Spot margin positions on the account are not bot-managed and
@@ -1934,51 +1935,27 @@ class TradingEngine:
                 )
                 continue
 
-            close_side = "sell" if side == "LONG" else "buy"
-            pos_side = "long" if side == "LONG" else "short"
-
-            # `qty` from get_positions() is in CONTRACTS for SWAP. `place_order`
-            # expects BTC and divides by ctVal again, so passing the contract
-            # count directly inflates the order size by 1/ctVal (e.g. 32
-            # contracts → adapter sees "32 BTC" → sends sz=3200). That's why
-            # every AUTO-CLOSE in the log fails with 51169 — OKX has only 32
-            # contracts on the LONG side, not 3200. Convert here.
-            info = await self.futures_adapter.get_symbol_info(symbol)
-            ct_val = float(info.get("contract_val") or 0) if info else 0.0
-            if ct_val <= 0:
-                logger.error(
-                    "AUTO-CLOSE skipped for %s: could not fetch contract_val "
-                    "(needed to convert %s contracts → BTC for place_order)",
-                    symbol, qty,
-                )
-                continue
-            qty_btc = qty * ct_val
-
+            # Close via OKX's close-position endpoint (whole-position, reduce-only
+            # by construction) instead of hand-computing a contract size.
+            #
+            # The old path called place_order() with a BTC quantity we derived as
+            # `qty * ctVal`, which assumed get_positions() reports SWAP size in
+            # CONTRACTS. It doesn't: OKX returns `pos` for this account in base coin
+            # (0.01 BTC == 1 contract), so `0.01 * 0.01 = 0.0001 BTC` →
+            # int(0.0001 / 0.01) = 0 contracts → "need at least 1 contract", and the
+            # orphan could never close — permanently blocking new entries. close-position
+            # takes only instId + posSide and lets OKX size the reduce internally, so it
+            # is immune to the contract/coin ambiguity that broke this path.
             logger.warning(
-                "AUTO-CLOSE orphan %s %s: %d contracts (%.6f BTC), PnL=%.2f",
-                side, symbol, int(round(qty)), qty_btc, pos['unrealized_pnl'],
+                "AUTO-CLOSE orphan %s %s: size=%.6f, PnL=%.2f (via close-position)",
+                side, symbol, qty, pos['unrealized_pnl'],
             )
 
-            if qty_btc <= 0:
-                logger.warning(
-                    "Auto-close skipped: qty_btc=0 for %s (raw contracts=%.4f, ctVal=%.4f)",
-                    symbol, qty, ct_val,
-                )
-                continue
-
-            result = await self.futures_adapter.place_order(
-                symbol=symbol,
-                side=close_side.upper(),
-                order_type="MARKET",
-                quantity=qty_btc,
-                pos_side=pos_side,
-                reduce_only=True,
-            )
+            result = await self.futures_adapter.close_position(symbol, pos_side=side)
 
             if result.success:
                 logger.warning(
-                    "AUTO-CLOSE SUCCESS: closed orphan %s %s, order_id=%s",
-                    side, symbol, result.order_id,
+                    "AUTO-CLOSE SUCCESS: closed orphan %s %s", side, symbol,
                 )
             else:
                 logger.error(

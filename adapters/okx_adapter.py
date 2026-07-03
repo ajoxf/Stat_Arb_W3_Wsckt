@@ -915,13 +915,17 @@ class OKXAdapter(ExchangeAdapter):
             logger.warning("Error fetching leverage info for %s: %s", symbol, e)
             return None
 
-    async def close_position(self, symbol: str) -> OrderResult:
+    async def close_position(self, symbol: str, pos_side: Optional[str] = None) -> OrderResult:
         """Close an open position.
 
         For SWAP/FUTURES: uses OKX /trade/close-position endpoint.
         For MARGIN (spot): places an explicit market order in the opposite direction
         because the close-position endpoint returns success but doesn't reliably fill
         in OKX demo mode for spot margin.
+
+        pos_side: optional "LONG"/"SHORT" override for the hedge-mode posSide. Callers
+        that already know the exact side to close (e.g. orphan auto-close) pass it so we
+        don't depend on positions[0] when both sides exist on the same instrument.
         """
         try:
             positions = await self.get_positions(symbol)
@@ -986,10 +990,13 @@ class OKXAdapter(ExchangeAdapter):
             # In long/short mode OKX accounts posSide is required for close-position.
             # Detect account mode and supply it so the close doesn't fail with
             # "posSide cannot be empty".
+            # Prefer an explicit pos_side override (used by orphan auto-close, which
+            # knows the exact stuck side) and fall back to the fetched position side.
+            effective_side = (pos_side or pos.side or "").upper()
             account_config = await self.get_account_config()
             if account_config and account_config.get("position_mode") == "long_short_mode":
                 # Map position side to OKX posSide value
-                close_data["posSide"] = "long" if pos.side == "LONG" else "short"
+                close_data["posSide"] = "long" if effective_side == "LONG" else "short"
                 logger.info("long_short_mode: adding posSide=%s to close-position", close_data["posSide"])
 
             result = await self._request(
