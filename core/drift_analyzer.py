@@ -217,6 +217,90 @@ def analyze(series, anchor: Optional[float] = None) -> DriftMetrics:
     )
 
 
+# ── Hedge-ratio (beta) z-score — MANUAL MONITORING ONLY ──────────────────────
+# Observability signal. NOT imported by the trading engine; NO role in signal
+# generation or order placement. It answers one question for a human watching
+# the dashboard: has today's live hedge ratio drifted far from where it started
+# (|z| > 2) and *stayed* there — i.e. is one leg structurally outrunning the
+# other (trending) rather than wobbling and coming back (healthy mean reversion)?
+
+BETA_Z_OUT = 2.0   # |z| beyond this = drifted
+BETA_Z_IN  = 1.0   # |z| back inside this after a breach = "came back"
+
+
+@dataclass
+class BetaDriftStatus:
+    n: int
+    anchor: float          # the morning hedge-ratio level z is measured around
+    baseline_std: float    # morning "normal wiggle" used as the z denominator
+    current_beta: float    # latest live hedge ratio
+    current_z: float       # latest z around the anchor
+    max_abs_z: float       # worst drift reached in the session
+    run_beyond: int        # consecutive most-recent samples with |z| > z_out
+    breached: bool         # |z| exceeded z_out at some point today
+    status: str            # STABLE | DRIFTED_RETURNED | DRIFTING | STRUCTURAL_DRIFT | WARMUP
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def beta_drift_status(beta_series, warmup_n: int = 30, anchor: Optional[float] = None,
+                      z_out: float = BETA_Z_OUT, z_in: float = BETA_Z_IN,
+                      min_run: int = 3, std_floor_frac: float = 1e-4) -> BetaDriftStatus:
+    """Z-score of the live hedge ratio around a FIXED morning anchor.
+
+    anchor: the level to measure drift from. None -> the mean of the first
+      `warmup_n` samples (where the ratio sat this morning). Pass a number to
+      pin it to a fixed value (e.g. the configured 38).
+    baseline_std: the std of that same morning window — the ratio's normal
+      daily wiggle — so z is "how many normal moves from this morning".
+    A run of |z| > z_out that does not return inside z_in = STRUCTURAL_DRIFT
+      (trending). A breach that comes back inside = DRIFTED_RETURNED (healthy).
+    """
+    x = np.asarray(list(beta_series), dtype=float)
+    n = len(x)
+    if n < max(2, warmup_n // 2):
+        return BetaDriftStatus(n, float('nan'), 0.0,
+                               float(x[-1]) if n else float('nan'),
+                               0.0, 0.0, 0, False, "WARMUP")
+    w = x[:warmup_n] if n >= warmup_n else x
+    a = float(np.mean(w)) if anchor is None else float(anchor)
+    base = max(float(np.std(w)), std_floor_frac * abs(a), 1e-9)
+    z = (x - a) / base
+    az = np.abs(z)
+    current_z = float(z[-1])
+    max_abs_z = float(np.max(az))
+    # A single tick past z_out is noise; a *sustained* run past it is drift.
+    max_run = _r = 0
+    for v in az:
+        _r = _r + 1 if v > z_out else 0
+        max_run = max(max_run, _r)
+    breached = max_run >= min_run
+
+    run = 0                              # trailing consecutive samples beyond z_out
+    for v in az[::-1]:
+        if v > z_out:
+            run += 1
+        else:
+            break
+
+    if not breached:
+        status = "STABLE"
+    elif run >= min_run:
+        status = "STRUCTURAL_DRIFT"      # sustained beyond 2 right now — trending warning
+    elif abs(current_z) < z_in:
+        status = "DRIFTED_RETURNED"      # drifted out earlier but came back — healthy
+    else:
+        status = "DRIFTING"              # transitioning in the 1–2 band
+
+    return BetaDriftStatus(
+        n=n, anchor=round(a, 4), baseline_std=round(base, 6),
+        current_beta=round(float(x[-1]), 4), current_z=round(current_z, 2),
+        max_abs_z=round(max_abs_z, 2), run_beyond=run,
+        breached=breached, status=status,
+    )
+
+
 class DailyDriftMonitor:
     """Stateful, per-day intraday monitor. This is the piece that would plug
     into the engine: reset each morning, feed it spreads, ask should_halt().

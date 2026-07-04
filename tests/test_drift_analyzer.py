@@ -12,7 +12,7 @@ ETH/BTC spread (level ~ -2700, tick noise ~ 18); seeds are fixed for determinism
 import numpy as np
 import pytest
 
-from core.drift_analyzer import analyze, DailyDriftMonitor
+from core.drift_analyzer import analyze, DailyDriftMonitor, beta_drift_status
 
 MU, SIGMA, N = -2700.0, 18.0, 240
 
@@ -104,3 +104,47 @@ def test_monitor_warmup_returns_none():
         mon.update(s)
     assert mon.assess() is None    # still warming up
     assert mon.should_halt() is False
+
+
+# ── hedge-ratio (beta) z-score — manual-monitoring signal ─────────────────────
+# deterministic series (no RNG) so the status assertions can never flake.
+
+_WIGGLE = 0.04 * np.array([(-1) ** i for i in range(30)])   # warmup, std == 0.04
+
+
+def test_beta_stable_never_breaches():
+    body = 38.0 + 0.04 * np.sin(np.arange(210) / 3.0)        # amplitude 0.04 -> |z|<=1
+    s = beta_drift_status(np.concatenate([38.0 + _WIGGLE, body]), warmup_n=30)
+    assert s.status == "STABLE"
+    assert s.breached is False
+    assert s.max_abs_z <= 2.0
+
+
+def test_beta_structural_drift_when_it_walks_and_stays():
+    body = 38.0 + np.linspace(0, -0.5, 210)                  # drifts down and stays
+    s = beta_drift_status(np.concatenate([38.0 + _WIGGLE, body]), warmup_n=30)
+    assert s.status == "STRUCTURAL_DRIFT"
+    assert s.current_z < -2.0
+    assert s.run_beyond > 0
+
+
+def test_beta_drifted_but_returned_is_healthy():
+    dip = 38.0 - 0.3 * np.sin(np.linspace(0, np.pi, 180))    # spikes out then back
+    tail = 38.0 + 0.02 * np.array([(-1) ** i for i in range(30)])
+    s = beta_drift_status(np.concatenate([38.0 + _WIGGLE, dip, tail]), warmup_n=30)
+    assert s.breached is True                                # it did drift past 2
+    assert s.status == "DRIFTED_RETURNED"                    # but came back inside
+    assert abs(s.current_z) < 1.0
+
+
+def test_beta_fixed_anchor_override():
+    # pin the anchor to a literal value (e.g. configured 38) instead of the
+    # morning mean; a series parked at 39 should read well above it.
+    s = beta_drift_status(39.0 + np.tile(_WIGGLE, 8), warmup_n=30, anchor=38.0)
+    assert s.anchor == 38.0
+    assert s.current_z > 2.0            # parked at 39, anchored at 38 -> well above
+
+
+def test_beta_warmup_guard():
+    s = beta_drift_status(np.full(8, 38.0), warmup_n=30)
+    assert s.status == "WARMUP"
