@@ -321,6 +321,10 @@
                         <span class="text-secondary me-1">drift:</span>
                         <span id="live-beta-drift" class="badge bg-secondary">&mdash;</span>
                     </div>
+                    <div title="Hedge-ratio z-score vs this morning's level (from regime_snapshots). A sustained |z| > 2 that does not come back = trending regime. Manual monitoring only — not used for trading.">
+                        <span class="text-secondary me-1">z:</span>
+                        <span id="live-beta-zscore" class="badge bg-secondary">&mdash;</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1564,6 +1568,41 @@
             : 'bg-danger'
         );
     }
+
+    // Hedge-ratio z-score badge (manual monitoring only). Polls the read-only
+    // /api/beta-zscore endpoint; the value updates ~once/min so 30s is plenty.
+    function updateBetaZScore() {
+        const el = document.getElementById('live-beta-zscore');
+        if (!el) return;
+        fetch('/api/beta-zscore').then(r => r.json()).then(d => {
+            if (!d || d.z === null || d.z === undefined) {
+                el.textContent = (d && d.status === 'WARMUP') ? 'warm-up' : '—';
+                el.className = 'badge bg-secondary';
+                el.title = (d && d.status === 'WARMUP')
+                    ? 'Collecting this morning\'s baseline before the z-score arms'
+                    : 'Hedge-ratio z-score — no data yet';
+                return;
+            }
+            const sign = d.z >= 0 ? '+' : '';
+            let label = sign + Number(d.z).toFixed(1) + 'σ';
+            if (d.status === 'STRUCTURAL_DRIFT') label += ' ⚠';
+            el.textContent = label;
+            el.className = 'badge ' + (
+                d.status === 'STABLE'           ? 'bg-success'
+                : d.status === 'DRIFTED_RETURNED' ? 'bg-info'
+                : d.status === 'STRUCTURAL_DRIFT' ? 'bg-danger'
+                : 'bg-warning'   // DRIFTING (in the 1–2 transition band)
+            );
+            const parts = [d.status];
+            if (d.anchor != null)       parts.push('anchor ' + Number(d.anchor).toFixed(2));
+            if (d.current_beta != null) parts.push('now ' + Number(d.current_beta).toFixed(2));
+            if (d.max_abs_z != null)    parts.push('max|z| ' + Number(d.max_abs_z).toFixed(1));
+            if (d.minutes_beyond)       parts.push('out ~' + d.minutes_beyond + ' min');
+            el.title = parts.join(' · ') + ' — manual monitoring only';
+        }).catch(() => {});
+    }
+    updateBetaZScore();
+    setInterval(updateBetaZScore, 30000);
 
     function updateLegSizing() {
         // Echo the current symbol next to each leg label

@@ -23,6 +23,7 @@ from core.signals import SignalGenerator
 from core.trading_engine import TradingEngine
 from core.post_trade_analyzer import PostTradeAnalyzer
 from core.auto_tuner import AutoTuner
+from core.drift_analyzer import beta_drift_status
 from core.telegram_bot import get_notifier
 from database.manager import DatabaseManager
 from adapters import OKXAdapter, BinanceAdapter, BybitAdapter, OKXWebSocketManager, OKXWebSocketAdapter
@@ -743,6 +744,38 @@ def get_config():
     """Get current configuration."""
     config = db.get_config()
     return jsonify(config.to_dict())
+
+
+@app.route('/api/beta-zscore', methods=['GET'])
+def api_beta_zscore():
+    """Hedge-ratio (beta) z-score for the dashboard's Drift card.
+
+    Runs beta_drift_status over today's regime_snapshots.beta_live series,
+    anchored to this morning's level. A sustained |z| > 2 that does not return
+    = trending regime. MANUAL MONITORING ONLY — this endpoint only reads the DB
+    and computes; it has no involvement in signal generation or order placement.
+    """
+    def _nn(x):
+        return None if x is None or x != x else x   # NaN/None -> None (valid JSON)
+    try:
+        cfg = db.get_config()
+        since_iso = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        snaps = db.get_regime_snapshots(cfg.asset, since_iso=since_iso)
+        betas = [s['beta_live'] for s in snaps if s.get('beta_live') is not None]
+        st = beta_drift_status(betas, warmup_n=30)   # ~1 snapshot/min => 30-min warm-up
+        return jsonify({
+            'status': st.status,
+            'z': _nn(st.current_z),
+            'anchor': _nn(st.anchor),
+            'current_beta': _nn(st.current_beta),
+            'max_abs_z': _nn(st.max_abs_z),
+            'minutes_beyond': st.run_beyond,
+            'n': st.n,
+        })
+    except Exception as e:
+        app.logger.debug("beta-zscore endpoint error: %s", e)
+        return jsonify({'status': 'ERR', 'z': None})
 
 
 def _hedge_ratio_change_blocked(new_beta):
