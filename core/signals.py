@@ -426,6 +426,47 @@ class SignalGenerator:
         passed = profitability_ratio >= self.config.min_std_multiple
         return passed, profitability_ratio
 
+    def _check_risk_reward(self, abs_z: float) -> Tuple[bool, Optional[float]]:
+        """
+        Cost-adjusted reward:risk ratio at the current z-score.
+
+        Reward is the favourable move from here to the exit threshold; risk is
+        the adverse move from here to the stop — both in spread-price units
+        (z-distance × current std). Round-trip costs are certain either way,
+        so they are subtracted from the reward and added to the loss at the
+        stop. Costs use the same beta-scaled conversion as the STD filter so
+        the ratio stays honest for hedge_ratio != 1.
+
+        Returns (passed, ratio). ratio is None when the filter is disabled.
+        """
+        if not getattr(self.config, 'risk_reward_filter_enabled', False):
+            return True, None
+
+        if self.current_std <= 0:
+            return False, 0.0
+        spot_price = self.spot_prices[-1] if self.spot_prices else 0
+        if spot_price <= 0:
+            return False, 0.0
+
+        reward_z = abs_z - self.config.exit_threshold
+        risk_z = self.config.stop_loss_threshold - abs_z
+        if reward_z <= 0 or risk_z <= 0:
+            # Below the exit level (no edge left) or at/past the stop level
+            # (blocked upstream by the stop-level check anyway).
+            return False, 0.0
+
+        total_cost_bps = self._compute_round_trip_cost()['round_trip_bps']
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        costs_price = (total_cost_bps / 10000) * beta * spot_price
+
+        reward = reward_z * self.current_std - costs_price
+        risk = risk_z * self.current_std + costs_price
+        if reward <= 0:
+            return False, 0.0
+
+        ratio = round(reward / risk, 3)
+        return ratio >= self.config.min_risk_reward, ratio
+
     def _track_sd_touch(self, zscore: float, spot_price: float, futures_price: float) -> Optional[SDTouchEvent]:
         """Track when Z-score crosses SD levels."""
         current_sd_level = 0.0
@@ -487,6 +528,7 @@ class SignalGenerator:
                 hurst=self.current_hurst,
                 hurst_ok=None,  # Unknown until we have full data
                 std_filter_ok=None,  # Unknown until we have full data
+                rr_filter_ok=None,  # Unknown until we have full data
                 regime="COLLECTING",
                 current_position=self.current_position,
                 timestamp=timestamp,
@@ -496,6 +538,7 @@ class SignalGenerator:
         # Check filters
         hurst_ok = not self.config.hurst_enabled or self.current_hurst < self.config.hurst_threshold
         std_ok, _ = self._check_std_filter()
+        rr_ok, rr_value = self._check_risk_reward(abs(self.current_zscore))
 
         # Determine regime
         if self.current_hurst < 0.4:
@@ -532,6 +575,9 @@ class SignalGenerator:
                 elif z_triggers_short and self.current_zscore <= -self.config.stop_loss_threshold:
                     blocked_reason = "Z-score at stop-loss level ({:.2f} <= -{:.2f})".format(
                         self.current_zscore, self.config.stop_loss_threshold)
+                elif not rr_ok:
+                    blocked_reason = "R:R filter ({:.2f} < {:.2f} required)".format(
+                        rr_value or 0.0, self.config.min_risk_reward)
                 else:
                     # All filters pass - generate signal
                     if z_triggers_long:
@@ -612,6 +658,8 @@ class SignalGenerator:
             hurst=self.current_hurst,
             hurst_ok=hurst_ok,
             std_filter_ok=std_ok,
+            rr_filter_ok=rr_ok,
+            risk_reward=rr_value,
             regime=regime,
             current_position=self.current_position,
             timestamp=timestamp,
@@ -654,6 +702,7 @@ class SignalGenerator:
         # Calculate filter status (same logic as generate_signal)
         hurst_ok = not self.config.hurst_enabled or self.current_hurst < self.config.hurst_threshold
         std_ok, std_ratio = self._check_std_filter()
+        rr_ok, rr_value = self._check_risk_reward(abs(self.current_zscore))
 
         # Check if we have enough data (must have full lookback period)
         data_ready = len(self.spread_history) >= self.lookback
@@ -693,6 +742,10 @@ class SignalGenerator:
             'std_ratio': round(std_ratio, 2) if std_ratio != float('inf') else None,
             'std_ratio_required': self.config.min_std_multiple,
             'std_filter_enabled': self.config.std_filter_enabled,
+            'rr_filter_ok': rr_ok if data_ready else None,
+            'risk_reward': rr_value,
+            'min_risk_reward': self.config.min_risk_reward,
+            'rr_filter_enabled': getattr(self.config, 'risk_reward_filter_enabled', False),
             'order_mode': cost['entry_mode'],
             'fee_bps_used': round(cost['entry_cost_bps'], 2),
             'round_trip_cost_bps': round(cost['round_trip_bps'], 2),

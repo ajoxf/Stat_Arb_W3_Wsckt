@@ -163,6 +163,14 @@ class PostTradeAnalyzer:
         if trade.is_open or trade.is_paper:
             return
         if not self._api_key:
+            # The streak circuit breaker, recovery ladder, and validation
+            # layer are risk controls — they must not depend on the Anthropic
+            # API being configured. Run the tuner pass without analysis.
+            if self.auto_tuner:
+                try:
+                    self.auto_tuner.check_and_apply(trade.id)
+                except Exception:
+                    logger.exception("AutoTuner pass failed for trade %s", trade.id)
             return
         threading.Thread(
             target=self._run_analysis,
@@ -188,9 +196,10 @@ class PostTradeAnalyzer:
                 t for t in self.db.get_trades(limit=30) if not t.is_open
             ][:20]
             past_learnings: List[Dict[str, Any]] = self.db.get_recent_learnings(limit=10)
+            change_log: List[Dict[str, Any]] = self.db.get_learning_log_with_validation(limit=8)
             config = self.db.get_config()
 
-            prompt = self._build_prompt(trade, recent_trades, past_learnings, config)
+            prompt = self._build_prompt(trade, recent_trades, past_learnings, config, change_log)
 
             message = client.messages.create(
                 model=_ANALYSIS_MODEL,
@@ -259,6 +268,7 @@ class PostTradeAnalyzer:
         recent_trades: List["Trade"],
         past_learnings: List[Dict[str, Any]],
         config: "TradingConfig",
+        change_log: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         # ── Duration ──
         duration_str = "unknown"
@@ -358,6 +368,27 @@ class PostTradeAnalyzer:
             f"{reason}: {cnt}" for reason, cnt in exit_reasons.most_common()
         )
 
+        # ── Applied changes + measured outcomes (your track record) ──
+        track_lines = []
+        for entry in (change_log or []):
+            verdict = entry.get("verdict")
+            if verdict:
+                outcome = (
+                    f"verdict={verdict}"
+                    f"  WR {entry.get('v_wr_before', 0):.0%}→{entry.get('v_wr_after', 0):.0%}"
+                    f"  exp ${entry.get('v_exp_before', 0):+.2f}→${entry.get('v_exp_after', 0):+.2f}"
+                )
+                if entry.get("v_action") == "reverted":
+                    outcome += "  [AUTO-REVERTED]"
+            elif entry.get("reverted"):
+                outcome = "reverted"
+            else:
+                outcome = "pending (not enough post-change trades yet)"
+            track_lines.append(
+                f"  [{str(entry.get('timestamp', ''))[:16]}]  "
+                f"{entry.get('param')}: {entry.get('old_value')} → {entry.get('new_value')}  |  {outcome}"
+            )
+
         return f"""You are a quant analyst reviewing a crypto statistical-arbitrage (spot-futures basis) trade.
 Be thorough. Use all four recommendation types where the evidence warrants it.
 Call record_trade_analysis to record your structured analysis.
@@ -390,6 +421,7 @@ exit_threshold:       {config.exit_threshold}   (safe: 0.3–1.0, step ≤0.1)
 stop_loss_threshold:  {config.stop_loss_threshold}   (safe: 3.0–5.5, step ≤0.3)
 min_std_multiple:     {config.min_std_multiple}   (safe: 1.0–2.5, step ≤0.15)
 slippage_bps:         {config.slippage_bps}   (safe: 1.0–10.0, step ≤1.0)
+min_risk_reward:      {config.min_risk_reward}   (safe: 0.5–3.0, step ≤0.25; gate {'ENABLED' if config.risk_reward_filter_enabled else 'DISABLED'})
 hurst_enabled:        {config.hurst_enabled}   (threshold: {config.hurst_threshold})
 std_filter_enabled:   {config.std_filter_enabled}
 position_size_usd:    ${config.position_size_usd:,.0f}  (max: ${config.max_position_size_usd:,.0f})
@@ -401,6 +433,14 @@ round-trip fees:      {total_fees_bps:.1f} bps fees + {total_slip_bps:.1f} bps s
 
 ═══ ACCUMULATED LEARNINGS (most recent first) ═══
 {chr(10).join(learnings_lines) if learnings_lines else "  (no prior learnings)"}
+
+═══ YOUR APPLIED CHANGES & MEASURED OUTCOMES ═══
+{chr(10).join(track_lines) if track_lines else "  (no changes applied yet)"}
+Calibrate against this record: a VALIDATED change may justify a further step
+in the same direction; NEVER re-recommend a param+direction whose last
+verdict was FAILED or that was auto-reverted — propose an alternative or an
+OBSERVATION instead. If several recent changes are pending, prefer fewer new
+changes so their effects stay attributable.
 
 ═══ RECOMMENDATION GUIDE ═══
 PARAMETER_CHANGE  — numeric param within corridor, auto-applied at 3+ consensus, conf ≥0.70

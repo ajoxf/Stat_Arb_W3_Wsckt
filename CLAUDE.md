@@ -17,7 +17,11 @@ or P&L math as production-critical.
 - `core/signals.py` — z-score / Hurst / STD-filter signal generation
 - `core/order_executor.py` — coordinated 2-leg order placement
 - `core/ai_monitor.py` — periodic Claude-powered health review (Telegram alerts)
-- `core/post_trade_analyzer.py` + `core/auto_tuner.py` — learning loop
+- `core/post_trade_analyzer.py` + `core/auto_tuner.py` +
+  `core/learning_validator.py` — closed learning loop: analyze → apply within
+  safe corridors → measure before/after → auto-revert FAILED changes →
+  verdicts feed the next analysis. Size changes are never judged/reverted
+  (selection bias); the breaker + recovery ladder own position size.
 - `adapters/okx_adapter.py` — OKX V5 REST + WebSocket
 - `database/` — sqlite: positions, trades, signals, learnings
 - `backtest/` — history fetch, replay, analysis

@@ -552,6 +552,18 @@ def save_config():
             if field not in data or data.get(field) == '***':
                 data[field] = getattr(existing, field)
 
+        # Self-tuning state lives outside the Settings form; same failure
+        # mode as the Telegram fields — from_dict() would silently reset it
+        # to defaults on every unrelated save. Keep stored values unless the
+        # client explicitly posts them.
+        tuner_fields = (
+            'risk_reward_filter_enabled', 'min_risk_reward',
+            'position_size_baseline_usd',
+        )
+        for field in tuner_fields:
+            if field not in data:
+                data[field] = getattr(existing, field)
+
         # Validate leverage bounds before saving. OKX caps Expiry Futures
         # at 20x; perpetual SWAPs go higher but we match the more conservative
         # ceiling for the strategy this bot was built for.

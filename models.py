@@ -85,10 +85,23 @@ class TradingConfig:
     std_filter_enabled: bool = True
     min_std_multiple: float = 0.9  # STD must be > costs * multiple (0.9 = just above break-even)
 
+    # Risk/reward entry gate. Blocks entries whose cost-adjusted
+    # reward-to-risk ratio — distance to the exit threshold vs distance to
+    # the stop, in spread units, with round-trip costs subtracted from the
+    # reward and added to the risk — falls below min_risk_reward. Opt-in:
+    # mean reversion wins more often than it loses, so a ratio under 1.0 can
+    # still be positive expectancy; enable once trade history justifies it.
+    risk_reward_filter_enabled: bool = False
+    min_risk_reward: float = 1.0
+
     # Position sizing
     position_size_usd: float = 1000.0
     max_position_size_usd: float = 10000.0
     daily_max_loss_usd: float = 0.0
+    # Set by the auto-tuner the first time it reduces size (records the
+    # operator-chosen size); the recovery ladder steps back toward this on
+    # win streaks, never beyond it. 0 = no automated reduction in effect.
+    position_size_baseline_usd: float = 0.0
 
     # Leverage settings
     spot_leverage: int = 1      # 1 = no margin, 2-10 for spot margin trading
@@ -175,9 +188,12 @@ class TradingConfig:
             'hurst_threshold': self.hurst_threshold,
             'std_filter_enabled': self.std_filter_enabled,
             'min_std_multiple': self.min_std_multiple,
+            'risk_reward_filter_enabled': self.risk_reward_filter_enabled,
+            'min_risk_reward': self.min_risk_reward,
             'position_size_usd': self.position_size_usd,
             'max_position_size_usd': self.max_position_size_usd,
             'daily_max_loss_usd': self.daily_max_loss_usd,
+            'position_size_baseline_usd': self.position_size_baseline_usd,
             'spot_leverage': self.spot_leverage,
             'futures_leverage': self.futures_leverage,
             'hedge_ratio': self.hedge_ratio,
@@ -404,6 +420,8 @@ class Signal:
     hurst: float = 0.5
     hurst_ok: Optional[bool] = True  # None when data is still being collected
     std_filter_ok: Optional[bool] = True  # None when data is still being collected
+    rr_filter_ok: Optional[bool] = True  # None when data is still being collected
+    risk_reward: Optional[float] = None  # cost-adjusted reward:risk at current z
     regime: str = "UNKNOWN"  # MEAN_REVERTING, TRENDING, COLLECTING, UNKNOWN
     timestamp: Optional[datetime] = None
 
@@ -423,6 +441,8 @@ class Signal:
             'hurst': self.hurst,
             'hurst_ok': self.hurst_ok,
             'std_filter_ok': self.std_filter_ok,
+            'rr_filter_ok': self.rr_filter_ok,
+            'risk_reward': self.risk_reward,
             'regime': self.regime,
             'current_position': self.current_position,
             'timestamp': self.timestamp.isoformat() if self.timestamp else None,

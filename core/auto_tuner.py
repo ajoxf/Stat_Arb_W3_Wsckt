@@ -12,12 +12,22 @@ LAYER 1 — Claude consensus (requires N agreeing learnings):
 LAYER 2 — Streak circuit breaker (independent of Claude, fires immediately):
   ≥3 consecutive losses → reduce position_size_usd by 20%
   ≥6 consecutive losses → pause algo entirely
+  ≥4 consecutive wins   → step size back up 10% toward the pre-reduction
+                          baseline (recovery ladder; never beyond baseline)
+
+LAYER 3 — Validation (LearningValidator, runs every closed trade):
+  Each applied change is judged once enough post-change trades exist:
+  VALIDATED / NEUTRAL / FAILED. FAILED changes are auto-reverted and the
+  same param+direction is blocked from re-application for a cooling-off
+  window. Verdicts are fed back into the analyzer prompt.
 """
 
 import json
 import logging
 from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional, TYPE_CHECKING
+
+from core.learning_validator import LearningValidator
 
 if TYPE_CHECKING:
     from database.manager import DatabaseManager
@@ -45,6 +55,7 @@ SAFE_CORRIDORS: Dict[str, Tuple[float, float, float]] = {
     "stop_loss_threshold":   (3.0, 5.5,  0.30),
     "min_std_multiple":      (1.0, 2.5,  0.15),
     "slippage_bps":          (1.0, 10.0, 1.00),
+    "min_risk_reward":       (0.5, 3.0,  0.25),
 }
 
 # ── Filter toggles (bool, 1.0=on / 0.0=off) ─────────────────────────────────
@@ -55,6 +66,11 @@ STREAK_REDUCE_AT    = 3    # consecutive losses before reducing size
 STREAK_PAUSE_AT     = 6    # consecutive losses before pausing algo
 STREAK_REDUCTION    = 0.20 # 20% position size reduction per trigger
 STREAK_MIN_SIZE_USD = 200  # never reduce below this
+
+RECOVERY_WINS_AT    = 4    # consecutive wins before stepping size back up
+RECOVERY_STEP       = 0.10 # 10% size increase per trigger, capped at baseline
+
+COOLOFF_WINDOW      = 15   # recent log entries checked for reverted changes
 
 
 class AutoTuner:
@@ -68,6 +84,7 @@ class AutoTuner:
         self.db = db
         self.engine = engine
         self.socketio = socketio
+        self.validator = LearningValidator(db, engine=engine, socketio=socketio)
 
     # ── Public ───────────────────────────────────────────────────────────────
 
@@ -80,8 +97,18 @@ class AutoTuner:
         try:
             # Layer 2: streak circuit breaker — always runs regardless of auto_tune setting
             self._check_streak_safety(trade_id)
+            self._check_streak_recovery(trade_id)
 
             config = self.db.get_config()
+
+            # Layer 3: judge applied changes. Verdicts always recorded;
+            # auto-revert only while the operator has auto-tune on.
+            self.validator.engine = self.engine   # engine attaches after app startup
+            self.validator.run(
+                trade_id,
+                revert_allowed=getattr(config, "auto_tune_enabled", False),
+            )
+
             if not getattr(config, "auto_tune_enabled", False):
                 return
 
@@ -154,10 +181,15 @@ class AutoTuner:
                     "AutoTuner streak: %d losses — reducing size $%.0f → $%.0f",
                     streak, current_size, new_size,
                 )
+                # Record the operator-chosen size the first time we cut it so
+                # the recovery ladder knows what to climb back to.
+                if (getattr(config, "position_size_baseline_usd", 0.0) or 0.0) <= 0:
+                    config.position_size_baseline_usd = current_size
                 config.position_size_usd = new_size
                 self.db.save_config(config)
                 if self.engine:
                     self.engine.config.position_size_usd = new_size
+                    self.engine.config.position_size_baseline_usd = config.position_size_baseline_usd
                 self._emit("auto_tune", {
                     "param": "position_size_usd",
                     "old_value": current_size,
@@ -179,6 +211,69 @@ class AutoTuner:
                 )
         except Exception:
             logger.exception("Streak safety check failed")
+
+    def _check_streak_recovery(self, trigger_trade_id: int) -> None:
+        """
+        Undo automated size reductions once performance recovers: after
+        RECOVERY_WINS_AT consecutive wins, step position_size_usd back up by
+        RECOVERY_STEP toward the recorded baseline. Only ever climbs back to
+        the size the operator originally chose — never beyond it — so this is
+        safe to run regardless of auto_tune_enabled, same as the reducer.
+        """
+        try:
+            config = self.db.get_config()
+            baseline = getattr(config, "position_size_baseline_usd", 0.0) or 0.0
+            current = config.position_size_usd
+            if baseline <= 0 or current >= baseline:
+                return
+
+            closed = [t for t in self.db.get_trades(limit=12) if not t.is_open]
+            wins = 0
+            for t in closed:
+                if t.pnl_usd > 0:
+                    wins += 1
+                else:
+                    break
+            if wins < RECOVERY_WINS_AT:
+                return
+
+            new_size = round(min(baseline, current * (1.0 + RECOVERY_STEP)), 2)
+            if new_size <= current:
+                return
+
+            config.position_size_usd = new_size
+            if new_size >= baseline:
+                config.position_size_baseline_usd = 0.0   # ladder complete
+            self.db.save_config(config)
+            if self.engine:
+                self.engine.config.position_size_usd = new_size
+                self.engine.config.position_size_baseline_usd = config.position_size_baseline_usd
+
+            logger.info(
+                "AutoTuner recovery: %d wins — size $%.0f → $%.0f (baseline $%.0f)",
+                wins, current, new_size, baseline,
+            )
+            self._emit("auto_tune", {
+                "param": "position_size_usd",
+                "old_value": current,
+                "new_value": new_size,
+                "avg_confidence": 1.0,
+                "rationale": f"Recovery ladder: {wins} consecutive wins — size restored toward ${baseline:,.0f} baseline",
+                "timestamp": datetime.utcnow().isoformat(),
+                "trigger_trade_id": trigger_trade_id,
+                "action_type": "CIRCUIT_RECOVERY",
+            })
+            self.db.save_learning_log(
+                param="position_size_usd",
+                old_value=current,
+                new_value=new_size,
+                avg_confidence=1.0,
+                rationale=f"Recovery ladder: {wins} consecutive wins",
+                learning_ids=[],
+                trigger_trade_id=trigger_trade_id,
+            )
+        except Exception:
+            logger.exception("Streak recovery check failed")
 
     # ── Layer 1a: Numeric parameter changes ───────────────────────────────────
 
@@ -208,7 +303,13 @@ class AutoTuner:
             avg_conf = sum(v["confidence"] for v in vote_list) / len(vote_list)
             if avg_conf < MIN_CONFIDENCE:
                 continue
-            param = key.split(":")[0]
+            param, direction = key.split(":")
+            if self._recently_reverted(param, direction):
+                logger.info(
+                    "AutoTuner: skipping %s:%s — reverted by validation recently (cool-off)",
+                    param, direction,
+                )
+                continue
             suggestions = sorted(v["suggested"] for v in vote_list)
             target  = suggestions[len(suggestions) // 2]
             clamped = self._clamp_numeric(param, target)
@@ -247,6 +348,12 @@ class AutoTuner:
                     continue
                 avg_conf = sum(v["confidence"] for v in vote_list) / len(vote_list)
                 if avg_conf < FILTER_CONFIDENCE:
+                    continue
+                if self._recently_reverted(param, "up" if direction == "on" else "down"):
+                    logger.info(
+                        "AutoTuner: skipping %s:%s — reverted by validation recently (cool-off)",
+                        param, direction,
+                    )
                     continue
                 self._apply_filter_toggle(
                     param,
@@ -409,6 +516,24 @@ class AutoTuner:
         })
 
     # ── Utilities ─────────────────────────────────────────────────────────────
+
+    def _recently_reverted(self, param: str, direction: str) -> bool:
+        """
+        True if a change to this param in this direction was reverted by the
+        validator within the last COOLOFF_WINDOW log entries. Blocks the
+        consensus layer from re-applying a proven-bad change while the losing
+        recommendations are still inside the learnings window.
+        """
+        try:
+            for entry in self.db.get_learning_log(limit=COOLOFF_WINDOW):
+                if entry.get("param") != param or not entry.get("reverted"):
+                    continue
+                entry_dir = "up" if float(entry["new_value"]) > float(entry["old_value"]) else "down"
+                if entry_dir == direction:
+                    return True
+        except Exception:
+            logger.exception("Cool-off check failed for %s", param)
+        return False
 
     def _typed_recs(
         self, learning: Dict[str, Any], rec_type: str

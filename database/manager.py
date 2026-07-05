@@ -327,6 +327,30 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN m2m_buffer_pct REAL DEFAULT 10.0")
             if 'exit_signal_mode' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_signal_mode TEXT DEFAULT 'zscore'")
+            if 'risk_reward_filter_enabled' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN risk_reward_filter_enabled INTEGER DEFAULT 0")
+            if 'min_risk_reward' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN min_risk_reward REAL DEFAULT 1.0")
+            if 'position_size_baseline_usd' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN position_size_baseline_usd REAL DEFAULT 0.0")
+
+            # Validation verdicts for applied auto-tune changes. One terminal
+            # row per learning_log entry once enough post-change trades exist.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS learning_validation (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    log_id INTEGER NOT NULL,
+                    verdict TEXT NOT NULL,
+                    n_before INTEGER,
+                    n_after INTEGER,
+                    win_rate_before REAL,
+                    win_rate_after REAL,
+                    expectancy_before REAL,
+                    expectancy_after REAL,
+                    action TEXT DEFAULT 'none'
+                )
+            """)
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -385,9 +409,12 @@ class DatabaseManager:
                     hurst_threshold=row["hurst_threshold"],
                     std_filter_enabled=bool(row["std_filter_enabled"]),
                     min_std_multiple=row["min_std_multiple"],
+                    risk_reward_filter_enabled=bool(row["risk_reward_filter_enabled"]) if "risk_reward_filter_enabled" in row.keys() else False,
+                    min_risk_reward=row["min_risk_reward"] if "min_risk_reward" in row.keys() else 1.0,
                     position_size_usd=row["position_size_usd"],
                     max_position_size_usd=row["max_position_size_usd"],
                     daily_max_loss_usd=row["daily_max_loss_usd"] if "daily_max_loss_usd" in row.keys() else 0.0,
+                    position_size_baseline_usd=row["position_size_baseline_usd"] if "position_size_baseline_usd" in row.keys() else 0.0,
                     spot_leverage=row["spot_leverage"] if "spot_leverage" in row.keys() else 1,
                     futures_leverage=row["futures_leverage"] if "futures_leverage" in row.keys() else 1,
                     hedge_ratio=row["hedge_ratio"] if "hedge_ratio" in row.keys() else 1.0,
@@ -440,9 +467,12 @@ class DatabaseManager:
                     hurst_threshold = ?,
                     std_filter_enabled = ?,
                     min_std_multiple = ?,
+                    risk_reward_filter_enabled = ?,
+                    min_risk_reward = ?,
                     position_size_usd = ?,
                     max_position_size_usd = ?,
                     daily_max_loss_usd = ?,
+                    position_size_baseline_usd = ?,
                     spot_leverage = ?,
                     futures_leverage = ?,
                     hedge_ratio = ?,
@@ -487,9 +517,12 @@ class DatabaseManager:
                 config.hurst_threshold,
                 int(config.std_filter_enabled),
                 config.min_std_multiple,
+                int(config.risk_reward_filter_enabled),
+                config.min_risk_reward,
                 config.position_size_usd,
                 config.max_position_size_usd,
                 config.daily_max_loss_usd,
+                config.position_size_baseline_usd,
                 config.spot_leverage,
                 config.futures_leverage,
                 config.hedge_ratio,
@@ -981,6 +1014,67 @@ class DatabaseManager:
                 "SELECT * FROM learning_log ORDER BY timestamp DESC LIMIT ?",
                 (limit,)
             )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def save_learning_validation(
+        self,
+        log_id: int,
+        verdict: str,
+        n_before: int,
+        n_after: int,
+        win_rate_before: float,
+        win_rate_after: float,
+        expectancy_before: float,
+        expectancy_after: float,
+        action: str = "none",
+    ) -> None:
+        """Record the terminal verdict for an applied auto-tune change."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO learning_validation
+                    (log_id, verdict, n_before, n_after,
+                     win_rate_before, win_rate_after,
+                     expectancy_before, expectancy_after, action)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                log_id, verdict, n_before, n_after,
+                win_rate_before, win_rate_after,
+                expectancy_before, expectancy_after, action,
+            ))
+
+    def get_validated_log_ids(self) -> set:
+        """log_ids that already have a terminal validation verdict."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT log_id FROM learning_validation")
+            return {row[0] for row in cursor.fetchall()}
+
+    def mark_learning_log_reverted(self, log_id: int) -> None:
+        """Flag an auto-tune change as reverted by the validator."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE learning_log SET reverted = 1 WHERE id = ?", (log_id,)
+            )
+
+    def get_learning_log_with_validation(self, limit: int = 8) -> List[Dict[str, Any]]:
+        """Auto-tune history joined with validation verdicts (newest first)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT ll.*,
+                       lv.verdict,
+                       lv.win_rate_before AS v_wr_before,
+                       lv.win_rate_after  AS v_wr_after,
+                       lv.expectancy_before AS v_exp_before,
+                       lv.expectancy_after  AS v_exp_after,
+                       lv.action AS v_action
+                FROM learning_log ll
+                LEFT JOIN learning_validation lv ON lv.log_id = ll.id
+                ORDER BY ll.timestamp DESC
+                LIMIT ?
+            """, (limit,))
             return [dict(row) for row in cursor.fetchall()]
 
     def log_sd_touch(self, event: SDTouchEvent) -> None:

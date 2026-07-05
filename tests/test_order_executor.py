@@ -36,24 +36,26 @@ def trading_config():
 
 
 @pytest.fixture
-def mock_spot_adapter():
+def mock_spot_adapter(spot_tick):
     """Create a mock spot adapter."""
     adapter = Mock()
     adapter.place_order = AsyncMock()
     adapter.cancel_order = AsyncMock(return_value=True)
     adapter.get_order_status = AsyncMock()
-    adapter.get_tick = AsyncMock()
+    # The executor re-fetches ticks mid-flow (POST_ONLY reprice loop); a bare
+    # AsyncMock here returns MagicMocks that blow up in price arithmetic.
+    adapter.get_tick = AsyncMock(return_value=spot_tick)
     return adapter
 
 
 @pytest.fixture
-def mock_futures_adapter():
+def mock_futures_adapter(futures_tick):
     """Create a mock futures adapter."""
     adapter = Mock()
     adapter.place_order = AsyncMock()
     adapter.cancel_order = AsyncMock(return_value=True)
     adapter.get_order_status = AsyncMock()
-    adapter.get_tick = AsyncMock()
+    adapter.get_tick = AsyncMock(return_value=futures_tick)
     return adapter
 
 
@@ -134,6 +136,8 @@ class TestLegSides:
     ):
         """Test LONG spread entry: Buy spot, Sell futures (short pos_side)."""
         trading_config.order_execution_mode = "MARKET"
+        trading_config.entry_execution_mode = "MARKET"
+        trading_config.exit_execution_mode = "MARKET"
         executor = OrderExecutor(trading_config, mock_spot_adapter, mock_futures_adapter)
 
         # Mock successful orders
@@ -161,6 +165,8 @@ class TestLegSides:
     ):
         """Test SHORT spread entry: Sell spot, Buy futures (long pos_side)."""
         trading_config.order_execution_mode = "MARKET"
+        trading_config.entry_execution_mode = "MARKET"
+        trading_config.exit_execution_mode = "MARKET"
         executor = OrderExecutor(trading_config, mock_spot_adapter, mock_futures_adapter)
 
         mock_spot_adapter.place_order.return_value = OrderResult(
@@ -187,6 +193,8 @@ class TestLegSides:
     ):
         """Test close LONG spread: Sell spot, Buy futures (same pos_side="short")."""
         trading_config.order_execution_mode = "MARKET"
+        trading_config.entry_execution_mode = "MARKET"
+        trading_config.exit_execution_mode = "MARKET"
         executor = OrderExecutor(trading_config, mock_spot_adapter, mock_futures_adapter)
 
         mock_spot_adapter.place_order.return_value = OrderResult(
@@ -376,6 +384,8 @@ class TestMarketOrderExecution:
     ):
         """Test that market orders fill both legs simultaneously."""
         trading_config.order_execution_mode = "MARKET"
+        trading_config.entry_execution_mode = "MARKET"
+        trading_config.exit_execution_mode = "MARKET"
         executor = OrderExecutor(trading_config, mock_spot_adapter, mock_futures_adapter)
 
         mock_spot_adapter.place_order.return_value = OrderResult(
