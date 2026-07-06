@@ -176,6 +176,8 @@ class TradingEngine:
         # Set True by _execute_exit_orders when the exit actually used MARKET (taker fee).
         # Read by _close_position fee calc and _round_trip_fees for accurate fee accounting.
         self._last_exit_was_market: bool = False
+        # Throttle for the exit-profit-gate "holding" log line (one per minute max).
+        self._exit_gate_last_log: Optional[datetime] = None
 
         # ── Post-entry exit tracking ────────────────────────────────────────
         # Consecutive ticks where H > hurst_exit_threshold (reset on open/close)
@@ -647,7 +649,10 @@ class TradingEngine:
         in_position = (self.open_trade is not None
                        and self.state.current_position != "NONE")
         if signal.signal_type in ("EXIT", "STOP_LOSS") and in_position:
-            await self._process_signal(signal)
+            # Cost-aware floor: a reversion EXIT below break-even holds instead
+            # of closing at a loss (stops/overrides are never gated inside).
+            if not self._signal_exit_gated(signal):
+                await self._process_signal(signal)
         elif signal.signal_type in ("LONG", "SHORT"):
             if self.state.algo_enabled:
                 await self._process_signal(signal)
@@ -815,6 +820,49 @@ class TradingEngine:
                                       t['target_usd'], t['stop_usd'])
         except Exception:
             return None
+
+    def _signal_exit_gated(self, signal: Signal) -> bool:
+        """Cost-aware gate on the signal-generator's reversion EXIT.
+
+        The rolling z can revert while the spread hasn't actually paid for the
+        trade (the mean drifts toward the spread during the hold), producing
+        "EXIT" closes below break-even. With the gate on, a reversion EXIT only
+        closes the trade once live net P&L (after ALL fees) >= the configured
+        floor — i.e. the spread has genuinely crossed the break-even level.
+        Until then the trade holds, still fully protected: DOLLAR_STOP, the z
+        stop-loss, PROFIT_TARGET and MAX_HOLD overrides are never gated (they
+        are either safety exits or already cost-aware by construction).
+
+        Returns True when the EXIT should be suppressed (keep holding).
+        """
+        if signal.signal_type != "EXIT":
+            return False                    # never gate STOP_LOSS
+        if self._override_exit_reason:
+            return False                    # override exit (already cost-aware)
+        floor = getattr(self.config, 'exit_profit_gate_usd', 0.0)
+        if floor is None or floor < 0:
+            return False                    # gate disabled
+        trade = self.open_trade
+        if not trade:
+            return False
+        net = self._live_net_pnl(trade)
+        if net is None:
+            return False                    # can't price it — fail open, allow the exit
+        if net >= floor:
+            return False                    # past break-even (+floor) — take the exit
+        now = datetime.utcnow()
+        if (self._exit_gate_last_log is None
+                or (now - self._exit_gate_last_log).total_seconds() >= 60):
+            self._exit_gate_last_log = now
+            lv = self._exit_spread_levels(trade)
+            be_txt = (f" — holding until spread clears BE @ {lv['break_even']:.2f}"
+                      if lv else "")
+            logger.info(
+                "EXIT held by profit gate: reversion fired (z=%.4f) but net "
+                "$%.2f < $%.2f floor after costs%s",
+                signal.zscore, net, floor, be_txt,
+            )
+        return True
 
     def _round_trip_cost_usd(self, trade: Trade,
                              exit_spot: Optional[float] = None,
@@ -1421,6 +1469,7 @@ class TradingEngine:
         self._velocity_exit_count = 0
         self._spread_velocity_window.clear()
         self._peak_pnl = 0.0
+        self._exit_gate_last_log = None
         self.state.current_position = position_type
         self.signal_generator.set_position(
             position_type,

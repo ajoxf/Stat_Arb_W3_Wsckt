@@ -123,6 +123,15 @@ class TradingConfig:
     # regardless of mode — that's a safety net, not a profit-take.
     exit_signal_mode: str = "zscore"  # zscore | spread | hybrid
 
+    # Cost-aware floor on reversion exits: a signal EXIT (z or spread mode)
+    # only closes the trade once live net P&L (after ALL fees) >= this value —
+    # i.e. the spread has actually crossed break-even, not just the statistics.
+    # 0 = exit at the first net-profitable tick after reversion fires (default).
+    # Negative = gate off (original behaviour: z-exit can close below cost).
+    # PROFIT_TARGET / DOLLAR_STOP / MAX_HOLD overrides and the z stop-loss are
+    # never gated — this only stops "profit-take" exits that would lose money.
+    exit_profit_gate_usd: float = 0.0
+
     # Rolling window settings
     lookback_period: int = 100
     stats_update_interval: int = 300  # Seconds between mean/std recalculation (default 5 min)
@@ -294,6 +303,7 @@ class TradingConfig:
             'stop_loss_capital_pct': self.stop_loss_capital_pct,
             'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,
+            'exit_profit_gate_usd': self.exit_profit_gate_usd,
             'lookback_period': self.lookback_period,
             'stats_update_interval': self.stats_update_interval,
             'hurst_enabled': self.hurst_enabled,

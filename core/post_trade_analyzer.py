@@ -725,6 +725,7 @@ Exit breakdown:       {exit_breakdown}
 ═══ CURRENT CONFIG ═══
 entry_threshold:      {config.entry_threshold}   (safe: 1.8–3.5, step ≤0.2)
 exit_threshold:       {config.exit_threshold}   (safe: 0.3–1.0, step ≤0.1)
+exit_profit_gate_usd: {getattr(config, 'exit_profit_gate_usd', 0.0)}   (reversion EXIT held until net ≥ this; −1 = off)
 stop_loss_threshold:  {config.stop_loss_threshold}   (safe: 3.0–5.5, step ≤0.3)
 min_std_multiple:     {config.min_std_multiple}   (edge gate; safe: 1.0–2.5, step ≤0.15)
 slippage_bps:         {config.slippage_bps}   (safe: 1.0–10.0, step ≤1.0)

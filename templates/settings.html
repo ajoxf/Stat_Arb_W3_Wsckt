@@ -198,6 +198,14 @@
                         </div>
                     </div>
 
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label">Exit Profit Gate (USD, net after all fees)</label>
+                            <input type="number" class="form-control" id="exit_profit_gate_usd" name="exit_profit_gate_usd" value="{{ config.exit_profit_gate_usd }}" step="0.5" min="-1">
+                            <small class="text-secondary">A reversion EXIT only closes the trade once live net P&amp;L (all fees paid) is at least this. <b>0 = break-even gate</b>: never take a losing "profit" exit — hold until the spread crosses the BE level. <b>−1 = off</b> (original behaviour). The dollar stop, z stop-loss, profit target and max-hold are never gated.</small>
+                        </div>
+                    </div>
+
                     <hr class="my-4" style="border-color: var(--border-color);">
 
                     <!-- Rolling Window -->
@@ -1513,6 +1521,7 @@
             stop_loss_capital_pct: parseFloat(document.getElementById('stop_loss_capital_pct').value) || 0,
             max_loss_usd: parseFloat(document.getElementById('max_loss_usd').value) || 0,
             exit_signal_mode: document.getElementById('exit_signal_mode').value,
+            exit_profit_gate_usd: parseFloat(document.getElementById('exit_profit_gate_usd').value) || 0,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
             hurst_enabled: document.getElementById('hurst_enabled').checked,
@@ -1665,6 +1674,7 @@
                 document.getElementById('stop_loss_capital_pct').value = config.stop_loss_capital_pct || 0;
                 document.getElementById('max_loss_usd').value = config.max_loss_usd || 0;
                 document.getElementById('exit_signal_mode').value = config.exit_signal_mode || 'zscore';
+                document.getElementById('exit_profit_gate_usd').value = config.exit_profit_gate_usd || 0;
                 document.getElementById('lookback_period').value = config.lookback_period;
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
