@@ -131,6 +131,12 @@ class TradingConfig:
     # PROFIT_TARGET / DOLLAR_STOP / MAX_HOLD overrides and the z stop-loss are
     # never gated — this only stops "profit-take" exits that would lose money.
     exit_profit_gate_usd: float = 0.0
+    # Scale-invariant form: required net profit as % of capital-at-risk (same
+    # denominator as stop_loss_capital_pct and the review's "cap %" numbers).
+    # When > 0 this overrides exit_profit_gate_usd — house convention: the
+    # scale-invariant field wins over its fixed-$ twin. e.g. 0.5 = hold a
+    # reversion EXIT until net >= BE + 0.5% of capital.
+    exit_profit_gate_pct: float = 0.0
 
     # Rolling window settings
     lookback_period: int = 100
@@ -304,6 +310,7 @@ class TradingConfig:
             'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,
             'exit_profit_gate_usd': self.exit_profit_gate_usd,
+            'exit_profit_gate_pct': self.exit_profit_gate_pct,
             'lookback_period': self.lookback_period,
             'stats_update_interval': self.stats_update_interval,
             'hurst_enabled': self.hurst_enabled,

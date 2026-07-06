@@ -19,9 +19,11 @@ ENTRY_SPOT = 1740.0
 ENTRY_FUT = 62000.0
 
 
-def make_engine(gate=0.0, position="LONG", spot_mid=ENTRY_SPOT, fut_mid=ENTRY_FUT):
+def make_engine(gate=0.0, gate_pct=0.0, position="LONG",
+                spot_mid=ENTRY_SPOT, fut_mid=ENTRY_FUT):
     eng = TradingEngine.__new__(TradingEngine)          # bypass heavy __init__
-    eng.config = TradingConfig(hedge_ratio=BETA, exit_profit_gate_usd=gate)
+    eng.config = TradingConfig(hedge_ratio=BETA, exit_profit_gate_usd=gate,
+                               exit_profit_gate_pct=gate_pct)
     eng._exit_postonly_reject_count = 0
     eng._EXIT_POSTONLY_MARKET_AFTER = 1
     eng._override_exit_reason = None
@@ -100,3 +102,48 @@ def test_short_direction_symmetry():
     # ...and is held while still in the fee hole at entry mids.
     eng2 = make_engine(gate=0.0, position="SHORT")
     assert eng2._signal_exit_gated(exit_signal(z=-0.3)) is True
+
+
+# ── %-of-capital form ─────────────────────────────────────────────────────────
+
+def test_pct_floor_resolves_from_capital_at_risk():
+    eng = make_engine(gate_pct=0.5)
+    capital = eng._capital_at_risk(eng.open_trade)
+    assert eng._exit_gate_floor(eng.open_trade) == pytest_approx(0.005 * capital)
+
+
+def test_pct_form_holds_and_releases_around_its_floor():
+    # Profitable trade; set the % so the floor lands just above net -> held,
+    # then just below net -> released. Robust to the fee schedule.
+    eng = make_engine(position="LONG", spot_mid=ENTRY_SPOT + 8.0)
+    net = eng._live_net_pnl(eng.open_trade)
+    capital = eng._capital_at_risk(eng.open_trade)
+    assert net > 0
+    eng.config.exit_profit_gate_pct = (net + 1.0) / capital * 100.0
+    assert eng._signal_exit_gated(exit_signal()) is True
+    eng.config.exit_profit_gate_pct = max((net - 1.0) / capital * 100.0, 1e-9)
+    eng._exit_gate_last_log = None
+    assert eng._signal_exit_gated(exit_signal()) is False
+
+
+def test_pct_overrides_disabled_usd():
+    # usd = -1 alone disables the gate, but pct > 0 re-arms it (pct wins).
+    eng = make_engine(gate=-1.0, gate_pct=0.5)   # in the fee hole at entry mids
+    assert eng._signal_exit_gated(exit_signal()) is True
+
+
+def test_gate_release_level_in_spread_levels():
+    from core.trading_engine import exit_spread_levels
+    # gate 0 -> release == BE; gate > 0 -> release sits past BE, at net == gate.
+    lv0 = exit_spread_levels(-2723.57, 0.054, "SHORT", 1.10, 2.74, 6.68, gate_usd=0.0)
+    assert lv0['gate_release'] == pytest_approx(lv0['break_even'])
+    lv = exit_spread_levels(-2723.57, 0.054, "SHORT", 1.10, 2.74, 6.68, gate_usd=2.0)
+    d = 1.0  # SHORT favorable = up
+    net_at_release = d * (lv['gate_release'] - (-2723.57)) * 0.054 - 1.10
+    assert net_at_release == pytest_approx(2.0)
+    assert lv['gate_release'] > lv['break_even']
+
+
+def pytest_approx(x):
+    import pytest
+    return pytest.approx(x, abs=1e-9)

@@ -46,28 +46,33 @@ class EngineState:
 
 def exit_spread_levels(entry_spread: float, quantity: float, position_type: str,
                        fees_usd: float, target_usd: float,
-                       stop_usd: float) -> Optional[Dict[str, Any]]:
+                       stop_usd: float, gate_usd: float = 0.0) -> Optional[Dict[str, Any]]:
     """Absolute spread values at which the trade breaks even, takes profit and
     stops out. This is the trade's whole geometry in the one variable that pays:
         net(S) = d × (S − entry_spread) × qty − fees,  d = −1 LONG / +1 SHORT
     (matches _live_net_pnl exactly). Solving:
         break-even   net = 0            →  S = entry + d × fees/qty
+        gate-release net = gate         →  S = entry + d × (gate+fees)/qty
         take-profit  net = target       →  S = entry + d × (target+fees)/qty
         stop         gross = −stop      →  S = entry − d × stop/qty
     (the dollar stop fires on GROSS move ≥ stop, see _check_override_exit).
-    Levels are in spread-price units — they do not drift with the rolling mean,
-    unlike the in-trade z-score. Returns None if quantity is unusable; target/
-    stop levels are None when that override is disabled (<= 0).
+    gate_release is where a reversion EXIT actually closes under the exit
+    profit gate — it equals break_even when gate_usd is 0. Levels are in
+    spread-price units — they do not drift with the rolling mean, unlike the
+    in-trade z-score. Returns None if quantity is unusable; target/stop levels
+    are None when that override is disabled (<= 0).
     """
     if not quantity or quantity <= 0:
         return None
     d = -1.0 if (position_type or "").upper() == "LONG" else 1.0
     be = entry_spread + d * (fees_usd / quantity)
+    gate = entry_spread + d * ((max(gate_usd, 0.0) + fees_usd) / quantity)
     tp = entry_spread + d * ((target_usd + fees_usd) / quantity) if target_usd > 0 else None
     sl = entry_spread - d * (stop_usd / quantity) if stop_usd > 0 else None
     return {
         'entry': entry_spread,
         'break_even': be,
+        'gate_release': gate,
         'take_profit': tp,
         'stop': sl,
         'favorable': 'down' if d < 0 else 'up',   # profitable spread direction
@@ -815,11 +820,26 @@ class TradingEngine:
             exit_override = ("MARKET" if self._exit_postonly_reject_count
                              >= self._EXIT_POSTONLY_MARKET_AFTER else None)
             fees = self._round_trip_fees(trade, exit_mode_override=exit_override)
+            gate = self._exit_gate_floor(trade) or 0.0
             return exit_spread_levels(entry_spread, trade.quantity,
                                       trade.position_type, fees,
-                                      t['target_usd'], t['stop_usd'])
+                                      t['target_usd'], t['stop_usd'],
+                                      gate_usd=gate)
         except Exception:
             return None
+
+    def _exit_gate_floor(self, trade: Trade) -> Optional[float]:
+        """Resolved exit-profit-gate floor (USD) for this trade, or None when
+        the gate is disabled. The scale-invariant %-of-capital form wins when
+        set (house convention, same as stop_loss_capital_pct vs max_loss_usd);
+        otherwise the fixed-USD form; a negative USD value disables the gate."""
+        pct = getattr(self.config, 'exit_profit_gate_pct', 0.0) or 0.0
+        if pct > 0:
+            return pct / 100.0 * self._capital_at_risk(trade)
+        usd = getattr(self.config, 'exit_profit_gate_usd', 0.0)
+        if usd is None or usd < 0:
+            return None
+        return usd
 
     def _signal_exit_gated(self, signal: Signal) -> bool:
         """Cost-aware gate on the signal-generator's reversion EXIT.
@@ -839,12 +859,12 @@ class TradingEngine:
             return False                    # never gate STOP_LOSS
         if self._override_exit_reason:
             return False                    # override exit (already cost-aware)
-        floor = getattr(self.config, 'exit_profit_gate_usd', 0.0)
-        if floor is None or floor < 0:
-            return False                    # gate disabled
         trade = self.open_trade
         if not trade:
             return False
+        floor = self._exit_gate_floor(trade)
+        if floor is None:
+            return False                    # gate disabled
         net = self._live_net_pnl(trade)
         if net is None:
             return False                    # can't price it — fail open, allow the exit
@@ -2696,6 +2716,12 @@ class TradingEngine:
                     k: (round(v, 2) if isinstance(v, float) else v)
                     for k, v in levels.items()
                 }
+            try:
+                gate_floor = self._exit_gate_floor(self.open_trade)
+                if gate_floor is not None:
+                    open_trade_dict['exit_gate_floor_usd'] = round(gate_floor, 2)
+            except Exception:
+                pass
 
         # Tick age: how stale is the most recent price update
         tick_age_ms = None

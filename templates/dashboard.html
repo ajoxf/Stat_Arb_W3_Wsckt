@@ -410,7 +410,7 @@
                     </div>
                     <div class="row mb-1" id="position-levels-row" style="display:none;">
                         <div class="col-12" style="font-size: 0.75rem;"
-                             title="Absolute spread values where this trade breaks even (covers all fees), takes profit, and stops out — same math the exit overrides fire on. These levels do NOT drift with the rolling mean, unlike the in-trade z-score. Watch the live spread against them.">
+                             title="Absolute spread values where this trade breaks even (covers all fees), releases a reversion exit (EX = BE + profit gate, shown when a gate is set), takes profit, and stops out — same math the exit overrides fire on. These levels do NOT drift with the rolling mean, unlike the in-trade z-score. Watch the live spread against them.">
                             <span class="text-secondary">Levels:</span>
                             <span id="position-levels" class="font-monospace">-</span>
                         </div>
@@ -2276,8 +2276,13 @@ function updateFilterStatus(elementId, passed, value) {
                 if (levelsRow && levelsEl && lv && lv.break_even != null) {
                     const fmt = x => (x == null) ? 'off' : parseFloat(x).toFixed(2);
                     const arrow = lv.favorable === 'down' ? '↓' : '↑';
+                    // EX = where a reversion EXIT actually releases (BE + profit
+                    // gate). Only shown when a gate floor pushes it past BE.
+                    const hasGate = lv.gate_release != null &&
+                        Math.abs(parseFloat(lv.gate_release) - parseFloat(lv.break_even)) > 0.005;
                     levelsEl.innerHTML =
                         'BE <span class="text-info">' + fmt(lv.break_even) + '</span>' +
+                        (hasGate ? ' · EX <span class="text-warning">' + fmt(lv.gate_release) + '</span>' : '') +
                         ' · TP <span class="text-success">' + fmt(lv.take_profit) + '</span>' +
                         ' · SL <span class="text-danger">' + fmt(lv.stop) + '</span>' +
                         ' <span class="text-secondary">(profit ' + arrow + ')</span>';

@@ -63,6 +63,7 @@ class DatabaseManager:
                     stop_loss_threshold REAL DEFAULT 4.0,
                     profit_target_sigma_frac REAL DEFAULT 0.0,
                     exit_profit_gate_usd REAL DEFAULT 0.0,
+                    exit_profit_gate_pct REAL DEFAULT 0.0,
                     profit_target_usd REAL DEFAULT 0.0,
                     profit_target_min_cost_mult REAL DEFAULT 0.0,
                     max_hold_halflife_mult REAL DEFAULT 0.0,
@@ -393,6 +394,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_sigma_frac REAL DEFAULT 0.0")
             if 'exit_profit_gate_usd' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_profit_gate_usd REAL DEFAULT 0.0")
+            if 'exit_profit_gate_pct' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_profit_gate_pct REAL DEFAULT 0.0")
             if 'max_hold_halflife_mult' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_halflife_mult REAL DEFAULT 0.0")
             if 'stop_loss_capital_pct' not in existing_columns:
@@ -511,6 +514,7 @@ class DatabaseManager:
                     min_fill_ratio=row["min_fill_ratio"] if "min_fill_ratio" in row.keys() else 0.95,
                     profit_target_sigma_frac=row["profit_target_sigma_frac"] if "profit_target_sigma_frac" in row.keys() else 0.0,
                     exit_profit_gate_usd=row["exit_profit_gate_usd"] if "exit_profit_gate_usd" in row.keys() and row["exit_profit_gate_usd"] is not None else 0.0,
+                    exit_profit_gate_pct=row["exit_profit_gate_pct"] if "exit_profit_gate_pct" in row.keys() and row["exit_profit_gate_pct"] is not None else 0.0,
                     profit_target_usd=row["profit_target_usd"] if "profit_target_usd" in row.keys() else 0.0,
                     profit_target_min_cost_mult=row["profit_target_min_cost_mult"] if "profit_target_min_cost_mult" in row.keys() else 0.0,
                     max_hold_halflife_mult=row["max_hold_halflife_mult"] if "max_hold_halflife_mult" in row.keys() else 0.0,
@@ -544,6 +548,7 @@ class DatabaseManager:
                     stop_loss_threshold = ?,
                     exit_signal_mode = ?,
                     exit_profit_gate_usd = ?,
+                    exit_profit_gate_pct = ?,
                     lookback_period = ?,
                     stats_update_interval = ?,
                     hurst_enabled = ?,
@@ -611,6 +616,7 @@ class DatabaseManager:
                 config.stop_loss_threshold,
                 config.exit_signal_mode,
                 config.exit_profit_gate_usd,
+                config.exit_profit_gate_pct,
                 config.lookback_period,
                 config.stats_update_interval,
                 int(config.hurst_enabled),
