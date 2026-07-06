@@ -408,6 +408,13 @@
                             <span id="position-spread-delta">-</span>
                         </div>
                     </div>
+                    <div class="row mb-1" id="position-levels-row" style="display:none;">
+                        <div class="col-12" style="font-size: 0.75rem;"
+                             title="Absolute spread values where this trade breaks even (covers all fees), takes profit, and stops out — same math the exit overrides fire on. These levels do NOT drift with the rolling mean, unlike the in-trade z-score. Watch the live spread against them.">
+                            <span class="text-secondary">Levels:</span>
+                            <span id="position-levels" class="font-monospace">-</span>
+                        </div>
+                    </div>
                     <div class="row">
                         <div class="col-6">
                             <span class="text-secondary">Age:</span>
@@ -2260,6 +2267,24 @@ function updateFilterStatus(elementId, passed, value) {
 
                 const notionalEl = document.getElementById('position-notional');
                 if (notionalEl) notionalEl.textContent = t.notional_usd ? '$' + parseFloat(t.notional_usd).toFixed(0) : '-';
+
+                // Absolute BE/TP/SL spread levels — drift-free trade geometry
+                // (the in-trade z-score moves with the rolling mean; these don't).
+                const levelsRow = document.getElementById('position-levels-row');
+                const levelsEl  = document.getElementById('position-levels');
+                const lv = t.spread_levels;
+                if (levelsRow && levelsEl && lv && lv.break_even != null) {
+                    const fmt = x => (x == null) ? 'off' : parseFloat(x).toFixed(2);
+                    const arrow = lv.favorable === 'down' ? '↓' : '↑';
+                    levelsEl.innerHTML =
+                        'BE <span class="text-info">' + fmt(lv.break_even) + '</span>' +
+                        ' · TP <span class="text-success">' + fmt(lv.take_profit) + '</span>' +
+                        ' · SL <span class="text-danger">' + fmt(lv.stop) + '</span>' +
+                        ' <span class="text-secondary">(profit ' + arrow + ')</span>';
+                    levelsRow.style.display = '';
+                } else if (levelsRow) {
+                    levelsRow.style.display = 'none';
+                }
 
                 // Target & Stop levels
                 const targetUsd = t.exit_target_usd != null ? parseFloat(t.exit_target_usd) : 0;

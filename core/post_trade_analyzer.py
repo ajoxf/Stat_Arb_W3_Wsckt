@@ -368,6 +368,29 @@ class PostTradeAnalyzer:
         spread_move = trade.entry_spread - trade.exit_spread  # positive for LONG if spread fell
         spread_move_usd = spread_move * trade.quantity if trade.quantity else 0.0
 
+        # ── Δ-Spread ledger: the only number that pays is Δspread × qty. ──
+        # Everything below is in spread-price units ("units"), favorable-signed:
+        # positive = the spread moved the direction this trade profits from.
+        _qty = trade.quantity or 0.0
+        _d_fav = -1.0 if trade.position_type == "LONG" else 1.0   # LONG profits when spread falls
+        available_delta = abs(trade.entry_zscore or 0.0) * (trade.entry_spread_std or 0.0)
+        realized_delta = (_d_fav * (trade.exit_spread - trade.entry_spread)) if _qty > 0 else 0.0
+        cost_delta = (fees_usd / _qty) if _qty > 0 else 0.0        # break-even Δ (fees)
+        capture_pct = (realized_delta / available_delta * 100.0) if available_delta > 0 else 0.0
+        be_level = trade.entry_spread + _d_fav * cost_delta        # spread value where net = 0
+        if _qty > 0 and available_delta > 0:
+            delta_ledger_block = (
+                f"Favorable direction:  spread {'DOWN' if _d_fav < 0 else 'UP'} "
+                f"({trade.position_type} spread)\n"
+                f"Available Δ at entry: {available_delta:.2f} units  (|z|×σ = distance to the mean)\n"
+                f"Break-even Δ (fees):  {cost_delta:.2f} units  → BE spread level {be_level:.2f}\n"
+                f"Realized Δ:           {realized_delta:+.2f} units  (gross ${gross_usd:+.2f} at qty {_qty:.4f})\n"
+                f"Capture ratio:        {capture_pct:.0f}% of the available move "
+                f"({'never cleared break-even' if realized_delta <= cost_delta else 'cleared break-even'})"
+            )
+        else:
+            delta_ledger_block = "  (insufficient data: quantity or entry σ missing)"
+
         # ── Entry spread context ──
         e_std  = trade.entry_spread_std
         e_mean = trade.entry_spread_mean
@@ -669,6 +692,9 @@ Exit reason:          {trade.exit_reason}
 Entry latency:        {entry_lat}
 Exit latency:         {exit_lat}
 Cost-to-Opp ratio:    {cor}  (round-trip cost {total_cost_bps:.1f} bps vs {abs(gross_pnl_bps):.1f} bps gross move)
+
+═══ Δ-SPREAD LEDGER (P&L = Δspread × qty — judge the trade in these units) ═══
+{delta_ledger_block}
 
 ═══ FEE EFFICIENCY (engine estimate) ═══
 {fee_efficiency_block}

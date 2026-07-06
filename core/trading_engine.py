@@ -44,6 +44,36 @@ class EngineState:
     error: str = ""
 
 
+def exit_spread_levels(entry_spread: float, quantity: float, position_type: str,
+                       fees_usd: float, target_usd: float,
+                       stop_usd: float) -> Optional[Dict[str, Any]]:
+    """Absolute spread values at which the trade breaks even, takes profit and
+    stops out. This is the trade's whole geometry in the one variable that pays:
+        net(S) = d × (S − entry_spread) × qty − fees,  d = −1 LONG / +1 SHORT
+    (matches _live_net_pnl exactly). Solving:
+        break-even   net = 0            →  S = entry + d × fees/qty
+        take-profit  net = target       →  S = entry + d × (target+fees)/qty
+        stop         gross = −stop      →  S = entry − d × stop/qty
+    (the dollar stop fires on GROSS move ≥ stop, see _check_override_exit).
+    Levels are in spread-price units — they do not drift with the rolling mean,
+    unlike the in-trade z-score. Returns None if quantity is unusable; target/
+    stop levels are None when that override is disabled (<= 0).
+    """
+    if not quantity or quantity <= 0:
+        return None
+    d = -1.0 if (position_type or "").upper() == "LONG" else 1.0
+    be = entry_spread + d * (fees_usd / quantity)
+    tp = entry_spread + d * ((target_usd + fees_usd) / quantity) if target_usd > 0 else None
+    sl = entry_spread - d * (stop_usd / quantity) if stop_usd > 0 else None
+    return {
+        'entry': entry_spread,
+        'break_even': be,
+        'take_profit': tp,
+        'stop': sl,
+        'favorable': 'down' if d < 0 else 'up',   # profitable spread direction
+    }
+
+
 class TradingEngine:
     """
     Main trading engine that coordinates price feeds, signal generation,
@@ -766,6 +796,26 @@ class TradingEngine:
             b_exit  / 10000.0 * trade.quantity * exit_fut
         )
 
+    def _exit_spread_levels(self, trade: Trade) -> Optional[Dict[str, Any]]:
+        """Live BE/TP/SL spread levels for the open trade, using the SAME
+        target/stop/fee sources as the fast-exit overrides — so these are
+        exactly the spread values at which those overrides fire. Display and
+        logging only; nothing reads these to make decisions."""
+        if not trade:
+            return None
+        try:
+            beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+            entry_spread = trade.entry_futures_price - beta * trade.entry_spot_price
+            t = self._effective_exit_targets(trade)
+            exit_override = ("MARKET" if self._exit_postonly_reject_count
+                             >= self._EXIT_POSTONLY_MARKET_AFTER else None)
+            fees = self._round_trip_fees(trade, exit_mode_override=exit_override)
+            return exit_spread_levels(entry_spread, trade.quantity,
+                                      trade.position_type, fees,
+                                      t['target_usd'], t['stop_usd'])
+        except Exception:
+            return None
+
     def _round_trip_cost_usd(self, trade: Trade,
                              exit_spot: Optional[float] = None,
                              exit_fut: Optional[float] = None) -> float:
@@ -1382,6 +1432,19 @@ class TradingEngine:
                     "spot=%.2f, futures=%.2f, spread=%.6f, zscore=%.4f",
                     position_type, quantity, spot_qty, beta,
                     spot_price, futures_price, signal.spread, signal.zscore)
+
+        # The trade's geometry in spread units — the absolute levels where it
+        # breaks even / takes profit / stops out. These don't drift with the
+        # rolling mean, unlike the z-score; watch the spread against them.
+        _lv = self._exit_spread_levels(trade)
+        if _lv:
+            logger.info(
+                "Trade geometry (spread units, favorable=%s): entry %.2f | BE @ %.2f | "
+                "TP @ %s | SL @ %s",
+                _lv['favorable'], _lv['entry'], _lv['break_even'],
+                f"{_lv['take_profit']:.2f}" if _lv['take_profit'] is not None else "off",
+                f"{_lv['stop']:.2f}" if _lv['stop'] is not None else "off",
+            )
 
         get_notifier().notify_trade_entry(trade, signal)
 
@@ -2575,6 +2638,15 @@ class TradingEngine:
                     open_trade_dict['max_hold_minutes'] = round(tg['max_hold_minutes'], 1)
             except Exception:
                 pass
+            # Absolute spread levels (BE/TP/SL) — the drift-free way to watch an
+            # open trade: unlike the in-trade z-score, these don't move with the
+            # rolling mean. Display only.
+            levels = self._exit_spread_levels(self.open_trade)
+            if levels:
+                open_trade_dict['spread_levels'] = {
+                    k: (round(v, 2) if isinstance(v, float) else v)
+                    for k, v in levels.items()
+                }
 
         # Tick age: how stale is the most recent price update
         tick_age_ms = None
