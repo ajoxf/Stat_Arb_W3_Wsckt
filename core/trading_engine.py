@@ -1732,6 +1732,10 @@ class TradingEngine:
         # when the executed ratio equals beta).
         beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
         spot_qty = trade.spot_qty if trade.spot_qty > 0 else trade.quantity * beta
+        # Fill-derived spreads (fut − β × spot) — kept for the audit-trail
+        # stamps below and the z/spread displays; P&L itself is per-leg.
+        entry_spread_fills = trade.entry_futures_price - beta * trade.entry_spot_price
+        exit_spread_fills  = trade.exit_futures_price  - beta * trade.exit_spot_price
         pnl_gross = per_leg_gross_pnl(
             trade.position_type, spot_qty, trade.quantity,
             trade.entry_spot_price, trade.entry_futures_price,

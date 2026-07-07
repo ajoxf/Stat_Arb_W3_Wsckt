@@ -155,3 +155,61 @@ def test_live_net_pnl_falls_back_to_beta_for_legacy_trades():
     expected = per_leg_gross_pnl("SHORT", BETA * 0.054, 0.054,
                                  1778.04, 63288.2, 1770.36, 63063.8)
     assert eng._live_net_pnl(eng.open_trade) == pytest.approx(expected, abs=1e-9)
+
+
+# ── full close path (regression: 2026-07-07 crash loop) ─────────────────────
+
+def test_close_position_runs_to_completion_in_paper_mode():
+    """The per-leg P&L refactor deleted entry_spread_fills/exit_spread_fills
+    but the audit-trail stamps still referenced them — every _close_position
+    call died with NameError AFTER the exchange legs were flat and BEFORE the
+    trade was marked closed, so the engine retried the close forever. This
+    runs the ENTIRE close path (paper mode skips only the order placement) so
+    any dangling name or broken accounting in it fails the suite."""
+    import asyncio
+    from collections import deque
+    from datetime import datetime
+
+    from core.trading_engine import EngineState
+
+    eng = TradingEngine.__new__(TradingEngine)
+    eng.config = TradingConfig(hedge_ratio=BETA)
+    eng.state = EngineState(paper_trading=True, current_position="SHORT")
+    eng.open_trade = Trade(
+        position_type="SHORT", entry_time=datetime.utcnow(),
+        entry_spot_price=1777.47, entry_futures_price=63194.90,
+        quantity=0.03, spot_qty=1.1, notional_usd=3851.0, is_open=True,
+    )
+    eng.spot_tick = SimpleNamespace(mid=1773.00)
+    eng.futures_tick = SimpleNamespace(mid=63190.00)
+    eng._override_exit_reason = None
+    eng._last_exit_attempt = None
+    eng._exit_postonly_reject_count = 0
+    eng._dollar_stop_maker_attempts = 0
+    eng._last_exit_was_market = False
+    eng._daily_loss_usd = 0.0
+    eng._entry_tick_count = 0
+    eng._hurst_exit_count = 0
+    eng._velocity_exit_count = 0
+    eng._spread_velocity_window = deque(maxlen=10)
+    eng._peak_pnl = 0.0
+    eng._exit_gate_last_log = None
+    eng._entry_cooldown_until = None
+    eng.signal_generator = SimpleNamespace(set_position=lambda *a, **k: None)
+    eng.on_trade = None
+
+    trade = eng.open_trade
+    signal = SimpleNamespace(signal_type="EXIT", zscore=0.757)
+    asyncio.run(eng._close_position(signal))
+
+    assert trade.is_open is False
+    assert eng.open_trade is None
+    assert eng.state.current_position == "NONE"
+    # the exact stamps that crashed (audit-trail fill spreads)
+    assert trade.entry_spread == pytest.approx(63194.90 - BETA * 1777.47)
+    assert trade.exit_spread == pytest.approx(63190.00 - BETA * 1773.00)
+    # per-leg gross on the REAL 1.1 / 0.03 position
+    expected_gross = per_leg_gross_pnl("SHORT", 1.1, 0.03,
+                                       1777.47, 63194.90, 1773.00, 63190.00)
+    assert trade.pnl_gross_usd == pytest.approx(expected_gross, abs=1e-9)
+    assert trade.pnl_usd == pytest.approx(expected_gross - trade.fees_usd, abs=1e-9)
