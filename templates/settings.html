@@ -110,7 +110,11 @@
                     <!-- Fast-Exit Overrides (trending-market protection) -->
                     <div class="row mb-2">
                         <div class="col-12 mb-2">
-                            <h6 class="text-secondary mb-1"><i class="bi bi-lightning-charge me-2"></i>Fast-Exit Overrides</h6>
+                            <h6 class="text-secondary mb-1"><i class="bi bi-lightning-charge me-2"></i>Fast-Exit Overrides
+                                <a href="/static/exit-logic-reference.html" target="_blank" class="ms-2" style="font-size: 0.8rem; font-weight: normal;">
+                                    <i class="bi bi-book me-1"></i>Full exit-logic reference — how every close happens
+                                </a>
+                            </h6>
                             <small class="text-secondary">Exit on dollars/time instead of waiting for Z to fully revert &mdash; protects profit in trending markets. All P&L is <strong>NET</strong> (after round-trip fees). Set to <strong>0</strong> to disable. Z-score exit/stop-loss remain active as backstops &mdash; but note the <strong>Dollar Stop below usually fires first</strong>, so raising the Z-score Stop alone (e.g. to 7) will <em>not</em> give a trade more room to revert; widen the dollar stop (lower R:R and/or higher %-capital cap) instead.
                             <br><strong>Scale-invariant (recommended)</strong> &mdash; these auto-adjust to position size, volatility and the pair, so they keep working unchanged as you scale up. They take precedence over the fixed-$ fields below when set.</small>
                         </div>

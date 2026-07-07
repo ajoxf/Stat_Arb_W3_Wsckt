@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exit Logic — ETH/BTC Spread Bot</title>
+<style>
+  :root{
+    --ground:#F4F6F6; --surface:#FFFFFF; --surface-2:#EFF3F2;
+    --ink:#0E1A19; --muted:#55635F; --faint:#84938F;
+    --line:#E0E7E5; --line-2:#CAD4D1;
+    --accent:#0E7C7B; --accent-soft:#0e7c7b18;
+    --win:#158A4E; --win-soft:#158a4e14;
+    --loss:#C24339; --loss-soft:#c2433914;
+    --warn:#9A6B15; --warn-soft:#9a6b1514;
+    --shadow:0 1px 2px rgba(16,32,30,.05),0 8px 24px rgba(16,32,30,.06);
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ground:#0B1211; --surface:#101a18; --surface-2:#0d1615;
+      --ink:#E9F1EF; --muted:#8A9C97; --faint:#5f716c;
+      --line:#1E2C29; --line-2:#293a37;
+      --accent:#34BDB6; --accent-soft:#34bdb61e;
+      --win:#46CE88; --win-soft:#46ce881c;
+      --loss:#F0685D; --loss-soft:#f0685d1c;
+      --warn:#D8AB55; --warn-soft:#d8ab551c;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.28);
+    }
+  }
+  :root[data-theme="light"]{
+    --ground:#F4F6F6; --surface:#FFFFFF; --surface-2:#EFF3F2;
+    --ink:#0E1A19; --muted:#55635F; --faint:#84938F;
+    --line:#E0E7E5; --line-2:#CAD4D1;
+    --accent:#0E7C7B; --accent-soft:#0e7c7b18;
+    --win:#158A4E; --win-soft:#158a4e14;
+    --loss:#C24339; --loss-soft:#c2433914;
+    --warn:#9A6B15; --warn-soft:#9a6b1514;
+    --shadow:0 1px 2px rgba(16,32,30,.05),0 8px 24px rgba(16,32,30,.06);
+  }
+  :root[data-theme="dark"]{
+    --ground:#0B1211; --surface:#101a18; --surface-2:#0d1615;
+    --ink:#E9F1EF; --muted:#8A9C97; --faint:#5f716c;
+    --line:#1E2C29; --line-2:#293a37;
+    --accent:#34BDB6; --accent-soft:#34bdb61e;
+    --win:#46CE88; --win-soft:#46ce881c;
+    --loss:#F0685D; --loss-soft:#f0685d1c;
+    --warn:#D8AB55; --warn-soft:#d8ab551c;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.28);
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    line-height:1.55;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1000px;margin:0 auto;padding:clamp(20px,4vw,52px) clamp(16px,4vw,40px) 72px;}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums;}
+
+  /* ---- header ---- */
+  header{border-bottom:1px solid var(--line-2);padding-bottom:26px;margin-bottom:34px;}
+  .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--accent);margin:0 0 12px;font-weight:600;}
+  h1{font-size:clamp(1.7rem,4vw,2.5rem);line-height:1.05;margin:0 0 10px;letter-spacing:-.02em;
+    text-wrap:balance;font-weight:680;}
+  .lede{font-size:1.05rem;color:var(--muted);margin:0;max-width:60ch;}
+  .metabar{display:flex;flex-wrap:wrap;gap:8px 10px;margin-top:20px;}
+  .tag{font-family:var(--mono);font-size:.74rem;color:var(--muted);background:var(--surface-2);
+    border:1px solid var(--line);border-radius:999px;padding:4px 11px;}
+  .tag b{color:var(--ink);font-weight:600;}
+
+  section{margin-top:46px;}
+  h2{font-size:1.28rem;letter-spacing:-.01em;margin:0 0 4px;font-weight:660;}
+  .sub{color:var(--muted);margin:0 0 20px;font-size:.95rem;max-width:66ch;}
+  .kicker{font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--faint);font-weight:600;display:block;margin-bottom:9px;}
+
+  /* ---- the bet: def chips ---- */
+  .defs{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .def{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 17px;box-shadow:var(--shadow);}
+  .def .t{font-family:var(--mono);font-size:.78rem;color:var(--accent);font-weight:600;margin-bottom:6px;letter-spacing:.02em;}
+  .def p{margin:0;font-size:.9rem;color:var(--muted);}
+  .def p b{color:var(--ink);font-weight:600;}
+
+  /* ---- z axis diagram ---- */
+  .diagram{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    padding:22px 20px 14px;box-shadow:var(--shadow);}
+  .diagram svg{width:100%;height:auto;display:block;}
+  .zx-zone-home{fill:var(--win-soft);}
+  .zx-zone-stop{fill:var(--loss-soft);}
+  .zx-axis{stroke:var(--line-2);stroke-width:2;}
+  .zx-tick{stroke:var(--line-2);stroke-width:1.5;}
+  .zx-entry{stroke:var(--accent);stroke-width:2;stroke-dasharray:3 4;}
+  .zx-stopline{stroke:var(--loss);stroke-width:2;}
+  .zx-lbl{fill:var(--muted);font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;}
+  .zx-lbl-strong{fill:var(--ink);font-family:var(--mono);font-size:12.5px;font-weight:600;}
+  .zx-cap{fill:var(--accent);font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;}
+  .zx-cap-win{fill:var(--win);}
+  .zx-cap-loss{fill:var(--loss);}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;padding-top:13px;border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:.75rem;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:7px;}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block;}
+
+  /* ---- exits ---- */
+  .exit-group{display:grid;gap:11px;}
+  .exit{display:grid;grid-template-columns:auto 1fr auto;gap:4px 16px;align-items:baseline;
+    background:var(--surface);border:1px solid var(--line);border-left-width:3px;border-radius:10px;
+    padding:14px 17px;box-shadow:var(--shadow);}
+  .exit.win{border-left-color:var(--win);}
+  .exit.loss{border-left-color:var(--loss);}
+  .exit .name{font-weight:640;font-size:1.02rem;}
+  .exit .trigger{grid-column:2;color:var(--muted);font-size:.9rem;}
+  .exit .trigger b{color:var(--ink);font-weight:600;}
+  .exit .fill{grid-column:3;grid-row:1;font-family:var(--mono);font-size:.72rem;
+    padding:3px 9px;border-radius:999px;white-space:nowrap;align-self:center;}
+  .fill.maker{color:var(--win);background:var(--win-soft);}
+  .fill.market{color:var(--loss);background:var(--loss-soft);}
+  .fill.mixed{color:var(--warn);background:var(--warn-soft);}
+  .grouphead{display:flex;align-items:center;gap:10px;margin:0 0 12px;font-family:var(--mono);
+    font-size:.74rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);}
+  .grouphead .dot{width:8px;height:8px;border-radius:50%;}
+
+  /* ---- mechanics cards ---- */
+  .mech{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:17px 18px;box-shadow:var(--shadow);}
+  .card h3{margin:0 0 9px;font-size:.95rem;font-weight:640;}
+  .formula{font-family:var(--mono);font-size:.86rem;background:var(--surface-2);border:1px solid var(--line);
+    border-radius:8px;padding:9px 11px;margin:0 0 10px;color:var(--ink);overflow-x:auto;white-space:nowrap;}
+  .card p{margin:0;font-size:.87rem;color:var(--muted);}
+  .card p b{color:var(--ink);font-weight:600;}
+  .card .num{color:var(--accent);font-weight:600;}
+
+  /* ---- honest catch callout ---- */
+  .callout{background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);
+    border-radius:12px;padding:16px 19px;margin-top:20px;}
+  .callout .k{font-family:var(--mono);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--warn);font-weight:700;margin-bottom:6px;}
+  .callout p{margin:0;font-size:.92rem;color:var(--ink);}
+  .callout p + p{margin-top:7px;color:var(--muted);}
+
+  /* ---- scaling ---- */
+  .scale-lead{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px;margin-bottom:18px;}
+  .scale-lead .big{font-family:var(--mono);font-size:clamp(1.6rem,5vw,2.3rem);font-weight:680;color:var(--accent);letter-spacing:-.02em;}
+  .scale-lead .big small{color:var(--muted);font-size:.9rem;font-weight:500;}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);}
+  table{border-collapse:collapse;width:100%;min-width:520px;background:var(--surface);}
+  caption{caption-side:top;text-align:left;font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--faint);padding:14px 18px 0;}
+  th,td{padding:12px 18px;text-align:left;border-bottom:1px solid var(--line);}
+  thead th{font-family:var(--mono);font-size:.74rem;letter-spacing:.05em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;}
+  tbody th{font-weight:560;font-size:.92rem;}
+  td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;font-size:.95rem;}
+  td.now{color:var(--muted);}
+  td.big{color:var(--accent);font-weight:600;}
+  tbody tr:last-child td,tbody tr:last-child th{border-bottom:none;}
+  tr.rule th,tr.rule td{border-top:2px solid var(--line-2);}
+
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px;}
+  .panel{border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:var(--surface);box-shadow:var(--shadow);}
+  .panel.stay{border-top:3px solid var(--accent);}
+  .panel.change{border-top:3px solid var(--warn);}
+  .panel h4{margin:0 0 11px;font-size:.95rem;font-weight:640;display:flex;align-items:center;gap:8px;}
+  .panel ul{margin:0;padding:0;list-style:none;display:grid;gap:8px;}
+  .panel li{font-size:.88rem;color:var(--muted);display:flex;gap:9px;align-items:baseline;}
+  .panel li .mono{color:var(--ink);font-size:.82rem;}
+  .panel li::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;margin-top:7px;background:var(--line-2);}
+  .panel.stay li::before{background:var(--accent);}
+  .panel.change li::before{background:var(--warn);}
+
+  footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:.74rem;color:var(--faint);display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:space-between;}
+
+  @media (max-width:720px){
+    .defs,.mech{grid-template-columns:1fr;}
+    .split{grid-template-columns:1fr;}
+    .exit{grid-template-columns:1fr auto;}
+    .exit .trigger{grid-column:1;}
+    .exit .fill{grid-column:2;grid-row:1;}
+  }
+  a{color:var(--accent);}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Live exit rules · scale-invariant config</p>
+    <h1>How the bot decides to get out</h1>
+    <p class="lede">A market-neutral ETH/BTC <em>spread</em> reversion trade. You enter when the gap is stretched and leave one of five ways — the σ-fraction and half-life rules that are actually running, plus how every dollar scales to $100K.</p>
+    <div class="metabar">
+      <span class="tag">Live values: <b>Settings page</b></span>
+      <span class="tag">Leverage: <b>20×</b></span>
+      <span class="tag">Entry z: <b>3.1</b></span>
+      <span class="tag">Exit z: <b>0.5</b></span>
+      <span class="tag">Stop z: <b>5.5</b> <span style="color:var(--faint)">(dollar stop usually fires first)</span></span>
+    </div>
+  </header>
+
+  <!-- WHAT'S NEW -->
+  <section aria-labelledby="new">
+    <span class="kicker">Updated since first published</span>
+    <h2 id="new">What changed in the exit engine</h2>
+    <div class="defs">
+      <div class="def">
+        <div class="t">exit profit gate</div>
+        <p>A reversion (z) exit can no longer close <b>below break-even</b>. It waits until net P&amp;L (all fees paid) ≥ the gate floor — default break-even, optionally a % of capital. The position card shows the release level as the <b>EX</b> chip. The dollar stop, z stop-loss, profit target and max-hold are <b>never</b> gated.</p>
+      </div>
+      <div class="def">
+        <div class="t">levels row · BE / EX / TP / SL</div>
+        <p>Every open trade shows the <b>absolute spread values</b> where it breaks even, releases a reversion exit, takes profit, and stops out. These are frozen at entry and don't drift with the rolling mean — once in a trade, watch the spread against these lines, not the in-trade z-score.</p>
+      </div>
+      <div class="def">
+        <div class="t">true-position accounting</div>
+        <p>Legs are co-sized onto whole contracts <b>near β</b> (lattice sizing), the actually-filled quantities are recorded at entry, and P&amp;L is computed <b>per leg from real fills</b> — the dashboard matches OKX to the cent, and every stop/target acts on the position actually held.</p>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- THE BET -->
+  <section aria-labelledby="bet">
+    <span class="kicker">The bet, in three words</span>
+    <h2 id="bet">You trade the gap, not the coins</h2>
+    <p class="sub">Both legs are hedged, so market moves cancel. You only care about the spread between ETH and BTC wandering away from its average — and snapping back.</p>
+    <div class="defs">
+      <div class="def">
+        <div class="t">the spread</div>
+        <p>The <b>gap</b> (BTC-fut − β·ETH). It drifts around an average and tends to revert. Your whole P&amp;L is this gap moving.</p>
+      </div>
+      <div class="def">
+        <div class="t">z-score</div>
+        <p>How <b>unusual</b> the gap is right now, in wiggles. <b>0</b> = average, <b>±2.8</b> = stretched (enter), <b>±4</b> = broken.</p>
+      </div>
+      <div class="def">
+        <div class="t">σ &nbsp;·&nbsp; one wiggle</div>
+        <p>Spread std-dev, ≈<b>37</b> lately. At your size that's <b>≈ $2 of P&amp;L per 1σ</b> — the ruler for every dollar below.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Z NUMBER LINE -->
+  <section aria-labelledby="line">
+    <span class="kicker">The whole trade on one axis</span>
+    <h2 id="line">Enter stretched → aim for home → cut if it breaks</h2>
+    <p class="sub">The z-score line. You enter at the dashed bands (±2.8), win by reverting toward the green “home” band (±0.5), and stop if it diverges out to the red (±4). The picture is symmetric: right side = a short-the-spread trade, left = long.</p>
+    <div class="diagram">
+      <svg viewBox="0 0 840 168" role="img" aria-label="z-score number line from -4.5 to +4.5 showing the home band at plus or minus 0.5, entry bands at plus or minus 2.8, and stop lines at plus or minus 4.">
+        <!-- zones -->
+        <rect class="zx-zone-stop" x="60" y="54" width="40" height="34"></rect>
+        <rect class="zx-zone-stop" x="740" y="54" width="40" height="34"></rect>
+        <rect class="zx-zone-home" x="380" y="54" width="80" height="34"></rect>
+        <!-- axis -->
+        <line class="zx-axis" x1="60" y1="71" x2="780" y2="71"></line>
+        <!-- ticks + numbers (z = -4.5..4.5 → x = 420 + z*80) -->
+        <g>
+          <line class="zx-tick" x1="420" y1="66" x2="420" y2="76"></line>
+          <text class="zx-lbl-strong" x="420" y="104" text-anchor="middle">0</text>
+          <line class="zx-tick" x1="460" y1="63" x2="460" y2="79"></line>
+          <line class="zx-tick" x1="380" y1="63" x2="380" y2="79"></line>
+          <text class="zx-lbl" x="460" y="104" text-anchor="middle">+0.5</text>
+          <text class="zx-lbl" x="380" y="104" text-anchor="middle">−0.5</text>
+          <line class="zx-entry" x1="644" y1="48" x2="644" y2="94"></line>
+          <line class="zx-entry" x1="196" y1="48" x2="196" y2="94"></line>
+          <text class="zx-lbl-strong" x="644" y="104" text-anchor="middle">+2.8</text>
+          <text class="zx-lbl-strong" x="196" y="104" text-anchor="middle">−2.8</text>
+          <line class="zx-stopline" x1="740" y1="50" x2="740" y2="92"></line>
+          <line class="zx-stopline" x1="100" y1="50" x2="100" y2="92"></line>
+          <text class="zx-lbl-strong" x="740" y="104" text-anchor="middle">+4.0</text>
+          <text class="zx-lbl-strong" x="100" y="104" text-anchor="middle">−4.0</text>
+        </g>
+        <!-- captions -->
+        <text class="zx-cap zx-cap-win" x="420" y="40" text-anchor="middle">HOME · reverted (Exit)</text>
+        <text class="zx-cap" x="644" y="24" text-anchor="middle">ENTER →</text>
+        <text class="zx-cap" x="196" y="24" text-anchor="middle">← ENTER</text>
+        <text class="zx-cap zx-cap-loss" x="760" y="34" text-anchor="middle">STOP</text>
+        <text class="zx-cap zx-cap-loss" x="80" y="34" text-anchor="middle">STOP</text>
+        <!-- direction arrows under axis -->
+        <g>
+          <text class="zx-lbl" x="552" y="132" text-anchor="middle">◄ revert = Take-Profit / Exit (win)</text>
+          <text class="zx-lbl" x="705" y="132" text-anchor="middle">diverge = Stop ►</text>
+        </g>
+        <text class="zx-lbl" x="420" y="156" text-anchor="middle" style="fill:var(--faint)">Take-Profit fires partway home (~half the snap-back) — you don't wait for the green band.</text>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--win-soft);border:1px solid var(--win)"></i> home / reverted</span>
+        <span><i class="sw" style="background:var(--accent)"></i> entry threshold</span>
+        <span><i class="sw" style="background:var(--loss)"></i> stop / broken</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- FIVE EXITS -->
+  <section aria-labelledby="exits">
+    <span class="kicker">Five ways out — first one wins</span>
+    <h2 id="exits">The exits</h2>
+    <p class="sub">Every tick the bot checks these in priority order (stop → take-profit → z-stop → z-exit → time). Grouped here by outcome. In practice only two fire often: <b>Take-Profit</b> and <b>Dollar Stop</b>.</p>
+
+    <div class="grouphead"><span class="dot" style="background:var(--win)"></span> Reverted — you win / scratch</div>
+    <div class="exit-group" style="margin-bottom:22px">
+      <div class="exit win">
+        <span class="name">Take-Profit</span>
+        <span class="fill maker">maker</span>
+        <span class="trigger">Net P&amp;L reaches the <b>σ-fraction target</b> — roughly <b>half the expected snap-back</b> (≈$3 at z 3.1). The everyday win: grab it partway home, don't wait.</span>
+      </div>
+      <div class="exit win">
+        <span class="name">Exit</span>
+        <span class="fill maker">maker</span>
+        <span class="trigger">z snaps all the way back to <b>±0.5</b> — the gap is normal again, job done. (Take-Profit usually beats it to the punch.)</span>
+      </div>
+      <div class="exit win">
+        <span class="name">Max Hold</span>
+        <span class="fill maker">maker</span>
+        <span class="trigger">Held <b>4× the spread's half-life</b> <em>and</em> green <em>and</em> stalled (&lt;50% reverted) → take the small profit, free the capital. Never exits into a loss.</span>
+      </div>
+    </div>
+
+    <div class="grouphead"><span class="dot" style="background:var(--loss)"></span> Diverged — you lose, capped</div>
+    <div class="exit-group">
+      <div class="exit loss">
+        <span class="name">Dollar Stop</span>
+        <span class="fill mixed">1 maker probe → market</span>
+        <span class="trigger">Gap moves <b>target ÷ R:R</b> (≈$3.75) against you. Your primary stop. Fires <b>one quick maker probe</b> (saves the fee only if the book is momentarily calm — rare on a diverging stop), then markets out within ~2s to guarantee the close.</span>
+      </div>
+      <div class="exit loss">
+        <span class="name">Stop-Loss</span>
+        <span class="fill market">market</span>
+        <span class="trigger">z blows out to <b>±4</b> — reversion thesis broken. Immediate market exit; speed beats fee here. (The Dollar Stop usually fires first.)</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- MECHANICS -->
+  <section aria-labelledby="mech">
+    <span class="kicker">How the numbers wire together</span>
+    <h2 id="mech">Three rules set everything else</h2>
+    <p class="sub">You don't set dollars — you set <em>ratios</em>. The dollars fall out of the trade's own stretch (z) and volatility (σ), which is exactly why nothing needs re-tuning at scale.</p>
+    <div class="mech">
+      <div class="card">
+        <h3>Profit target — σ-fraction <span class="num">0.5</span></h3>
+        <div class="formula">target = 0.5 · |z| · σ · qty</div>
+        <p>“Pocket <b>half the expected snap-back.</b>” Auto-scales with the stretch: bigger z or σ → bigger target. ≈ <span class="num">$3</span> at z 3.1 today. Only asks for half the move, so it's <b>reachable</b>.</p>
+      </div>
+      <div class="card">
+        <h3>Dollar stop — R:R <span class="num">0.8</span></h3>
+        <div class="formula">stop = target ÷ 0.8</div>
+        <p>The stop is <b>derived from the target</b>, not set separately. Lower R:R → <b>wider</b> stop (more room). Capped by the 1.5%-capital catastrophe ceiling (looser, so not binding).</p>
+      </div>
+      <div class="card">
+        <h3>Cost floor — <span class="num">1.0</span>× fees</h3>
+        <div class="formula">target ≥ 1.0 · round-trip cost</div>
+        <p>A win must clear its own costs. The target can never sit below the <b>~$2.5</b> round-trip (fees + slippage), so a “profit” exit never fills at a net loss.</p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="k">The honest catch</div>
+      <p>The stop is measured on the <b>gross</b> gap move, so with fees a stop really costs <b>~$5 net</b> while a win nets <b>~$3</b> → breakeven win-rate ≈ <b>62%</b>, and you're running ~<b>60%</b>.</p>
+      <p>That's why the one lever left is <b>entry z 2.8 → ~3.1</b>: wider stretches revert more reliably, lifting the win-rate over the line. The exit machinery is sound — the edge lives in taking only the well-stretched entries.</p>
+    </div>
+  </section>
+
+  <!-- SCALING -->
+  <section aria-labelledby="scale">
+    <span class="kicker">Going bigger</span>
+    <h2 id="scale">Scaling to $100K / leg</h2>
+    <p class="sub">This is the payoff of scale-invariant settings: the knobs are all <em>ratios and z-levels</em> (unitless), so they don't change. Only position size moves — and every dollar figure scales with it.</p>
+    <div class="scale-lead">
+      <span class="big">×29 <small>the dollars</small></span>
+      <span class="big" style="color:var(--ink)">×0 <small>the settings</small></span>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Same trade, two sizes — z≈3.1, σ≈37 (illustrative; both vary per trade)</caption>
+        <thead>
+          <tr><th scope="col">Per trade</th><th scope="col" style="text-align:right">$3,500 / leg — now</th><th scope="col" style="text-align:right">$100,000 / leg</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">1σ of P&amp;L</th><td class="n now">$2</td><td class="n big">$58</td></tr>
+          <tr><th scope="row">Take-Profit target</th><td class="n now">~$3</td><td class="n big">~$90</td></tr>
+          <tr><th scope="row">Dollar Stop</th><td class="n now">~$3.75</td><td class="n big">~$113</td></tr>
+          <tr><th scope="row">Round-trip cost (maker)</th><td class="n now">~$2.5</td><td class="n big">~$72</td></tr>
+          <tr class="rule"><th scope="row">Capital to run it <span style="color:var(--faint);font-weight:400">(20×, 2× M2M buffer)</span></th><td class="n now">~$700</td><td class="n big">~$20,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="split">
+      <div class="panel stay">
+        <h4>Stays identical ✓</h4>
+        <ul>
+          <li><span class="mono">σ-fraction 0.5</span> — target = half the snap-back</li>
+          <li><span class="mono">R:R 0.8</span> — stop = target ÷ 0.8</li>
+          <li><span class="mono">Cost Floor 1.0</span> — clear cost, scales with it</li>
+          <li><span class="mono">%-capital 1.5</span> — catastrophe cap</li>
+          <li><span class="mono">Max Hold 4× half-life · gate 0.5</span></li>
+          <li><span class="mono">z: entry 2.8 · exit 0.5 · stop 4.0</span></li>
+        </ul>
+      </div>
+      <div class="panel change">
+        <h4>Only these move</h4>
+        <ul>
+          <li><span class="mono">Position size</span> — $3.5K → $100K / leg</li>
+          <li><span class="mono">Every $ outcome</span> — scales ~×29 automatically</li>
+          <li><span class="mono">Capital posted</span> — ~$700 → ~$20K</li>
+          <li>Watch <span class="mono">liquidity / market-impact</span> — at $100K the maker legs move the book; the RFQ / block path becomes worth enabling</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>ETH/BTC spread bot — exit reference</span>
+    <span>Dollar figures illustrative at σ≈37, z≈3.1 · ratios are exact</span>
+  </footer>
+</div>
+
+</body>
+</html>
