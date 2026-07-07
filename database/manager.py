@@ -419,6 +419,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_profit_gate_pct REAL DEFAULT 0.0")
             if 'lattice_sizing_enabled' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN lattice_sizing_enabled INTEGER DEFAULT 1")
+            if 'z_stop_exit_enabled' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN z_stop_exit_enabled INTEGER DEFAULT 1")
             if 'max_hold_halflife_mult' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_halflife_mult REAL DEFAULT 0.0")
             if 'stop_loss_capital_pct' not in existing_columns:
@@ -475,6 +477,14 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trades ADD COLUMN pnl_pct_on_capital REAL DEFAULT 0")
             if 'spot_qty' not in trade_cols:
                 cursor.execute("ALTER TABLE trades ADD COLUMN spot_qty REAL DEFAULT 0")
+            if 'peak_net_usd' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN peak_net_usd REAL DEFAULT 0")
+            if 'trough_net_usd' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN trough_net_usd REAL DEFAULT 0")
+            if 'peak_minutes' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN peak_minutes REAL")
+            if 'trough_minutes' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN trough_minutes REAL")
 
             logger.info("Database initialized: %s", self.db_path)
 
@@ -542,6 +552,7 @@ class DatabaseManager:
                     exit_profit_gate_usd=row["exit_profit_gate_usd"] if "exit_profit_gate_usd" in row.keys() and row["exit_profit_gate_usd"] is not None else 0.0,
                     exit_profit_gate_pct=row["exit_profit_gate_pct"] if "exit_profit_gate_pct" in row.keys() and row["exit_profit_gate_pct"] is not None else 0.0,
                     lattice_sizing_enabled=bool(row["lattice_sizing_enabled"]) if "lattice_sizing_enabled" in row.keys() and row["lattice_sizing_enabled"] is not None else True,
+                    z_stop_exit_enabled=bool(row["z_stop_exit_enabled"]) if "z_stop_exit_enabled" in row.keys() and row["z_stop_exit_enabled"] is not None else True,
                     profit_target_usd=row["profit_target_usd"] if "profit_target_usd" in row.keys() else 0.0,
                     profit_target_min_cost_mult=row["profit_target_min_cost_mult"] if "profit_target_min_cost_mult" in row.keys() else 0.0,
                     max_hold_halflife_mult=row["max_hold_halflife_mult"] if "max_hold_halflife_mult" in row.keys() else 0.0,
@@ -577,6 +588,7 @@ class DatabaseManager:
                     exit_profit_gate_usd = ?,
                     exit_profit_gate_pct = ?,
                     lattice_sizing_enabled = ?,
+                    z_stop_exit_enabled = ?,
                     lookback_period = ?,
                     stats_update_interval = ?,
                     hurst_enabled = ?,
@@ -647,6 +659,7 @@ class DatabaseManager:
                 config.exit_profit_gate_usd,
                 config.exit_profit_gate_pct,
                 int(config.lattice_sizing_enabled),
+                int(config.z_stop_exit_enabled),
                 config.lookback_period,
                 config.stats_update_interval,
                 int(config.hurst_enabled),
@@ -872,6 +885,10 @@ class DatabaseManager:
                         fees_usd = ?,
                         capital_locked_usd = ?,
                         pnl_pct_on_capital = ?,
+                        peak_net_usd = ?,
+                        trough_net_usd = ?,
+                        peak_minutes = ?,
+                        trough_minutes = ?,
                         is_open = ?
                     WHERE id = ?
                 """, (
@@ -888,6 +905,10 @@ class DatabaseManager:
                     trade.fees_usd,
                     trade.capital_locked_usd,
                     trade.pnl_pct_on_capital,
+                    trade.peak_net_usd,
+                    trade.trough_net_usd,
+                    trade.peak_minutes,
+                    trade.trough_minutes,
                     int(trade.is_open),
                     trade.id,
                 ))
@@ -1006,6 +1027,10 @@ class DatabaseManager:
             exit_reason=row["exit_reason"] or "",
             quantity=row["quantity"] or 0,
             spot_qty=(row["spot_qty"] or 0) if "spot_qty" in row.keys() else 0,
+            peak_net_usd=(row["peak_net_usd"] or 0) if "peak_net_usd" in row.keys() else 0,
+            trough_net_usd=(row["trough_net_usd"] or 0) if "trough_net_usd" in row.keys() else 0,
+            peak_minutes=row["peak_minutes"] if "peak_minutes" in row.keys() else None,
+            trough_minutes=row["trough_minutes"] if "trough_minutes" in row.keys() else None,
             notional_usd=row["notional_usd"] or 0,
             pnl_usd=row["pnl_usd"] or 0,
             pnl_percent=row["pnl_percent"] or 0,

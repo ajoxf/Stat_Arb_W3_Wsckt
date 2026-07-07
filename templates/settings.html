@@ -104,6 +104,11 @@
                             <label class="form-label">Stop Loss Threshold</label>
                             <input type="number" class="form-control" id="stop_loss_threshold" name="stop_loss_threshold" value="{{ config.stop_loss_threshold }}" step="0.1" min="2" max="10">
                             <small class="text-secondary">Stop loss at Z &ge; +/- this value</small>
+                            <div class="form-check form-switch mt-1">
+                                <input class="form-check-input" type="checkbox" id="z_stop_exit_enabled" name="z_stop_exit_enabled" {% if config.z_stop_exit_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="z_stop_exit_enabled" style="font-size: 0.8rem;">z-stop closes trades</label>
+                            </div>
+                            <small class="text-secondary"><strong>OFF</strong> = once in a trade, the stop is the <strong>Dollar Stop (% capital) only</strong> — post-entry the rolling z drifts (mean/σ move during the hold) so its dollar meaning wanders. Fail-safe: the z-stop stays active if no dollar stop is armed. This threshold <em>always</em> keeps blocking entries at |z| &ge; it.</small>
                         </div>
                     </div>
 
@@ -1536,6 +1541,7 @@
             stop_loss_capital_pct: parseFloat(document.getElementById('stop_loss_capital_pct').value) || 0,
             max_loss_usd: parseFloat(document.getElementById('max_loss_usd').value) || 0,
             exit_signal_mode: document.getElementById('exit_signal_mode').value,
+            z_stop_exit_enabled: document.getElementById('z_stop_exit_enabled').checked,
             exit_profit_gate_usd: parseFloat(document.getElementById('exit_profit_gate_usd').value) || 0,
             exit_profit_gate_pct: parseFloat(document.getElementById('exit_profit_gate_pct').value) || 0,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
@@ -1691,6 +1697,7 @@
                 document.getElementById('stop_loss_capital_pct').value = config.stop_loss_capital_pct || 0;
                 document.getElementById('max_loss_usd').value = config.max_loss_usd || 0;
                 document.getElementById('exit_signal_mode').value = config.exit_signal_mode || 'zscore';
+                document.getElementById('z_stop_exit_enabled').checked = config.z_stop_exit_enabled !== false;
                 document.getElementById('exit_profit_gate_usd').value = config.exit_profit_gate_usd || 0;
                 document.getElementById('exit_profit_gate_pct').value = config.exit_profit_gate_pct || 0;
                 document.getElementById('lookback_period').value = config.lookback_period;

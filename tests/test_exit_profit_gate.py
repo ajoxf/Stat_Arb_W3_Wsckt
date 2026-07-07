@@ -32,6 +32,7 @@ def make_engine(gate=0.0, gate_pct=0.0, position="LONG",
     eng._exit_gate_last_log = None
     eng._gate_hold_count = 0
     eng._gate_first_hold = None
+    eng._z_stop_log_at = None
     eng.signal_generator = SimpleNamespace(current_half_life=float('inf'))
     eng.open_trade = Trade(
         position_type=position,
@@ -148,6 +149,48 @@ def test_gate_releases_entirely_past_two_x_max_hold():
 def test_gate_unaffected_when_no_max_hold_configured():
     eng = make_engine(gate=0.0, max_hold_minutes=0.0, entry_time=_aged(500))
     assert eng._signal_exit_gated(exit_signal()) is True   # holds as before
+
+
+# ── z-stop demotion: in-trade stop is %-of-capital only when toggled off ─────
+
+def _stop_signal(z=4.2):
+    return SimpleNamespace(signal_type="STOP_LOSS", zscore=z)
+
+
+def test_z_stop_suppressed_when_toggle_off_and_dollar_stop_armed():
+    eng = make_engine()
+    eng.config.z_stop_exit_enabled = False
+    eng.config.stop_loss_capital_pct = 1.5     # dollar stop armed via %-cap
+    assert eng._z_stop_exit_suppressed(_stop_signal()) is True
+
+
+def test_z_stop_active_by_default():
+    eng = make_engine()
+    eng.config.stop_loss_capital_pct = 1.5
+    assert eng._z_stop_exit_suppressed(_stop_signal()) is False
+
+
+def test_override_stops_never_suppressed():
+    # DOLLAR_STOP/DAILY_LOSS arrive as STOP_LOSS but carry the override reason.
+    eng = make_engine()
+    eng.config.z_stop_exit_enabled = False
+    eng.config.stop_loss_capital_pct = 1.5
+    eng._override_exit_reason = "DOLLAR_STOP"
+    assert eng._z_stop_exit_suppressed(_stop_signal()) is False
+
+
+def test_z_stop_kept_when_no_dollar_stop_armed():
+    # Fail-safe: a trade must always have SOME stop.
+    eng = make_engine()
+    eng.config.z_stop_exit_enabled = False     # all stop fields default 0
+    assert eng._z_stop_exit_suppressed(_stop_signal()) is False
+
+
+def test_exit_signals_never_z_suppressed():
+    eng = make_engine()
+    eng.config.z_stop_exit_enabled = False
+    eng.config.stop_loss_capital_pct = 1.5
+    assert eng._z_stop_exit_suppressed(exit_signal()) is False
 
 
 # ── %-of-capital form ─────────────────────────────────────────────────────────

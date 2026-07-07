@@ -42,6 +42,37 @@ def test_today_totals_empty(tmp_path):
     assert totals == {"count": 0, "pnl_usd": 0, "fee_est_usd": 0, "net_usd": 0}
 
 
+def test_trade_lifecycle_extremes_roundtrip(tmp_path):
+    """peak/trough (net USD + minutes-after-entry) persist on the trade row —
+    the data 'did profit come before the loss?' is answered from."""
+    from datetime import datetime
+    from models import Trade
+
+    db = DatabaseManager(db_path=str(tmp_path / "lc.db"))
+    t = Trade(asset="ETH/BTC", position_type="SHORT",
+              entry_time=datetime(2026, 7, 7, 16, 26),
+              entry_spot_price=1801.8, entry_futures_price=64000.1,
+              entry_spread=-107.94, entry_zscore=-3.84, quantity=0.03,
+              spot_order_id="s78", futures_order_id="f78", is_open=True)
+    t.id = db.save_trade(t)
+
+    t.exit_time = datetime(2026, 7, 7, 17, 54)
+    t.exit_reason = "STOP_LOSS"
+    t.pnl_usd = -4.46
+    t.is_open = False
+    t.peak_net_usd = 1.19
+    t.trough_net_usd = -4.46
+    t.peak_minutes = 6.0
+    t.trough_minutes = 88.0
+    db.save_trade(t)
+
+    loaded = db.get_trades(limit=1)[0]
+    assert loaded.peak_net_usd == pytest.approx(1.19)
+    assert loaded.trough_net_usd == pytest.approx(-4.46)
+    assert loaded.peak_minutes == pytest.approx(6.0)
+    assert loaded.trough_minutes == pytest.approx(88.0)
+
+
 # ── engine emission ───────────────────────────────────────────────────────────
 
 def _make_engine(captured):

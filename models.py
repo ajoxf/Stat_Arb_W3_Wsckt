@@ -128,6 +128,15 @@ class TradingConfig:
     # regardless of mode — that's a safety net, not a profit-take.
     exit_signal_mode: str = "zscore"  # zscore | spread | hybrid
 
+    # Whether the z-based STOP_LOSS may CLOSE an open trade. OFF = once in a
+    # trade the stop is the %-of-capital DOLLAR_STOP only — the rolling z is a
+    # drifting statistic post-entry (mean/σ move during the hold), so its
+    # dollar meaning wanders (live #78: z hit −5.7 while gross was still
+    # inside the dollar line). FAIL-SAFE: ignored (z-stop stays active) when
+    # no dollar stop is armed. The stop_loss_threshold keeps its second job —
+    # blocking ENTRIES at |z| ≥ it — regardless of this switch.
+    z_stop_exit_enabled: bool = True
+
     # Choose whole-contract sizes for BOTH legs together so the executed ratio
     # lands as close to beta as possible (dollar-neutral), instead of flooring
     # each leg independently — independent flooring distorts the hedge by up to
@@ -322,6 +331,7 @@ class TradingConfig:
             'stop_loss_capital_pct': self.stop_loss_capital_pct,
             'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,
+            'z_stop_exit_enabled': self.z_stop_exit_enabled,
             'lattice_sizing_enabled': self.lattice_sizing_enabled,
             'exit_profit_gate_usd': self.exit_profit_gate_usd,
             'exit_profit_gate_pct': self.exit_profit_gate_pct,
@@ -464,6 +474,13 @@ class Trade:
     entry_fees_usd: float = 0.0  # actual fees captured from OKX fills at entry (transient)
     exit_fees_usd:  float = 0.0  # actual fees captured from OKX fills at exit  (transient)
 
+    # Lifecycle extremes (net USD) with minutes-after-entry, recorded at close.
+    # Answers "would the profit have hit before the loss?" across history.
+    peak_net_usd: float = 0.0
+    trough_net_usd: float = 0.0
+    peak_minutes: Optional[float] = None
+    trough_minutes: Optional[float] = None
+
     # ACTUAL spot-leg quantity executed (base units), recorded from fills at
     # entry. Contract rounding means the real position can differ from the
     # requested beta-derived size (e.g. 1.0 ETH / 0.02 BTC = ratio 50 when
@@ -528,6 +545,10 @@ class Trade:
             'exit_reason': self.exit_reason,
             'quantity': self.quantity,
             'spot_qty': self.spot_qty,
+            'peak_net_usd': self.peak_net_usd,
+            'trough_net_usd': self.trough_net_usd,
+            'peak_minutes': self.peak_minutes,
+            'trough_minutes': self.trough_minutes,
             'notional_usd': self.notional_usd,
             'pnl_usd': self.pnl_usd,
             'pnl_percent': self.pnl_percent,

@@ -268,6 +268,8 @@ class TradingEngine:
         self._z_seen_max: Optional[float] = None
         self._gate_hold_count: int = 0
         self._gate_first_hold: Optional[datetime] = None
+        # Throttle for the "z-stop suppressed" log line (one per minute max).
+        self._z_stop_log_at: Optional[datetime] = None
 
         # Z-score reset gate: after a STOP_LOSS in direction X, block new X entries
         # until z-score crosses back through ±exit_threshold (spread must genuinely
@@ -730,7 +732,12 @@ class TradingEngine:
         if signal.signal_type in ("EXIT", "STOP_LOSS") and in_position:
             # Cost-aware floor: a reversion EXIT below break-even holds instead
             # of closing at a loss (stops/overrides are never gated inside).
-            if not self._signal_exit_gated(signal):
+            # Separately, the generator's z-based STOP_LOSS can be demoted to
+            # entry-ceiling-only duty (z_stop_exit_enabled=False) — the
+            # %-of-capital DOLLAR_STOP then owns the in-trade stop.
+            if self._z_stop_exit_suppressed(signal):
+                pass
+            elif not self._signal_exit_gated(signal):
                 await self._process_signal(signal)
         elif signal.signal_type in ("LONG", "SHORT"):
             if self.state.algo_enabled:
@@ -904,6 +911,44 @@ class TradingEngine:
                                       gate_usd=gate)
         except Exception:
             return None
+
+    def _z_stop_exit_suppressed(self, signal: Signal) -> bool:
+        """True when the generator's z-based STOP_LOSS should NOT close the
+        trade (z_stop_exit_enabled=False): post-entry, the rolling z is a
+        drifting statistic — mean and σ move during the hold, so the z-stop's
+        dollar meaning wanders (live #78 fired at z −5.7 while gross was still
+        inside the dollar line). With the switch off, the %-of-capital
+        DOLLAR_STOP owns the in-trade stop.
+
+        FAIL-SAFES: never suppress override stops (DOLLAR_STOP / DAILY_LOSS
+        arrive as STOP_LOSS but carry _override_exit_reason), and never
+        suppress when no dollar stop is armed — a trade must always have a
+        stop. The z threshold's entry-ceiling role is untouched either way.
+        """
+        if signal.signal_type != "STOP_LOSS":
+            return False
+        if self._override_exit_reason:
+            return False                    # dollar/daily stop — never suppress
+        if getattr(self.config, 'z_stop_exit_enabled', True):
+            return False
+        trade = self.open_trade
+        if not trade:
+            return False
+        try:
+            stop_usd = self._effective_exit_targets(trade)['stop_usd']
+        except Exception:
+            return False                    # can't verify a dollar stop — keep z
+        if stop_usd <= 0:
+            return False                    # no dollar stop armed — keep z backstop
+        now = datetime.utcnow()
+        if (self._z_stop_log_at is None
+                or (now - self._z_stop_log_at).total_seconds() >= 60):
+            self._z_stop_log_at = now
+            logger.info(
+                "z-stop suppressed (z=%.2f): in-trade stop is %%-of-capital "
+                "only — dollar stop -$%.2f armed", signal.zscore, stop_usd,
+            )
+        return True
 
     def _max_hold_minutes_for(self, trade: Trade) -> float:
         """The trade's max-hold horizon in minutes (half-life form preferred,
@@ -1663,6 +1708,7 @@ class TradingEngine:
         self._gate_hold_count = 0
         self._gate_first_hold = None
         self._exit_gate_last_log = None
+        self._z_stop_log_at = None
         self.state.current_position = position_type
         self.signal_generator.set_position(
             position_type,
@@ -1929,6 +1975,14 @@ class TradingEngine:
             }
         except Exception:
             trade.lifecycle_stats = None
+
+        # Persist the extremes on the trade row itself so "did profit come
+        # before the loss?" is answerable across history, not just per message.
+        _ls = getattr(trade, 'lifecycle_stats', None) or {}
+        trade.peak_net_usd = _ls.get('peak_net', 0.0) or 0.0
+        trade.trough_net_usd = _ls.get('trough_net', 0.0) or 0.0
+        trade.peak_minutes = _ls.get('peak_min')
+        trade.trough_minutes = _ls.get('trough_min')
 
         get_notifier().notify_trade_exit(trade, stats=getattr(trade, 'lifecycle_stats', None))
 
