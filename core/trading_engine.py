@@ -79,6 +79,66 @@ def exit_spread_levels(entry_spread: float, quantity: float, position_type: str,
     }
 
 
+def per_leg_gross_pnl(position_type: str, spot_qty: float, futures_qty: float,
+                      entry_spot: float, entry_fut: float,
+                      exit_spot: float, exit_fut: float) -> float:
+    """Gross P&L computed per leg from actual quantities and prices — the same
+    accounting the exchange does, so it matches OKX to the cent.
+
+    LONG spread = long the spot leg, short the futures leg (entry: BUY spot,
+    SELL futures); SHORT is the mirror. Identical to the legacy
+    spread_change × quantity formula when spot_qty == beta × futures_qty; it
+    diverges exactly when contract rounding made the executed hedge ≠ beta —
+    which is the real position, so this is the number that's right.
+    """
+    if (position_type or "").upper() == "LONG":
+        return (spot_qty * (exit_spot - entry_spot)
+                + futures_qty * (entry_fut - exit_fut))
+    return (spot_qty * (entry_spot - exit_spot)
+            + futures_qty * (exit_fut - entry_fut))
+
+
+def lattice_leg_sizes(spot_qty: float, futures_qty: float, beta: float,
+                      ct_val_a: float, ct_val_b: float,
+                      spot_price: float, futures_price: float,
+                      budget_tol_pct: float = 12.0) -> Optional[Tuple[float, float, int, int]]:
+    """Choose whole-contract sizes for BOTH legs together so the executed
+    ratio spot/futures lands as close to beta (dollar-neutral) as possible.
+
+    Flooring each leg independently distorts the hedge by up to a full
+    contract on the small leg — e.g. ideal 10.08 / 2.71 ETH/BTC contracts
+    floors to 10/2 = ratio 50 when beta is 37.2 (a 34% naked overhang),
+    while this picks 11/3 = ratio 36.7 (1.5% error). Candidates are searched
+    ±1 contract around the ideals, must keep each leg >= 1 contract, and may
+    not exceed the ideal TOTAL notional by more than budget_tol_pct (the
+    small leg's +1-contract granularity needs ~10% headroom at tiny sizes).
+
+    Returns (spot_qty', futures_qty', a_contracts, b_contracts), or None when
+    no candidate fits (caller keeps the original quantities and the exchange
+    minimums have the final word).
+    """
+    if min(ct_val_a, ct_val_b, spot_qty, futures_qty, beta) <= 0:
+        return None
+    if spot_price <= 0 or futures_price <= 0:
+        return None
+    a_ideal = spot_qty / ct_val_a
+    b_ideal = futures_qty / ct_val_b
+    ideal_notional = spot_qty * spot_price + futures_qty * futures_price
+    max_notional = ideal_notional * (1.0 + budget_tol_pct / 100.0)
+    best = None
+    for a_ct in range(max(1, int(a_ideal) - 1), int(a_ideal) + 2):
+        for b_ct in range(max(1, int(b_ideal) - 1), int(b_ideal) + 2):
+            sq = a_ct * ct_val_a
+            fq = b_ct * ct_val_b
+            if sq * spot_price + fq * futures_price > max_notional:
+                continue
+            ratio_err = abs(sq / fq - beta) / beta
+            key = (round(ratio_err, 6), sq * spot_price + fq * futures_price)
+            if best is None or key < best[0]:
+                best = (key, (sq, fq, a_ct, b_ct))
+    return best[1] if best else None
+
+
 class TradingEngine:
     """
     Main trading engine that coordinates price feeds, signal generation,
@@ -755,13 +815,16 @@ class TradingEngine:
         beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
         cur_spot = self.spot_tick.mid
         cur_fut = self.futures_tick.mid
-        entry_spread = trade.entry_futures_price - beta * trade.entry_spot_price
-        cur_spread = cur_fut - beta * cur_spot
-        if trade.position_type == "LONG":
-            spread_change = entry_spread - cur_spread
-        else:
-            spread_change = cur_spread - entry_spread
-        pnl_gross = spread_change * trade.quantity
+        # Per-leg on the ACTUAL executed quantities (falls back to the
+        # beta-derived spot size for legacy/paper trades) — so the dollar stop,
+        # profit target and exit gate act on the position we really hold, not
+        # the pre-rounding request.
+        spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
+        pnl_gross = per_leg_gross_pnl(
+            trade.position_type, spot_qty, trade.quantity,
+            trade.entry_spot_price, trade.entry_futures_price,
+            cur_spot, cur_fut,
+        )
         # If the exit will definitely be MARKET (already had a POST_ONLY rejection
         # that exhausted the retry budget), use taker fee for the exit estimate.
         exit_override = "MARKET" if self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER else None
@@ -798,7 +861,7 @@ class TradingEngine:
             return fut_taker if deriv else spot_taker
         a_entry, b_entry = _bps(leg_a_deriv, entry_mode), _bps(leg_b_deriv, entry_mode)
         a_exit,  b_exit  = _bps(leg_a_deriv, exit_mode),  _bps(leg_b_deriv, exit_mode)
-        spot_qty = trade.quantity * beta
+        spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
         return (
             a_entry / 10000.0 * spot_qty       * trade.entry_spot_price +
             b_entry / 10000.0 * trade.quantity * trade.entry_futures_price +
@@ -903,7 +966,7 @@ class TradingEngine:
             exit_fut = self.futures_tick.mid if self.futures_tick else trade.entry_futures_price
         fees = self._round_trip_fees(trade, exit_spot, exit_fut)
         slip_bps = getattr(self.config, 'slippage_bps', 0.0) or 0.0
-        spot_qty = trade.quantity * beta
+        spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
         slippage = slip_bps / 10000.0 * (
             spot_qty       * trade.entry_spot_price +
             trade.quantity * trade.entry_futures_price +
@@ -917,7 +980,7 @@ class TradingEngine:
         buffer, computed from entry fills. Same formula as the realized close,
         used as the denominator for the %-of-capital dollar stop."""
         beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
-        spot_qty = trade.quantity * beta
+        spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
         leg_a_deriv = is_derivative(self.config.spot_symbol)
         leg_b_deriv = is_derivative(self.config.futures_symbol)
         leg_a_notional = abs(trade.entry_spot_price * spot_qty)
@@ -1383,6 +1446,37 @@ class TradingEngine:
         spot_qty = self.config.position_size_usd / spot_price
         quantity = spot_qty / beta  # futures quantity
 
+        # Lattice co-sizing: land both legs on whole contracts NEAR beta instead
+        # of letting the adapters floor each leg independently (which distorts
+        # the executed hedge by up to a full contract on the small leg). Only
+        # applies when both legs are contract-sized derivatives; fails open.
+        if getattr(self.config, 'lattice_sizing_enabled', True) \
+                and is_derivative(self.config.spot_symbol) \
+                and is_derivative(self.config.futures_symbol):
+            try:
+                info_a = await self.spot_adapter.get_symbol_info(self.config.spot_symbol)
+                info_b = await self.futures_adapter.get_symbol_info(self.config.futures_symbol)
+                ct_a = float((info_a or {}).get('contract_val') or 0)
+                ct_b = float((info_b or {}).get('contract_val') or 0)
+                lat = lattice_leg_sizes(spot_qty, quantity, beta, ct_a, ct_b,
+                                        spot_price, futures_price)
+                if lat:
+                    new_sq, new_fq, a_ct, b_ct = lat
+                    floor_a = max(1, int(spot_qty / ct_a + 1e-9)) if ct_a > 0 else 0
+                    floor_b = max(1, int(quantity / ct_b + 1e-9)) if ct_b > 0 else 0
+                    floor_ratio = (floor_a * ct_a) / (floor_b * ct_b) if floor_b > 0 else 0.0
+                    logger.info(
+                        "Lattice sizing: Leg A %.6f→%.6f (%d ct), Leg B %.6f→%.6f (%d ct) — "
+                        "executed ratio %.2f vs β %.2f (err %.1f%%; independent floor "
+                        "would give %.2f, err %.1f%%)",
+                        spot_qty, new_sq, a_ct, quantity, new_fq, b_ct,
+                        new_sq / new_fq, beta, abs(new_sq / new_fq - beta) / beta * 100,
+                        floor_ratio, abs(floor_ratio - beta) / beta * 100 if floor_ratio else 0.0,
+                    )
+                    spot_qty, quantity = new_sq, new_fq
+            except Exception as _le:
+                logger.warning("Lattice sizing skipped (symbol info unavailable): %s", _le)
+
         # Guard #11: BOTH legs must clear their exchange minimums BEFORE we place
         # either order. Without this, a leg that rounds below its minimum (e.g. a
         # futures leg under 1 contract) fails AFTER the other leg has already
@@ -1497,9 +1591,11 @@ class TradingEngine:
             entry_std=signal.spread_std,
         )
 
-        logger.info("Opened %s position: futures_qty=%.6f, spot_qty=%.6f (beta=%.4f), "
-                    "spot=%.2f, futures=%.2f, spread=%.6f, zscore=%.4f",
-                    position_type, quantity, spot_qty, beta,
+        logger.info("Opened %s position: futures_qty=%.6f, spot_qty=%.6f (beta=%.4f, "
+                    "executed ratio=%.2f), spot=%.2f, futures=%.2f, spread=%.6f, zscore=%.4f",
+                    position_type, trade.quantity,
+                    trade.spot_qty if trade.spot_qty > 0 else spot_qty, beta,
+                    (trade.spot_qty / trade.quantity) if (trade.spot_qty > 0 and trade.quantity > 0) else beta,
                     spot_price, futures_price, signal.spread, signal.zscore)
 
         # The trade's geometry in spread units — the absolute levels where it
@@ -1619,20 +1715,18 @@ class TradingEngine:
         trade.is_open = False
 
         # ── Realized P&L from ACTUAL fills (now that the executor has stamped
-        # them onto trade.exit_spot_price / exit_futures_price). For paper or
-        # when fills weren't recorded, falls back to the mid placeholders we
-        # set above. Fees are subtracted to give the net the dashboard logs.
+        # them onto trade.exit_spot_price / exit_futures_price). Computed PER
+        # LEG from the actually-executed quantities — the same accounting OKX
+        # does, so the dashboard matches the exchange to the cent. Falls back
+        # to beta-derived spot qty for legacy/paper trades (identical result
+        # when the executed ratio equals beta).
         beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
-        # Spread from fills (futures - β × spot)
-        entry_spread_fills = trade.entry_futures_price - beta * trade.entry_spot_price
-        exit_spread_fills  = trade.exit_futures_price  - beta * trade.exit_spot_price
-
-        if trade.position_type == "LONG":
-            # LONG profits when spread falls
-            spread_change = entry_spread_fills - exit_spread_fills
-        else:
-            spread_change = exit_spread_fills - entry_spread_fills
-        pnl_gross = spread_change * trade.quantity
+        spot_qty = trade.spot_qty if trade.spot_qty > 0 else trade.quantity * beta
+        pnl_gross = per_leg_gross_pnl(
+            trade.position_type, spot_qty, trade.quantity,
+            trade.entry_spot_price, trade.entry_futures_price,
+            trade.exit_spot_price, trade.exit_futures_price,
+        )
 
         # Per-leg fee bps from the same schedule the signal filter uses, so
         # cost estimates and realized P&L can never silently diverge.
@@ -1652,7 +1746,6 @@ class TradingEngine:
             return fut_taker if deriv else spot_taker
         a_entry, b_entry = _bps(leg_a_deriv, entry_mode), _bps(leg_b_deriv, entry_mode)
         a_exit,  b_exit  = _bps(leg_a_deriv, exit_mode),  _bps(leg_b_deriv, exit_mode)
-        spot_qty = trade.quantity * beta
         fees_estimated = (
             a_entry / 10000.0 * spot_qty       * trade.entry_spot_price +
             b_entry / 10000.0 * trade.quantity * trade.entry_futures_price +
@@ -2216,7 +2309,23 @@ class TradingEngine:
             slice_interval = max(0.0, getattr(self.config, 'entry_slice_interval_sec', 5.0))
             min_fill_ratio = getattr(self.config, 'min_fill_ratio', 0.95)
 
-            target_spot_qty = trade.quantity * beta
+            # SWAP/FUTURES legs report fills in CONTRACTS; spot legs in base
+            # units. Resolve the contracts→base multiplier per leg so fill
+            # ratios and recorded quantities are unit-correct (without this,
+            # 20 contracts vs a 2.01-ETH target reads as a 992% fill ratio).
+            spot_unit = fut_unit = 1.0
+            try:
+                if is_derivative(self.config.spot_symbol):
+                    _ia = await self.spot_adapter.get_symbol_info(self.config.spot_symbol)
+                    spot_unit = float((_ia or {}).get('contract_val') or 0) or 1.0
+                if is_derivative(self.config.futures_symbol):
+                    _ib = await self.futures_adapter.get_symbol_info(self.config.futures_symbol)
+                    fut_unit = float((_ib or {}).get('contract_val') or 0) or 1.0
+            except Exception as _ue:
+                logger.warning("contract_val lookup failed (%s) — fill quantities "
+                               "treated as base units", _ue)
+
+            target_spot_qty = trade.spot_qty if trade.spot_qty > 0 else trade.quantity * beta
             target_fut_qty = trade.quantity
             slice_spot_qty = target_spot_qty / n_slices
             slice_fut_qty = target_fut_qty / n_slices
@@ -2270,8 +2379,11 @@ class TradingEngine:
                     )
                     break
 
-            # Check min fill ratio
-            if target_spot_qty > 0 and (spot_filled_qty / target_spot_qty) < min_fill_ratio:
+            # Check min fill ratio (fills converted to BASE units first — the
+            # executor reports SWAP fills in contracts)
+            spot_filled_base = spot_filled_qty * spot_unit
+            fut_filled_base = fut_filled_qty * fut_unit
+            if target_spot_qty > 0 and (spot_filled_base / target_spot_qty) < min_fill_ratio:
                 logger.error(
                     "Entry fill ratio %.1f%% below min_fill_ratio %.1f%% — rejecting entry",
                     100.0 * spot_filled_qty / target_spot_qty,
@@ -2347,6 +2459,32 @@ class TradingEngine:
                 # Use VWAP-blended prices (for 1-slice these equal the single fill price).
                 trade.entry_spot_price = vwap_spot_price
                 trade.entry_futures_price = vwap_fut_price
+                # Record the ACTUAL executed position (contracts × ctVal). The
+                # requested beta-derived sizes get floored to whole contracts by
+                # the exchange — P&L, stops, exits and capital math must act on
+                # what we hold, not what we asked for.
+                if spot_filled_base > 0 and fut_filled_base > 0:
+                    req_spot, req_fut = target_spot_qty, target_fut_qty
+                    trade.spot_qty = spot_filled_base
+                    trade.quantity = fut_filled_base
+                    exec_ratio = spot_filled_base / fut_filled_base
+                    if (abs(spot_filled_base - req_spot) > 1e-9
+                            or abs(fut_filled_base - req_fut) > 1e-9):
+                        logger.info(
+                            "Recorded actual fills: spot %.6f (req %.6f), fut %.6f (req %.6f) "
+                            "— executed ratio %.2f vs β %.2f",
+                            spot_filled_base, req_spot, fut_filled_base, req_fut,
+                            exec_ratio, beta,
+                        )
+                    # Keep notional/margin honest for capital-at-risk math.
+                    leg_a_not = abs(spot_filled_base * vwap_spot_price)
+                    leg_b_not = abs(fut_filled_base * vwap_fut_price)
+                    _a_deriv = is_derivative(self.config.spot_symbol)
+                    _b_deriv = is_derivative(self.config.futures_symbol)
+                    _a_lev = max(self.config.spot_leverage    if _a_deriv else 1, 1)
+                    _b_lev = max(self.config.futures_leverage if _b_deriv else 1, 1)
+                    trade.notional_usd = round(leg_a_not + leg_b_not, 2)
+                    trade.margin_usd = round(leg_a_not / _a_lev + leg_b_not / _b_lev, 2)
                 # Capture actual entry fees paid — OKX returns the charged fee on
                 # each filled order. Fee is negative (amount deducted), so abs().
                 if trade.spot_order_id and trade.futures_order_id:
@@ -2605,11 +2743,14 @@ class TradingEngine:
                     "DOLLAR_STOP trying MAKER (attempt %d/%d) to save the taker fee before MARKET fallback",
                     self._dollar_stop_maker_attempts + 1, self._DOLLAR_STOP_MAKER_ATTEMPTS,
                 )
+            # Exit the ACTUAL recorded position; beta-derived fallback for
+            # legacy trades opened before spot_qty was recorded.
+            exit_spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
             spread_order = await self.order_executor.execute_exit(
                 position_type=trade.position_type,
                 spot_tick=self.spot_tick,
                 futures_tick=self.futures_tick,
-                quantity=trade.quantity * beta,   # spot leg quantity
+                quantity=exit_spot_qty,           # spot leg quantity
                 futures_quantity=trade.quantity,  # futures leg quantity
                 force_market=use_market,
                 allow_rfq=not is_stop_exit,

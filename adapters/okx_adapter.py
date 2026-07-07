@@ -30,6 +30,17 @@ _BREAKER_FAIL_THRESHOLD = 5
 _BREAKER_COOLDOWN_SEC = 15.0
 
 
+def floor_contracts(contracts: float) -> int:
+    """Whole contracts from a float count, guarding float dust.
+
+    0.03 / 0.01 = 2.999999...96 in IEEE-754 — a plain int() would silently
+    drop a contract that the caller sized exactly. The epsilon rescues exact
+    multiples while a genuinely fractional count (2.69) still floors to 2,
+    so a request is never rounded UP past what was asked.
+    """
+    return int(contracts + 1e-9)
+
+
 def _detect_inst_type(symbol: str) -> str:
     """Classify an OKX instId by its segment shape.
 
@@ -440,7 +451,7 @@ class OKXAdapter(ExchangeAdapter):
                     effective_price = price or 0
                     contracts = quantity / ct_val
                     ct_val_log = ct_val
-                sz = int(contracts)
+                sz = floor_contracts(contracts)
                 if sz < 1:
                     logger.error("%s %s quantity %.6f price %.2f = %.4f contracts (ctVal=%.4f), minimum is 1",
                                 inst_type, ct_type, quantity, effective_price if ct_type == "inverse" else price or 0,

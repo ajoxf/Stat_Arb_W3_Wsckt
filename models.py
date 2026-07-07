@@ -123,6 +123,13 @@ class TradingConfig:
     # regardless of mode — that's a safety net, not a profit-take.
     exit_signal_mode: str = "zscore"  # zscore | spread | hybrid
 
+    # Choose whole-contract sizes for BOTH legs together so the executed ratio
+    # lands as close to beta as possible (dollar-neutral), instead of flooring
+    # each leg independently — independent flooring distorts the hedge by up to
+    # a full contract on the small leg (e.g. 10/2 ETH/BTC contracts = ratio 50
+    # when beta is 37.2 → a naked directional overhang the model can't see).
+    lattice_sizing_enabled: bool = True
+
     # Cost-aware floor on reversion exits: a signal EXIT (z or spread mode)
     # only closes the trade once live net P&L (after ALL fees) >= this value —
     # i.e. the spread has actually crossed break-even, not just the statistics.
@@ -309,6 +316,7 @@ class TradingConfig:
             'stop_loss_capital_pct': self.stop_loss_capital_pct,
             'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,
+            'lattice_sizing_enabled': self.lattice_sizing_enabled,
             'exit_profit_gate_usd': self.exit_profit_gate_usd,
             'exit_profit_gate_pct': self.exit_profit_gate_pct,
             'lookback_period': self.lookback_period,
@@ -449,6 +457,13 @@ class Trade:
     fees_usd: float = 0.0      # realized round-trip fees from OKX (4 leg-fills)
     entry_fees_usd: float = 0.0  # actual fees captured from OKX fills at entry (transient)
     exit_fees_usd:  float = 0.0  # actual fees captured from OKX fills at exit  (transient)
+
+    # ACTUAL spot-leg quantity executed (base units), recorded from fills at
+    # entry. Contract rounding means the real position can differ from the
+    # requested beta-derived size (e.g. 1.0 ETH / 0.02 BTC = ratio 50 when
+    # beta is 37.2) — P&L, stops and exits must act on what we hold.
+    # 0 = not recorded (legacy trades / paper) -> derive as quantity × beta.
+    spot_qty: float = 0.0
     pnl_gross_usd: float = 0.0 # P&L before fees (audit trail: pnl_gross - fees = pnl_usd)
     # ── Capital metrics (return-on-margin tracking) ──────────────────────────
     # Actually-locked capital at trade open: per-leg margin + M2M buffer. This
@@ -506,6 +521,7 @@ class Trade:
             'exit_zscore': self.exit_zscore,
             'exit_reason': self.exit_reason,
             'quantity': self.quantity,
+            'spot_qty': self.spot_qty,
             'notional_usd': self.notional_usd,
             'pnl_usd': self.pnl_usd,
             'pnl_percent': self.pnl_percent,
