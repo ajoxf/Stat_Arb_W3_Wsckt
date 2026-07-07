@@ -641,6 +641,27 @@ class PostTradeAnalyzer:
                 "value": f"z {'DIVERGED (widened)' if xz > ez else 'was reverting'}, {z_rev_pct:+.0f}% toward 0",
             })
 
+        # Lifecycle telemetry stamped by the engine at close (transient attr) —
+        # peak/trough, z range, gate holds. Exact numbers, no prose.
+        _ls = getattr(trade, 'lifecycle_stats', None)
+        if _ls:
+            if _ls.get('peak_net') is not None:
+                scorecard.append({"label": "Peak/Trough",
+                                  "value": f"+${_ls['peak_net']:.2f} / {_ls['trough_net']:+.2f}"})
+            if _ls.get('z_min') is not None and _ls.get('z_max') is not None:
+                scorecard.append({"label": "Z range",
+                                  "value": f"{_ls['z_min']:+.2f} … {_ls['z_max']:+.2f}"})
+            if _ls.get('gate_holds'):
+                scorecard.append({"label": "Gate",
+                                  "value": (f"held {_ls['gate_holds']}× over "
+                                            f"{_ls.get('gate_held_min', 0):.0f}m "
+                                            f"(floor ${_ls.get('gate_floor', 0):.2f})")})
+            if (_ls.get('max_hold_min') or 0) > 0:
+                scorecard.append({"label": "Hold vs max",
+                                  "value": (f"{_ls.get('held_min', 0):.0f}m / "
+                                            f"{_ls['max_hold_min']:.0f}m "
+                                            f"(×{(_ls.get('held_min', 0) / _ls['max_hold_min']):.1f})")})
+
         # ── SETTINGS & LOGIC AUDIT (deterministic — "did the machinery and the
         #    config behave sensibly?"). These are exact, system-computed findings;
         #    the LLM confirms/prioritises them and looks for trends across trades. ──

@@ -100,3 +100,66 @@ def test_positions_command_flat():
     n._cmd_positions()
     assert len(captured) == 1
     assert "No open positions" in captured[0]
+
+
+# ── crisp lifecycle analysis (trade #78 regression numbers) ──────────────────
+
+def _closed_trade_78():
+    t = _trade()
+    t.exit_time = datetime(2026, 7, 7, 17, 54)
+    t.exit_spot_price = 1808.5
+    t.exit_futures_price = 63875.0
+    t.exit_spread = -213.3
+    t.exit_zscore = -5.6682
+    t.exit_reason = "STOP_LOSS"
+    t.pnl_usd = -4.46
+    t.pnl_gross_usd = -3.16
+    t.is_open = False
+    return t
+
+
+STATS_78 = {'peak_net': 1.19, 'trough_net': -4.46, 'z_min': -5.67, 'z_max': 1.23,
+            'gate_holds': 52, 'gate_held_min': 79.0, 'gate_floor': 1.21,
+            'held_min': 88.0, 'max_hold_min': 20.0, 'available_usd': 6.15,
+            'exit_threshold': 0.5}
+
+
+def test_exit_notification_renders_crisp_analysis():
+    captured = []
+    n = make_notifier(captured)
+    n.notify_trade_exit(_closed_trade_78(), stats=STATS_78)
+    msg = captured[0]
+    assert "ANALYSIS" in msg
+    assert "STOPPED AFTER FULL REVERSION" in msg      # z_max 1.23 crossed -0.5
+    assert "Peak/Trough" in msg and "+$1.19" in msg and "-4.46" in msg
+    assert "held 52" in msg and "floor $1.21" in msg
+    assert "88m" in msg and "×4.4" in msg
+    assert "range -5.67" in msg and "+1.23" in msg
+
+
+def test_outcome_tag_distinguishes_trend_stop():
+    t = _closed_trade_78()
+    stats = dict(STATS_78, z_max=-2.9)                # never reverted
+    tag = TelegramNotifier._outcome_tag(t, stats)
+    assert "STOPPED IN TREND" in tag
+
+
+def test_outcome_tag_reversion_banked():
+    t = _closed_trade_78()
+    t.exit_reason = "EXIT"
+    t.pnl_usd = 1.41
+    assert "REVERSION BANKED" in TelegramNotifier._outcome_tag(t, STATS_78)
+
+
+def test_analyzer_scorecard_includes_lifecycle_rows():
+    from core.post_trade_analyzer import PostTradeAnalyzer
+    from models import TradingConfig
+    t = _closed_trade_78()
+    t.entry_spread_mean = -20.0
+    t.entry_spread_std = 25.0
+    t.lifecycle_stats = STATS_78
+    pa = PostTradeAnalyzer.__new__(PostTradeAnalyzer)
+    _, scorecard, _ = pa._build_prompt(t, [t], [], TradingConfig(), None)
+    labels = [s["label"] for s in scorecard]
+    assert "Peak/Trough" in labels and "Z range" in labels
+    assert "Gate" in labels and "Hold vs max" in labels

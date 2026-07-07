@@ -320,7 +320,37 @@ class TelegramNotifier:
         except Exception as e:
             logger.error("Error building trade entry notification: %s", e)
 
-    def notify_trade_exit(self, trade) -> None:
+    @staticmethod
+    def _outcome_tag(trade, stats) -> str:
+        """One-line, rule-based verdict of what actually happened — exact and
+        crisp, no LLM prose. The stop cases distinguish 'never reverted'
+        (trend ran us over) from 'reverted but price never paid' (mean drift /
+        spent edge), which is the distinction that matters for tuning."""
+        reason = (trade.exit_reason or "").upper()
+        pnl = trade.pnl_usd or 0.0
+        if reason == "PROFIT_TARGET":
+            return "TARGET HIT — banked on P&L, no z needed"
+        if reason == "MAX_HOLD":
+            return "TIME EXIT — profitable but slow, cut at max-hold"
+        if reason == "EXIT":
+            return ("REVERSION BANKED — z came home, gate satisfied" if pnl > 0
+                    else "reversion exit below floor (gate released)")
+        # stop family
+        exit_thr = (stats or {}).get('exit_threshold', 0.5)
+        z_entry = trade.entry_zscore or 0.0
+        z_min = (stats or {}).get('z_min')
+        z_max = (stats or {}).get('z_max')
+        reverted = False
+        if z_entry < 0 and z_max is not None:
+            reverted = z_max >= -exit_thr
+        elif z_entry > 0 and z_min is not None:
+            reverted = z_min <= exit_thr
+        if reverted:
+            return ("STOPPED AFTER FULL REVERSION — z came home but price "
+                    "never recovered BE (mean drift; edge was spent)")
+        return "STOPPED IN TREND — z never reverted, divergence was real"
+
+    def notify_trade_exit(self, trade, stats=None) -> None:
         """Send a trade exit notification with full P&L breakdown."""
         if not self.is_ready() or not self._notify_trades:
             return
@@ -403,6 +433,33 @@ class TelegramNotifier:
                 R("Net PnL (est)", f"${net_pnl_est:+.4f}  ({net_pct_est:+.4f}%)"),
                 R("Engine Net PnL", f"${trade.pnl_usd:+.4f}"),
             ]
+            # ── Crisp lifecycle analysis: exact numbers, rule-based verdict ──
+            if stats:
+                rows += ["", "<b>ANALYSIS</b>",
+                         R("Outcome", self._outcome_tag(trade, stats))]
+                peak, trough = stats.get('peak_net'), stats.get('trough_net')
+                if peak is not None and trough is not None:
+                    rows.append(R("Peak/Trough", f"+${peak:.2f} / {trough:+.2f}"))
+                avail = stats.get('available_usd') or 0
+                if avail > 0:
+                    cap_pct = (trade.pnl_gross_usd or 0) / avail * 100
+                    rows.append(R("Capture", f"gross ${trade.pnl_gross_usd:+.2f} "
+                                             f"of ${avail:.2f} avail ({cap_pct:+.0f}%)"))
+                held, mh = stats.get('held_min') or 0, stats.get('max_hold_min') or 0
+                hold_str = f"{held:.0f}m"
+                if mh > 0:
+                    hold_str += f"  (max {mh:.0f}m ×{held / mh:.1f})"
+                rows.append(R("Hold", hold_str))
+                z_min, z_max = stats.get('z_min'), stats.get('z_max')
+                if z_min is not None and z_max is not None:
+                    rows.append(R("Z path", f"{trade.entry_zscore:+.2f} → "
+                                            f"{trade.exit_zscore:+.2f}  "
+                                            f"(range {z_min:+.2f}…{z_max:+.2f})"))
+                holds = stats.get('gate_holds') or 0
+                if holds:
+                    rows.append(R("Gate", f"held {holds}× over "
+                                          f"{stats.get('gate_held_min', 0):.0f}m "
+                                          f"(floor ${stats.get('gate_floor', 0):.2f})"))
             parts = [
                 f"<b>TRADE EXIT  ·  {direction} {trade.asset}  ·  {result}</b>",
                 "\n".join(rows),
@@ -445,37 +502,44 @@ class TelegramNotifier:
             rows.append(R("Health", f"{health_icon} {health}/100  ·  conf {conf}/10"))
 
             # ── SETTINGS & LOGIC AUDIT (deterministic — the bug/misconfig catcher) ──
+            # ── CRISP MODE: findings and recommendations as one-liners only.
+            # The full rationale text stays in the dashboard analysis record —
+            # Telegram gets numbers and headlines, not paragraphs.
             diags = analysis.get("diagnostics") or []
             shown = [d for d in diags if d.get("severity") in ("HIGH", "MED")]
             if shown:
                 _ic = {"HIGH": "🔴", "MED": "🟠", "LOW": "⚪"}
                 rows += ["", "<b>⚙️ Audit</b>"]
-                for d in shown[:5]:
+                for d in shown[:3]:
                     ic = _ic.get(d.get("severity"), "•")
-                    rows.append(f"  {ic} <i>{esc(str(d.get('finding', ''))[:220])}</i>")
-                _low = sum(1 for d in diags if d.get("severity") == "LOW")
-                if _low:
-                    rows.append(f"  <i>+{_low} low-severity note(s)</i>")
+                    finding = str(d.get('finding', ''))
+                    head = finding.split(" — ")[0].split(". ")[0][:110]
+                    rows.append(f"  {ic} <i>{esc(head)}</i>")
+                _more = len(shown) - 3 + sum(1 for d in diags if d.get("severity") == "LOW")
+                if _more > 0:
+                    rows.append(f"  <i>+{_more} more (see dashboard)</i>")
 
-            # ── THEN a 1-2 line verdict ──
-            rows += ["", "<b>Verdict</b>", f"<i>{esc(verdict)}</i>"]
+            # ── One-sentence verdict ──
+            v = verdict.split(". ")[0][:200]
+            rows += ["", f"<b>Verdict</b>  <i>{esc(v)}</i>"]
 
             if recs:
-                rows += ["", "<b>Recommendations</b>"]
-                for rec in recs[:4]:
-                    rtype     = rec.get("type", "")
-                    rationale = esc((rec.get("rationale") or "")[:350])
-                    param     = esc(str(rec.get("param", "")))
-                    cur       = esc(str(rec.get("current_value", "")))
-                    sug       = esc(str(rec.get("suggested_value", "")))
+                rows += ["", "<b>Recs</b>"]
+                for rec in recs[:3]:
+                    rtype = rec.get("type", "")
+                    param = esc(str(rec.get("param", "")))
+                    cur   = esc(str(rec.get("current_value", "")))
+                    sug   = esc(str(rec.get("suggested_value", "")))
                     if rtype == "PARAMETER_CHANGE":
-                        rows.append(f"  ⚙️ <code>{param}</code>: {cur} → <b>{sug}</b>  <i>{rationale}</i>")
+                        rows.append(f"  ⚙️ <code>{param}</code>: {cur} → <b>{sug}</b>")
                     elif rtype == "FILTER_TOGGLE":
-                        rows.append(f"  🔀 Toggle <code>{param}</code> → <b>{sug}</b>  <i>{rationale}</i>")
+                        rows.append(f"  🔀 <code>{param}</code> → <b>{sug}</b>")
                     elif rtype == "POSITION_SIZE_CHANGE":
-                        rows.append(f"  📏 Position size: ${cur} → <b>${sug}</b>  <i>{rationale}</i>")
+                        rows.append(f"  📏 size ${cur} → <b>${sug}</b>")
                     elif rtype == "OBSERVATION":
-                        rows.append(f"  💡 <i>{rationale}</i>")
+                        head = esc((rec.get("rationale") or "")[:110])
+                        rows.append(f"  💡 <i>{head}</i>")
+                rows.append("  <i>full rationale on dashboard</i>")
 
             self._send("\n".join(rows))
         except Exception as e:

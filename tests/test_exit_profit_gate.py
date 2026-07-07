@@ -20,16 +20,22 @@ ENTRY_FUT = 62000.0
 
 
 def make_engine(gate=0.0, gate_pct=0.0, position="LONG",
-                spot_mid=ENTRY_SPOT, fut_mid=ENTRY_FUT):
+                spot_mid=ENTRY_SPOT, fut_mid=ENTRY_FUT,
+                max_hold_minutes=0.0, entry_time=None):
     eng = TradingEngine.__new__(TradingEngine)          # bypass heavy __init__
     eng.config = TradingConfig(hedge_ratio=BETA, exit_profit_gate_usd=gate,
-                               exit_profit_gate_pct=gate_pct)
+                               exit_profit_gate_pct=gate_pct,
+                               max_hold_minutes=max_hold_minutes)
     eng._exit_postonly_reject_count = 0
     eng._EXIT_POSTONLY_MARKET_AFTER = 1
     eng._override_exit_reason = None
     eng._exit_gate_last_log = None
+    eng._gate_hold_count = 0
+    eng._gate_first_hold = None
+    eng.signal_generator = SimpleNamespace(current_half_life=float('inf'))
     eng.open_trade = Trade(
         position_type=position,
+        entry_time=entry_time,
         entry_spot_price=ENTRY_SPOT, entry_futures_price=ENTRY_FUT,
         entry_zscore=3.0, entry_spread_std=64.0, quantity=0.054,
     )
@@ -102,6 +108,46 @@ def test_short_direction_symmetry():
     # ...and is held while still in the fee hole at entry mids.
     eng2 = make_engine(gate=0.0, position="SHORT")
     assert eng2._signal_exit_gated(exit_signal(z=-0.3)) is True
+
+
+# ── gate defers to max-hold (deadlock fix, live trade #78) ───────────────────
+
+def _aged(minutes):
+    from datetime import datetime, timedelta
+    return datetime.utcnow() - timedelta(minutes=minutes)
+
+
+def test_gate_floor_decays_to_break_even_past_max_hold():
+    # In the fee hole (net < 0) past 1x max-hold: still held (floor = BE).
+    eng = make_engine(gate=5.0, max_hold_minutes=20, entry_time=_aged(30))
+    assert eng._live_net_pnl(eng.open_trade) < 0
+    assert eng._signal_exit_gated(exit_signal()) is True
+    # Profitable but under the floor, past 1x max-hold: released — past
+    # max-hold the gate only demands break-even, not the full floor.
+    eng2 = make_engine(position="LONG", spot_mid=ENTRY_SPOT + 8.0,
+                       max_hold_minutes=20, entry_time=_aged(30))
+    net = eng2._live_net_pnl(eng2.open_trade)
+    assert net > 0
+    eng2.config.exit_profit_gate_usd = net + 1.0      # floor above current net
+    assert eng2._signal_exit_gated(exit_signal()) is False
+    # ...and the same floor DOES hold it while the trade is young.
+    eng3 = make_engine(position="LONG", spot_mid=ENTRY_SPOT + 8.0,
+                       max_hold_minutes=20, entry_time=_aged(5))
+    eng3.config.exit_profit_gate_usd = net + 1.0
+    assert eng3._signal_exit_gated(exit_signal()) is True
+
+
+def test_gate_releases_entirely_past_two_x_max_hold():
+    # Deep in the fee hole but held 2x the max-hold: the edge is spent —
+    # release the reversion exit at whatever it is (trade #78 sat 4.4x).
+    eng = make_engine(gate=5.0, max_hold_minutes=20, entry_time=_aged(45))
+    assert eng._live_net_pnl(eng.open_trade) < 0
+    assert eng._signal_exit_gated(exit_signal()) is False
+
+
+def test_gate_unaffected_when_no_max_hold_configured():
+    eng = make_engine(gate=0.0, max_hold_minutes=0.0, entry_time=_aged(500))
+    assert eng._signal_exit_gated(exit_signal()) is True   # holds as before
 
 
 # ── %-of-capital form ─────────────────────────────────────────────────────────

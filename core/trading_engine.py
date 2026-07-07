@@ -257,6 +257,15 @@ class TradingEngine:
         # Peak P&L (net, USD) observed since the trade was opened — used by the
         # trailing stop to measure how far the trade has pulled back from its high.
         self._peak_pnl: float = 0.0
+        # Trade lifecycle telemetry (reset on open): trough net P&L (MAE), the
+        # z-score extremes seen during the hold, and how often/long the exit
+        # profit gate held a reversion exit. Feeds the crisp post-trade
+        # scorecard on Telegram and in the AI review.
+        self._trough_pnl: float = 0.0
+        self._z_seen_min: Optional[float] = None
+        self._z_seen_max: Optional[float] = None
+        self._gate_hold_count: int = 0
+        self._gate_first_hold: Optional[datetime] = None
 
         # Z-score reset gate: after a STOP_LOSS in direction X, block new X entries
         # until z-score crosses back through ±exit_threshold (spread must genuinely
@@ -894,6 +903,17 @@ class TradingEngine:
         except Exception:
             return None
 
+    def _max_hold_minutes_for(self, trade: Trade) -> float:
+        """The trade's max-hold horizon in minutes (half-life form preferred,
+        fixed-minutes fallback; 0 = no max-hold configured)."""
+        try:
+            t = self._effective_exit_targets(trade)
+            if t['max_hold_periods'] > 0:
+                return t['max_hold_periods'] * 0.5 / 60.0   # 0.5s per tick/period
+            return t.get('max_hold_minutes', 0.0) or 0.0
+        except Exception:
+            return 0.0
+
     def _exit_gate_floor(self, trade: Trade) -> Optional[float]:
         """Resolved exit-profit-gate floor (USD) for this trade, or None when
         the gate is disabled. The scale-invariant %-of-capital form wins when
@@ -931,11 +951,31 @@ class TradingEngine:
         floor = self._exit_gate_floor(trade)
         if floor is None:
             return False                    # gate disabled
+        # The gate defers to max-hold — otherwise gate (needs net >= floor) +
+        # max-hold (needs net > 0) + an unreachable target can DEADLOCK a fully
+        # reverted trade until a stop (live trade #78: +$1.19 held for being 2
+        # cents under the floor, then bled to −$4.46 over 80 min). Past 1× the
+        # trade's max-hold the floor decays to break-even; past 2× the gate
+        # releases entirely — the reversion edge is spent, take what's there.
+        mh_min = self._max_hold_minutes_for(trade)
+        if mh_min > 0 and trade.entry_time:
+            held_min = (datetime.utcnow() - trade.entry_time).total_seconds() / 60.0
+            if held_min >= 2.0 * mh_min:
+                logger.info(
+                    "Exit gate released: held %.0fm >= 2x max-hold %.0fm — "
+                    "reversion edge spent, taking the exit", held_min, mh_min,
+                )
+                return False
+            if held_min >= mh_min:
+                floor = min(floor, 0.0)     # break-even only past max-hold
         net = self._live_net_pnl(trade)
         if net is None:
             return False                    # can't price it — fail open, allow the exit
         if net >= floor:
             return False                    # past break-even (+floor) — take the exit
+        self._gate_hold_count += 1
+        if self._gate_first_hold is None:
+            self._gate_first_hold = datetime.utcnow()
         now = datetime.utcnow()
         if (self._exit_gate_last_log is None
                 or (now - self._exit_gate_last_log).total_seconds() >= 60):
@@ -1092,6 +1132,14 @@ class TradingEngine:
         # Always track the high-water mark so the trailing stop has an accurate peak.
         if net_pnl > self._peak_pnl:
             self._peak_pnl = net_pnl
+        if net_pnl < self._trough_pnl:
+            self._trough_pnl = net_pnl
+        _z = signal.zscore
+        if _z is not None:
+            if self._z_seen_min is None or _z < self._z_seen_min:
+                self._z_seen_min = _z
+            if self._z_seen_max is None or _z > self._z_seen_max:
+                self._z_seen_max = _z
 
         exit_type = None
         reason_tag = None
@@ -1603,6 +1651,11 @@ class TradingEngine:
         self._velocity_exit_count = 0
         self._spread_velocity_window.clear()
         self._peak_pnl = 0.0
+        self._trough_pnl = 0.0
+        self._z_seen_min = None
+        self._z_seen_max = None
+        self._gate_hold_count = 0
+        self._gate_first_hold = None
         self._exit_gate_last_log = None
         self.state.current_position = position_type
         self.signal_generator.set_position(
@@ -1835,7 +1888,32 @@ class TradingEngine:
             pnl_gross, fees_usd, signal.signal_type, signal.zscore,
         )
 
-        get_notifier().notify_trade_exit(trade)
+        # Trade lifecycle scorecard — exact numbers for the crisp post-trade
+        # analysis on Telegram and in the AI review. Built BEFORE state reset.
+        try:
+            held_min = ((trade.exit_time - trade.entry_time).total_seconds() / 60.0
+                        if trade.entry_time and trade.exit_time else 0.0)
+            avail_usd = (abs(trade.entry_zscore or 0.0)
+                         * (trade.entry_spread_std or 0.0) * (trade.quantity or 0.0))
+            gate_held_min = ((datetime.utcnow() - self._gate_first_hold).total_seconds() / 60.0
+                             if self._gate_first_hold else 0.0)
+            trade.lifecycle_stats = {
+                'peak_net': round(self._peak_pnl, 2),
+                'trough_net': round(self._trough_pnl, 2),
+                'z_min': self._z_seen_min,
+                'z_max': self._z_seen_max,
+                'gate_holds': self._gate_hold_count,
+                'gate_held_min': round(gate_held_min, 1),
+                'gate_floor': round(self._exit_gate_floor(trade) or 0.0, 2),
+                'held_min': round(held_min, 1),
+                'max_hold_min': round(self._max_hold_minutes_for(trade), 1),
+                'available_usd': round(avail_usd, 2),
+                'exit_threshold': getattr(self.config, 'exit_threshold', 0.5) or 0.5,
+            }
+        except Exception:
+            trade.lifecycle_stats = None
+
+        get_notifier().notify_trade_exit(trade, stats=getattr(trade, 'lifecycle_stats', None))
 
         # Reset state
         self.state.current_position = "NONE"
