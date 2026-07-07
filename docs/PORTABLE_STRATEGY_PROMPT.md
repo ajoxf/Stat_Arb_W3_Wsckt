@@ -45,10 +45,16 @@ goes one way and stays (trend → regime guards), or your executed legs don't ma
 
 ## 3. Entry rules — ALL must pass
 
-1. **Trigger**: |z| ≥ `entry_z` (default **3.1**). Sign picks direction (z>0 → LONG
-   spread if S is above μ in your sign convention — verify against §1's definition).
-2. **Entry ceiling**: refuse entries at |z| ≥ `stop_z` (default **4.0–4.5**). WHY: we
-   entered at z=5.49 with the stop at 5.5 and were stopped out in 3 seconds.
+1. **Trigger**: |z| ≥ `entry_z` (default **3.1–3.5**). Sign picks direction (z>0 →
+   LONG spread if S is above μ in your sign convention — verify against §1).
+2. **Entry ceiling**: refuse entries at |z| ≥ `max_entry_z` — ALWAYS active,
+   independent of whether a z-stop may close trades (see §6). Entries live in
+   the band `entry_z ≤ |z| < max_entry_z`. WHY: a z at 5+ is a momentum spike
+   mid-flight, not a better entry — our extreme entries (z 5.49, 5.40, 5.06)
+   went 0-for-3, one stopped out in 3 seconds. Keep the band ≥ 1σ wide
+   (e.g. 3.5–4.5); a 0.5σ band refuses nearly everything in fast tape. Note:
+   the ceiling judges z at signal time — a spike crossing the band between
+   ticks is judged wherever it lands.
 3. **Edge filter (the dead-day gate)**: expected capture must clear costs:
    `capture = target_fraction × |z| × σ × qty` (same number the exit targets) and
    require `capture ≥ min_edge_multiple × round_trip_cost` (default **1.5×**).
@@ -132,12 +138,35 @@ Priority order each tick (risk first):
    `cost_floor_mult ≈ 1.0–1.5`. Check floor ≤ plausible full reversion
    (`|z|×σ×qty`) — if the floor exceeds it, the trade can never win; block entry.
 3. **Reversion exit, GATED** (z returns inside `exit_z = 0.5`): allowed to close
-   ONLY if `net ≥ gate_floor` (`0` = break-even; or `gate_capital_pct`, e.g. 0.5%).
-   Never book a losing "profit-take". Fail-open if P&L can't be priced.
+   ONLY if `net ≥ gate_floor` (`0` = break-even; or `gate_capital_pct`, e.g.
+   0.3–0.5%). Never book a losing "profit-take". Fail-open if P&L can't be
+   priced. **The gate MUST defer to max-hold**: past 1× the trade's max-hold
+   the floor decays to break-even; past 2× the gate releases entirely (the
+   reversion edge is spent — take what's there). WHY: without the decay, gate
+   (needs net ≥ floor) + max-hold (needs net > 0) + an out-of-reach TP jointly
+   DEADLOCKED a fully reverted trade — held at +$1.19 for being 2 cents under
+   the floor, then bled 80 minutes to a −$4.46 stop.
 4. **MAX HOLD**: after `{4×}` measured half-life (or fixed minutes fallback), exit
    only if net > 0; suppress while z-progress ≥ `{50%}` toward home **only when a
    TP exists** (we shipped the suppression waiting for a TP that was configured off).
-5. **z-stop backstop** at `stop_z` (rarely first — the dollar stop usually wins).
+5. **z-stop: demote it to entry-ceiling duty (recommended)**. Post-entry, the
+   rolling mean/σ drift, so a z-stop's dollar meaning wanders — ours fired at
+   z −5.67 while gross was still INSIDE the dollar line, on a path (entry
+   −3.84 → +1.2 → −5.67) that was oscillation, not trend. Config toggle
+   `z_stop_exit_enabled` (keep OFF once a %-capital stop is armed): in-trade
+   risk is then dollars only — *close in profit first, or lose the cap %*.
+   FAIL-SAFES (non-negotiable): never suppress the dollar/daily override
+   stops; auto-re-enable the z-stop whenever NO dollar stop is armed (a trade
+   must always have a stop); the threshold keeps its entry-ceiling job either
+   way. When you disable it, LOG every occasion it would have fired — those
+   lines + trade outcomes score the design change with data.
+
+**Exit-path completeness rule (learned the expensive way):** enumerate every
+exit's preconditions and prove at least one exit is reachable in EVERY
+(P&L, z, time) state. Watch the corner with z-stop exits disabled: a sideways
+loser (net < 0, z never reverting) has no clock — max-hold skips losers and
+the gate needs a reversion signal. Either accept that it waits for TP/SL, or
+add a hard time-stop (close ANY trade at ~3× max-hold regardless of P&L).
 
 ## 7. Execution engine
 
@@ -180,9 +209,36 @@ Log every auto-tuned change (old → new, why) to an audit table; auto-tuning wi
 corridors + consensus + post-change validation is self-overfitting — a tuner that
 loosened entries after a good day walked straight into the next trend.
 
+**Tune the take/hold from measurements, not opinion.** Persist per-trade
+lifecycle extremes: peak and trough net P&L WITH minutes-after-entry. Then:
+- Take-profit / gate %: read the peak distribution (as % of capital) and set the
+  take near the ~60–70th percentile of peaks — "70% of trades peaked above X%
+  within Y minutes" is the sentence that sets the number. (Our first data
+  point: a loser peaked at 0.49% of capital at minute 6 against a 0.5% floor —
+  missed by 2 cents; the distribution decides whether 0.3% or 0.5% is right.)
+- Max-hold: median `peak_minutes` of winners — when the best exit typically
+  arrives — not a guess.
+- Always compute the breakeven win rate `stop_net / (target + stop_net)` for
+  the chosen geometry and verify the measured win rate clears it (smaller
+  takes hit more often but demand a higher win rate — e.g. 0.3% take vs 1%
+  stop needs ~80%; 0.5% needs ~71%). The distribution decides, not intuition.
+
 ## 10. Observability (all of it earned its place)
 
-- Position card: live net P&L, **BE/EX/TP/SL levels**, Δspread, age vs max-hold.
+- Position card: live net P&L, **BE/EX/TP/SL levels** AND the net dollar value
+  each level equals, Δspread, per-leg price change % since entry (colored by
+  whether the move helps that leg's side), age vs max-hold.
+- Post-trade analysis must be **crisp and rule-based, numbers first** — LLM
+  prose walls go unread. Every close reports: a deterministic outcome tag
+  (TARGET HIT / REVERSION BANKED / TIME EXIT / STOPPED IN TREND — never
+  reverted / STOPPED AFTER FULL REVERSION — z came home but price never paid),
+  **which stop fired** ("z-stop — dollar stop −$X NOT reached (gross $Y)" vs
+  "DOLLAR stop — capital cap"), timed extremes ("Peak/Trough +$1.19 (6m) /
+  −$4.46 (88m)"), capture vs available move, hold vs max-hold, gate holds
+  (count × duration × floor), z path with range.
+- Remote tracking: entry notification carries the full exit geometry; an
+  on-demand command (e.g. Telegram /positions) renders the live snapshot —
+  pull-based real-time tracking beats periodic push spam.
 - Per-trade review: entry/exit z, available Δ (|z|·σ), realized Δ, **capture
   ratio**, cost ratio, fee split (est vs real), exit reason, streaks, PF, EV/trade.
 - Trade-vs-broker reconciliation to the cent (per-leg accounting makes this exact).
@@ -212,6 +268,16 @@ loosened entries after a good day walked straight into the next trend.
     nothing; never touches non-bot instruments.
 12. Leaked-partial flatten: cancel-then-reread flattens hidden fills; clean cancels
     place nothing; unconfirmed cancels stay OPEN for retry.
+13. Exit-path completeness: a fully reverted, sub-floor trade must still have an
+    exit — gate floor decays to break-even past 1× max-hold, releases at 2×
+    (regression for the +$1.19-held-over-2¢ → −$4.46 deadlock).
+14. z-stop suppression matrix: off+dollar-armed suppresses; default on; override
+    stops (DOLLAR/DAILY) never suppressed; no-dollar-stop fail-safe keeps the
+    z-stop; plain reversion EXITs untouched.
+15. Lifecycle extremes persist: peak/trough net + minutes-after-entry round-trip
+    through the DB and render in the close report ("+$1.19 (6m) / −$4.46 (88m)").
+16. The full close/accounting path runs end-to-end in paper mode with lifecycle
+    stats attached — any dangling reference in it fails the suite.
 
 ## 12. Non-goals / hard warnings
 
@@ -222,4 +288,14 @@ loosened entries after a good day walked straight into the next trend.
 - Don't gate on Hurst at tick timescales; use half-life + drift/regime instead.
 - Scaling size does NOT change survival odds — every %-of-capital level scales with
   qty, so the z-distance to the stop is size-invariant. Fix expectancy before size.
-- The z-exit is not a profit engine; the TP and the gate are. z earns entries.
+- The z-exit is not a profit engine; the TP and the gate are. **z earns entries;
+  dollars govern everything after.** Post-entry, the rolling z is a drifting
+  statistic — never let it be the thing that pays or stops you.
+- Changing risk settings while a trade is OPEN applies to that trade immediately
+  (our tightened stop fired 56s after the save). Fine if intended — know it.
+- When you disable any protective mechanism, keep logging every occasion it
+  WOULD have fired, alongside the trade's outcome — every design change becomes
+  a scoreable natural experiment instead of an argument.
+- Every dollar level needs a cost-floor sanity check at the operating size: a
+  cost floor multiple of 1.5× silently pinned our "0.5% of capital" target ~50%
+  higher at small capital. Print the RESOLVED levels at entry, not the configs.
