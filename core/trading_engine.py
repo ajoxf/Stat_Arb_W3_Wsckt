@@ -1001,11 +1001,17 @@ class TradingEngine:
         the fixed-dollar/minute form. Values <= 0 mean that override is off.
         """
         cfg = self.config
-        # Profit target $
+        # Profit target $ — precedence: σ-fraction (volatility-aware) >
+        # %-of-capital (fires on P&L alone: net >= BE + pct of capital, the
+        # "always bank the win" form) > fixed USD. All feed the UNGATED
+        # PROFIT_TARGET override — no z required to fire.
         sigma_frac = getattr(cfg, 'profit_target_sigma_frac', 0.0) or 0.0
+        cap_tp_pct = getattr(cfg, 'profit_target_capital_pct', 0.0) or 0.0
         if sigma_frac > 0:
             target_usd = (sigma_frac * abs(trade.entry_zscore)
                           * trade.entry_spread_std * trade.quantity)
+        elif cap_tp_pct > 0:
+            target_usd = cap_tp_pct / 100.0 * self._capital_at_risk(trade)
         else:
             target_usd = getattr(cfg, 'profit_target_usd', 0.0) or 0.0
         # Cost floor: an active profit target must clear the full round-trip
@@ -1519,15 +1525,19 @@ class TradingEngine:
         _min_rr = getattr(self.config, 'min_entry_rr_multiple', 0.0) or 0.0
         if _min_rr > 0:
             _sig_frac = getattr(self.config, 'profit_target_sigma_frac', 0.0) or 0.0
+            _cap_tp = getattr(self.config, 'profit_target_capital_pct', 0.0) or 0.0
             if _sig_frac > 0:
                 _expected_target = (_sig_frac * abs(signal.zscore)
                                     * signal.spread_std * quantity)
+            elif _cap_tp > 0:
+                _buf = getattr(self.config, 'm2m_buffer_pct', 0.0) or 0.0
+                _expected_target = _cap_tp / 100.0 * total_margin * (1 + _buf / 100.0)
             else:
                 _expected_target = getattr(self.config, 'profit_target_usd', 0.0) or 0.0
             if _expected_target <= 0:
                 _rr_block = (
-                    f"R:R gate: min_entry_rr_multiple={_min_rr} is set but "
-                    f"profit_target_usd and profit_target_sigma_frac are both 0 — "
+                    f"R:R gate: min_entry_rr_multiple={_min_rr} is set but all "
+                    f"profit-target forms (sigma_frac / capital_pct / usd) are 0 — "
                     f"cannot derive stop loss without a profit target"
                 )
                 logger.info("Entry blocked: %s", _rr_block)

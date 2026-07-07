@@ -62,6 +62,7 @@ class DatabaseManager:
                     exit_threshold REAL DEFAULT 0.5,
                     stop_loss_threshold REAL DEFAULT 4.0,
                     profit_target_sigma_frac REAL DEFAULT 0.0,
+                    profit_target_capital_pct REAL DEFAULT 0.0,
                     exit_profit_gate_usd REAL DEFAULT 0.0,
                     exit_profit_gate_pct REAL DEFAULT 0.0,
                     profit_target_usd REAL DEFAULT 0.0,
@@ -410,6 +411,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_loss_usd REAL DEFAULT 0.0")
             if 'profit_target_sigma_frac' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_sigma_frac REAL DEFAULT 0.0")
+            if 'profit_target_capital_pct' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN profit_target_capital_pct REAL DEFAULT 0.0")
             if 'exit_profit_gate_usd' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_profit_gate_usd REAL DEFAULT 0.0")
             if 'exit_profit_gate_pct' not in existing_columns:
@@ -535,6 +538,7 @@ class DatabaseManager:
                     entry_slice_interval_sec=row["entry_slice_interval_sec"] if "entry_slice_interval_sec" in row.keys() else 5.0,
                     min_fill_ratio=row["min_fill_ratio"] if "min_fill_ratio" in row.keys() else 0.95,
                     profit_target_sigma_frac=row["profit_target_sigma_frac"] if "profit_target_sigma_frac" in row.keys() else 0.0,
+                    profit_target_capital_pct=row["profit_target_capital_pct"] if "profit_target_capital_pct" in row.keys() and row["profit_target_capital_pct"] is not None else 0.0,
                     exit_profit_gate_usd=row["exit_profit_gate_usd"] if "exit_profit_gate_usd" in row.keys() and row["exit_profit_gate_usd"] is not None else 0.0,
                     exit_profit_gate_pct=row["exit_profit_gate_pct"] if "exit_profit_gate_pct" in row.keys() and row["exit_profit_gate_pct"] is not None else 0.0,
                     lattice_sizing_enabled=bool(row["lattice_sizing_enabled"]) if "lattice_sizing_enabled" in row.keys() and row["lattice_sizing_enabled"] is not None else True,
@@ -615,6 +619,7 @@ class DatabaseManager:
                     entry_slice_interval_sec = ?,
                     min_fill_ratio = ?,
                     profit_target_sigma_frac = ?,
+                    profit_target_capital_pct = ?,
                     profit_target_usd = ?,
                     profit_target_min_cost_mult = ?,
                     max_hold_halflife_mult = ?,
@@ -684,6 +689,7 @@ class DatabaseManager:
                 config.entry_slice_interval_sec,
                 config.min_fill_ratio,
                 config.profit_target_sigma_frac,
+                config.profit_target_capital_pct,
                 config.profit_target_usd,
                 config.profit_target_min_cost_mult,
                 config.max_hold_halflife_mult,

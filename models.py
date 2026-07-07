@@ -82,6 +82,11 @@ class TradingConfig:
     #     target$ = sigma_frac × |entry_zscore| × entry_spread_std × quantity
     #   recommended sigma_frac ≈ 0.6–0.7 (capture ~two-thirds of the move).
     profit_target_sigma_frac: float = 0.0
+    # %-of-capital form — "bank the win": close once net P&L (all fees paid)
+    # >= this % of capital-at-risk. Fires on P&L ALONE (no z-score condition,
+    # immune to rolling-mean drift). Used when sigma_frac is 0; overrides the
+    # fixed USD field. e.g. 0.5 = take profit at break-even + 0.5% of capital.
+    profit_target_capital_pct: float = 0.0
     profit_target_usd: float = 0.0   # fixed-$ fallback
     # Cost floor: an active profit target must clear the round-trip fees by this
     # multiple before it can fire, so a statistically-small target can never
@@ -308,6 +313,7 @@ class TradingConfig:
             'exit_threshold': self.exit_threshold,
             'stop_loss_threshold': self.stop_loss_threshold,
             'profit_target_sigma_frac': self.profit_target_sigma_frac,
+            'profit_target_capital_pct': self.profit_target_capital_pct,
             'profit_target_usd': self.profit_target_usd,
             'profit_target_min_cost_mult': self.profit_target_min_cost_mult,
             'max_hold_halflife_mult': self.max_hold_halflife_mult,

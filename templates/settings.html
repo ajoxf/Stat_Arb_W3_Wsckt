@@ -121,7 +121,12 @@
                         <div class="col-md-4">
                             <label class="form-label">Profit Target (&sigma;-fraction)</label>
                             <input type="number" class="form-control" id="profit_target_sigma_frac" name="profit_target_sigma_frac" value="{{ config.profit_target_sigma_frac }}" step="0.05" min="0" max="2">
-                            <small class="text-secondary">Fraction of expected reversion. <strong>0.5&ndash;0.7</strong> recommended &mdash; lower = quicker, smaller, higher-probability wins (target = f &times; |Z<sub>entry</sub>| &times; &sigma; &times; qty; floored by Cost Floor below)</small>
+                            <small class="text-secondary">Fraction of expected reversion. <strong>0.5&ndash;0.7</strong> recommended &mdash; lower = quicker, smaller, higher-probability wins (target = f &times; |Z<sub>entry</sub>| &times; &sigma; &times; qty; floored by Cost Floor below). Takes precedence over the %-of-capital form.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Target (% of capital)</label>
+                            <input type="number" class="form-control" id="profit_target_capital_pct" name="profit_target_capital_pct" value="{{ config.profit_target_capital_pct }}" step="0.1" min="0" max="5">
+                            <small class="text-secondary"><strong>"Bank the win":</strong> close once net P&L (all fees paid) &ge; this % of capital-at-risk. Fires on <strong>P&L alone &mdash; no z-score condition</strong>, immune to rolling-mean drift. e.g. <strong>0.5</strong> = take profit at BE + 0.5% of capital. Used when &sigma;-fraction is 0; overrides the fixed USD field. Floored by the Cost Floor.</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Max Hold (&times; half-life)</label>
@@ -1522,6 +1527,7 @@
             exit_threshold: parseFloat(document.getElementById('exit_threshold').value),
             stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
             profit_target_sigma_frac: parseFloat(document.getElementById('profit_target_sigma_frac').value) || 0,
+            profit_target_capital_pct: parseFloat(document.getElementById('profit_target_capital_pct').value) || 0,
             profit_target_usd: parseFloat(document.getElementById('profit_target_usd').value) || 0,
             profit_target_min_cost_mult: parseFloat(document.getElementById('profit_target_min_cost_mult').value) || 0,
             max_hold_halflife_mult: parseFloat(document.getElementById('max_hold_halflife_mult').value) || 0,
@@ -1676,6 +1682,7 @@
                 document.getElementById('exit_threshold').value = config.exit_threshold;
                 document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;
                 document.getElementById('profit_target_sigma_frac').value = config.profit_target_sigma_frac || 0;
+                document.getElementById('profit_target_capital_pct').value = config.profit_target_capital_pct || 0;
                 document.getElementById('profit_target_usd').value = config.profit_target_usd || 0;
                 document.getElementById('profit_target_min_cost_mult').value = config.profit_target_min_cost_mult || 0;
                 document.getElementById('max_hold_halflife_mult').value = config.max_hold_halflife_mult || 0;
