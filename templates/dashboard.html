@@ -386,10 +386,14 @@
                         <div class="col-6">
                             <span class="text-secondary">Leg A Entry:</span>
                             <span id="position-entry-spot">-</span>
+                            <span id="position-leg-a-chg" class="ms-1" style="font-size: 0.72rem;"
+                                  title="Leg A price change since entry — green when the move helps this leg's side"></span>
                         </div>
                         <div class="col-6">
                             <span class="text-secondary">Leg B Entry:</span>
                             <span id="position-entry-futures">-</span>
+                            <span id="position-leg-b-chg" class="ms-1" style="font-size: 0.72rem;"
+                                  title="Leg B price change since entry — green when the move helps this leg's side"></span>
                         </div>
                     </div>
                     <div class="row mb-1">
@@ -413,6 +417,13 @@
                              title="Absolute spread values where this trade breaks even (covers all fees), releases a reversion exit (EX = BE + profit gate, shown when a gate is set), takes profit, and stops out — same math the exit overrides fire on. These levels do NOT drift with the rolling mean, unlike the in-trade z-score. Watch the live spread against them.">
                             <span class="text-secondary">Levels:</span>
                             <span id="position-levels" class="font-monospace">-</span>
+                        </div>
+                    </div>
+                    <div class="row mb-1" id="position-levels-usd-row" style="display:none;">
+                        <div class="col-12" style="font-size: 0.75rem;"
+                             title="Net P&L at each level: BE = $0.00 (all fees paid), EX = the profit-gate floor, TP = the profit target. SL is quoted as the GROSS spread move that trips the stop — net there ≈ −(stop + fees).">
+                            <span class="text-secondary">Level P&L:</span>
+                            <span id="position-levels-usd" class="font-monospace">-</span>
                         </div>
                     </div>
                     <div class="row">
@@ -1891,6 +1902,35 @@
             }
         }
 
+        // Live per-leg change since entry (%). LONG spread = long Leg A / short
+        // Leg B; SHORT is the mirror — green when the move helps that leg's side.
+        const legAChgEl = document.getElementById('position-leg-a-chg');
+        const legBChgEl = document.getElementById('position-leg-b-chg');
+        if (legAChgEl && legBChgEl) {
+            const inPos = currentPosition.type && currentPosition.type !== 'NONE';
+            const ls = _lastSpotTick, lf = _lastFuturesTick;
+            const sMid = (ls && ls.bid > 0 && ls.ask > 0) ? (ls.bid + ls.ask) / 2 : null;
+            const fMid = (lf && lf.bid > 0 && lf.ask > 0) ? (lf.bid + lf.ask) / 2 : null;
+            if (inPos && sMid && fMid
+                    && currentPosition.entrySpotPrice > 0 && currentPosition.entryFuturesPrice > 0) {
+                const pctA = (sMid - currentPosition.entrySpotPrice) / currentPosition.entrySpotPrice * 100;
+                const pctB = (fMid - currentPosition.entryFuturesPrice) / currentPosition.entryFuturesPrice * 100;
+                const aHelps = (currentPosition.type === 'LONG') === (pctA >= 0);
+                const bHelps = (currentPosition.type === 'SHORT') === (pctB >= 0);
+                legAChgEl.textContent = (pctA >= 0 ? '+' : '') + pctA.toFixed(2) + '%';
+                legAChgEl.className = 'ms-1 ' + (aHelps ? 'price-up' : 'price-down');
+                legAChgEl.title = 'Leg A now ' + sMid.toFixed(2) + ' (entry '
+                    + currentPosition.entrySpotPrice.toFixed(2) + ')';
+                legBChgEl.textContent = (pctB >= 0 ? '+' : '') + pctB.toFixed(2) + '%';
+                legBChgEl.className = 'ms-1 ' + (bHelps ? 'price-up' : 'price-down');
+                legBChgEl.title = 'Leg B now ' + fMid.toFixed(2) + ' (entry '
+                    + currentPosition.entryFuturesPrice.toFixed(2) + ')';
+            } else {
+                legAChgEl.textContent = '';
+                legBChgEl.textContent = '';
+            }
+        }
+
         // Converted prices + spread breakdown (only meaningful when hedge_ratio != 1)
         const beta = data.hedge_ratio;
         // Capture the configured β + sizing inputs and refresh immediately
@@ -2341,6 +2381,28 @@ function updateFilterStatus(elementId, passed, value) {
                     pnlBarRow.style.display = '';
                 } else if (pnlBarRow) {
                     pnlBarRow.style.display = 'none';
+                }
+
+                // Level P&L row — the net dollar value each spread level equals,
+                // aligned under the Levels row (BE is $0 by definition).
+                const usdRow = document.getElementById('position-levels-usd-row');
+                const usdEl  = document.getElementById('position-levels-usd');
+                if (usdRow && usdEl && lv && lv.break_even != null) {
+                    const gateUsd = t.exit_gate_floor_usd != null ? parseFloat(t.exit_gate_floor_usd) : null;
+                    const parts = ['BE <span class="text-info">$0.00</span>'];
+                    if (gateUsd != null && gateUsd > 0.005) {
+                        parts.push('EX <span class="text-warning">+$' + gateUsd.toFixed(2) + '</span>');
+                    }
+                    parts.push('TP ' + (targetUsd > 0
+                        ? '<span class="text-success">+$' + targetUsd.toFixed(2) + '</span>'
+                        : '<span class="text-secondary">off</span>'));
+                    parts.push('SL ' + (stopUsd > 0
+                        ? '<span class="text-danger">−$' + stopUsd.toFixed(2) + ' gross</span>'
+                        : '<span class="text-secondary">off</span>'));
+                    usdEl.innerHTML = parts.join(' · ');
+                    usdRow.style.display = '';
+                } else if (usdRow) {
+                    usdRow.style.display = 'none';
                 }
 
                 // Store entry time for age ticker
