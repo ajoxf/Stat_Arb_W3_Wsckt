@@ -1631,7 +1631,20 @@ class TradingEngine:
                 f"{_lv['stop']:.2f}" if _lv['stop'] is not None else "off",
             )
 
-        get_notifier().notify_trade_entry(trade, signal)
+        _details = None
+        if _lv:
+            try:
+                _t = self._effective_exit_targets(trade)
+                _details = {
+                    'levels': _lv,
+                    'target_usd': _t['target_usd'],
+                    'stop_usd': _t['stop_usd'],
+                    'gate_usd': self._exit_gate_floor(trade),
+                    'capital': self._capital_at_risk(trade),
+                }
+            except Exception:
+                _details = None
+        get_notifier().notify_trade_entry(trade, signal, details=_details)
 
         if self.on_trade:
             self.on_trade(trade)

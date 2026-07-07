@@ -168,8 +168,44 @@ class TelegramNotifier:
     # Notifications
     # ------------------------------------------------------------------
 
-    def notify_trade_entry(self, trade, signal=None) -> None:
-        """Send a trade entry notification."""
+    @staticmethod
+    def _geometry_rows(R, levels, target_usd, stop_usd, gate_usd):
+        """Rows for the trade's exit geometry: absolute BE/EX/TP/SL spread
+        levels plus the net dollar value each level equals (BE = $0 by
+        definition; SL is quoted as the GROSS move that trips the stop)."""
+        rows = []
+        lv = levels or {}
+        if lv.get("break_even") is None:
+            return rows
+
+        def _f(x):
+            return f"{x:.2f}" if isinstance(x, (int, float)) else "off"
+
+        fav = "↑" if lv.get("favorable") == "up" else "↓"
+        show_ex = isinstance(gate_usd, (int, float)) and gate_usd > 0.005
+        chips = [f"BE {_f(lv.get('break_even'))}"]
+        if show_ex:
+            chips.append(f"EX {_f(lv.get('gate_release'))}")
+        chips.append(f"TP {_f(lv.get('take_profit'))}")
+        chips.append(f"SL {_f(lv.get('stop'))}")
+        rows.append(R("Levels", " · ".join(chips) + f"  (profit {fav})"))
+
+        usd = ["BE $0.00"]
+        if show_ex:
+            usd.append(f"EX +${gate_usd:.2f}")
+        usd.append(f"TP +${target_usd:.2f}" if (target_usd or 0) > 0 else "TP off")
+        usd.append(f"SL -${stop_usd:.2f} gross" if (stop_usd or 0) > 0 else "SL off")
+        rows.append(R("Level P&L", " · ".join(usd)))
+        return rows
+
+    def notify_trade_entry(self, trade, signal=None, details=None) -> None:
+        """Send a trade entry notification.
+
+        details (optional, provided by the engine): {'levels': BE/EX/TP/SL
+        dict, 'target_usd', 'stop_usd', 'gate_usd', 'capital'} — the same
+        exit geometry as the dashboard position card, so the trade can be
+        followed from Telegram alone.
+        """
         if not self.is_ready() or not self._notify_trades:
             return
         try:
@@ -237,6 +273,26 @@ class TelegramNotifier:
                     rows.append(R("Half-Life", f"{hl:.1f} periods"))
                 if regime:
                     rows.append(R("Regime", regime))
+            # Exit geometry — the absolute levels this trade lives and dies at,
+            # so it can be tracked from Telegram without the dashboard.
+            if details:
+                geo = self._geometry_rows(
+                    R,
+                    details.get("levels"),
+                    details.get("target_usd") or 0.0,
+                    details.get("stop_usd") or 0.0,
+                    details.get("gate_usd"),
+                )
+                if geo:
+                    rows.append("")
+                    rows.extend(geo)
+                cap = details.get("capital")
+                if cap:
+                    rows.append(R("Capital", f"${cap:,.2f} at risk"))
+            spot_qty = getattr(trade, "spot_qty", 0) or 0
+            if spot_qty > 0 and trade.quantity > 0:
+                rows.append(R("Leg A Lots", f"{spot_qty:.6f}"))
+                rows.append(R("Exec Ratio", f"{spot_qty / trade.quantity:.2f}"))
             # Surface the expected round-trip fee up front so the trader can
             # see at entry whether the spread captured is enough to overcome
             # costs. Same calculation used in the exit notification.
@@ -1029,10 +1085,49 @@ class TelegramNotifier:
             "",
         ]
         if current_spot:
-            rows.append(R("Spot Now", f"${current_spot:,.4f}"))
+            chg = f"  ({(current_spot - entry_spot) / entry_spot * 100:+.2f}%)" if entry_spot else ""
+            rows.append(R("Spot Now", f"${current_spot:,.4f}{chg}"))
         if current_fut:
-            rows.append(R("Fut Now", f"${current_fut:,.4f}"))
+            chg = f"  ({(current_fut - entry_fut) / entry_fut * 100:+.2f}%)" if entry_fut else ""
+            rows.append(R("Fut Now", f"${current_fut:,.4f}{chg}"))
         rows.append(R("Spread Now", f"{current_spread:+.4f}  (Z: {current_z:+.4f})"))
+
+        # Live trade state — same numbers as the dashboard position card.
+        delta = current_spread - entry_spread
+        favorable = (position == "LONG" and delta < 0) or (position == "SHORT" and delta > 0)
+        rows.append(R("Δ Spread", f"{delta:+.4f}  ({'favorable' if favorable else 'against'})"))
+        upnl = open_trade.get("unrealized_pnl")
+        if upnl is not None:
+            rows.append(R("Net P&L", f"${upnl:+,.2f}"))
+
+        target_usd = open_trade.get("exit_target_usd") or 0
+        stop_usd = open_trade.get("exit_stop_usd") or 0
+        gate_usd = open_trade.get("exit_gate_floor_usd")
+        geo = self._geometry_rows(R, open_trade.get("spread_levels"),
+                                  target_usd, stop_usd, gate_usd)
+        if geo:
+            rows.append("")
+            rows.extend(geo)
+        if target_usd or stop_usd:
+            rows.append(R("Target/Stop",
+                          (f"+${target_usd:.2f}" if target_usd else "—")
+                          + "  /  "
+                          + (f"-${stop_usd:.2f}" if stop_usd else "—")))
+
+        held_min = open_trade.get("held_minutes")
+        max_hold_min = open_trade.get("max_hold_minutes")
+        if held_min is not None:
+            hold_str = f"{held_min:.1f}m"
+            if max_hold_min:
+                hold_str += (f"  (max {max_hold_min:.0f}m"
+                             + (" — EXPIRED" if held_min >= max_hold_min else "")
+                             + ")")
+            rows.append(R("Age", hold_str))
+
+        spot_qty = open_trade.get("spot_qty") or 0
+        if spot_qty > 0 and qty > 0:
+            rows.append(R("Leg A Lots", f"{spot_qty:.6f}  (ratio {spot_qty / qty:.2f})"))
+
         rows += [
             "",
             R("Orders at", placed_str),
