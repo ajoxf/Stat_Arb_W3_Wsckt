@@ -304,6 +304,15 @@ def start_engine_loop():
     engine.on_trade = on_trade_callback
     engine.on_error = on_error_callback
 
+    # Persist cleanup closes (orphan auto-closes) to the untracked-close
+    # ledger so costs paid outside any recorded trade stay visible.
+    def on_untracked_close_callback(entry: Dict[str, Any]) -> None:
+        try:
+            db.save_untracked_close(**entry)
+        except Exception as _e:
+            logger.warning("Failed to persist untracked close: %s", _e)
+    engine.on_untracked_close = on_untracked_close_callback
+
     # Give the auto-tuner a reference to the live engine so it can update config in-process
     auto_tuner.engine = engine
 
@@ -1181,6 +1190,10 @@ def get_engine_status():
     """Get engine status."""
     status = engine.get_status()
     status['execution_backend'] = _execution_backend
+    try:
+        status['untracked_closes_today'] = db.get_untracked_totals_today()
+    except Exception:
+        pass
     return jsonify(status)
 
 

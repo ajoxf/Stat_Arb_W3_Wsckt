@@ -173,6 +173,9 @@ class TradingEngine:
         self.on_tick: Optional[Callable[[MarketTick, MarketTick], None]] = None
         self.on_signal: Optional[Callable[[Signal], None]] = None
         self.on_trade: Optional[Callable[[Trade], None]] = None
+        # Fired when money moves OUTSIDE a recorded trade (orphan auto-close),
+        # so the app can persist it to the untracked-close ledger.
+        self.on_untracked_close: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_status: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
 
@@ -2215,9 +2218,38 @@ class TradingEngine:
             result = await self.futures_adapter.close_position(symbol, pos_side=side)
 
             if result.success:
+                # Cleanup costs are real money that appears in NO trade record.
+                # Book them: count against the daily-loss circuit breaker and
+                # emit to the untracked-close ledger for dashboard visibility.
+                upl = float(pos.get('unrealized_pnl') or 0.0)
+                fee_est = 0.0
+                try:
+                    taker_bps = getattr(self.config, 'futures_taker_fee_bps',
+                                        self.config.taker_fee_bps)
+                    entry_px = float(pos.get('entry_price') or 0.0)
+                    if entry_px > 0:
+                        fee_est = taker_bps / 10000.0 * qty * entry_px
+                except Exception:
+                    fee_est = 0.0
+                self._daily_loss_usd += upl - fee_est
                 logger.warning(
-                    "AUTO-CLOSE SUCCESS: closed orphan %s %s", side, symbol,
+                    "AUTO-CLOSE SUCCESS: closed orphan %s %s — ledgered pnl≈$%.2f "
+                    "− taker fee≈$%.2f (daily P&L now $%.2f)",
+                    side, symbol, upl, fee_est, self._daily_loss_usd,
                 )
+                if self.on_untracked_close:
+                    try:
+                        self.on_untracked_close({
+                            'source': 'ORPHAN_AUTO_CLOSE',
+                            'symbol': symbol,
+                            'side': side,
+                            'quantity': qty,
+                            'pnl_usd': round(upl, 4),
+                            'fee_est_usd': round(fee_est, 4),
+                            'note': 'engine=FLAT mismatch; closed via close-position',
+                        })
+                    except Exception as _ue:
+                        logger.warning("untracked-close ledger write failed: %s", _ue)
             else:
                 logger.error(
                     "AUTO-CLOSE FAILED for %s %s: %s", side, symbol, result.error

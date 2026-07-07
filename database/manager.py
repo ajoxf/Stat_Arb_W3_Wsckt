@@ -315,6 +315,23 @@ class DatabaseManager:
                 )
             """)
 
+            # Untracked-close ledger: money that moved on the exchange OUTSIDE
+            # a recorded trade (orphan auto-closes, leg-leak flattens). These
+            # costs appear nowhere in trade P&L — this table makes them visible.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS untracked_closes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    source TEXT,
+                    symbol TEXT,
+                    side TEXT,
+                    quantity REAL,
+                    pnl_usd REAL DEFAULT 0,
+                    fee_est_usd REAL DEFAULT 0,
+                    note TEXT
+                )
+            """)
+
             # Insert default config if not exists
             cursor.execute("SELECT COUNT(*) FROM trading_config")
             if cursor.fetchone()[0] == 0:
@@ -908,6 +925,41 @@ class DatabaseManager:
                     int(trade.is_paper),
                 ))
                 return cursor.lastrowid
+
+    def save_untracked_close(self, *, source: str, symbol: str, side: str,
+                             quantity: float, pnl_usd: float,
+                             fee_est_usd: float = 0.0, note: str = "") -> None:
+        """Record a close that happened outside a recorded trade (orphan
+        auto-close, leg-leak flatten) so cleanup costs are visible."""
+        with self._get_connection() as conn:
+            conn.cursor().execute(
+                "INSERT INTO untracked_closes (source, symbol, side, quantity, "
+                "pnl_usd, fee_est_usd, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (source, symbol, side, quantity, pnl_usd, fee_est_usd, note),
+            )
+
+    def get_untracked_closes(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM untracked_closes ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_untracked_totals_today(self) -> Dict[str, Any]:
+        """Today's (UTC) untracked-close count and P&L, net of estimated fees."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(pnl_usd), 0) AS pnl, "
+                "COALESCE(SUM(fee_est_usd), 0) AS fees FROM untracked_closes "
+                "WHERE date(timestamp) = date('now')",
+            )
+            row = cursor.fetchone()
+            n, pnl, fees = row["n"], row["pnl"], row["fees"]
+            return {"count": n, "pnl_usd": round(pnl, 4),
+                    "fee_est_usd": round(fees, 4), "net_usd": round(pnl - fees, 4)}
 
     def get_trades(self, limit: int = 100, open_only: bool = False) -> List[Trade]:
         """Get trades."""
