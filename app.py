@@ -286,6 +286,83 @@ def _build_trade_adapters(api_key: str, secret_key: str, passphrase: str, is_dem
     return spot, futures, "rest"
 
 
+_WS_PROMOTE_CHECK_SEC = 60      # attempt cadence while running on the REST fallback
+_WS_PROMOTE_STABILITY_SEC = 10  # fresh socket must hold this long before we trust it
+
+
+async def _ws_promotion_loop(api_key: str, secret_key: str, passphrase: str,
+                             is_demo: bool) -> None:
+    """Promote execution back to WebSocket adapters once the socket stabilizes.
+
+    Runs only when EXCHANGE_BACKEND=websocket fell back to REST at startup.
+    Every _WS_PROMOTE_CHECK_SEC: if the engine is FLAT and idle (no trade, no
+    order in flight), bring up fresh WS adapters, require them to connect AND
+    stay connected for _WS_PROMOTE_STABILITY_SEC, re-verify the engine is still
+    flat, then hot-swap via engine.set_adapters() (which rebuilds the order
+    executor). Old REST adapters are disconnected after a grace period so any
+    in-flight account-info calls finish first — no 'Connector is closed' noise.
+    Ends after a successful promotion; failures tear down cleanly and retry.
+    """
+    global _execution_backend
+
+    def _flat_and_idle() -> bool:
+        return (engine.open_trade is None
+                and not getattr(engine, '_executing_trade', False)
+                and engine.state.current_position == "NONE")
+
+    while _execution_backend == "rest":
+        await asyncio.sleep(_WS_PROMOTE_CHECK_SEC)
+        if _execution_backend != "rest" or not _flat_and_idle():
+            continue
+        spot = OKXWebSocketAdapter(
+            api_key=api_key, secret_key=secret_key, passphrase=passphrase,
+            is_testnet=is_demo, spot_leverage=config.spot_leverage,
+        )
+        futures = OKXWebSocketAdapter(
+            api_key=api_key, secret_key=secret_key, passphrase=passphrase,
+            is_testnet=is_demo,
+        )
+        promoted = False
+        try:
+            ok = True
+            for ad in (spot, futures):
+                if not await ad.connect():
+                    ok = False
+                    break
+            if ok:
+                await asyncio.sleep(_WS_PROMOTE_STABILITY_SEC)
+                ok = (getattr(spot, '_connected', False)
+                      and getattr(futures, '_connected', False))
+            if ok and _flat_and_idle():
+                old_spot, old_fut = engine.spot_adapter, engine.futures_adapter
+                engine.set_adapters(spot, futures)
+                _execution_backend = "websocket"
+                promoted = True
+                logger.info(
+                    "Execution PROMOTED back to WebSocket adapters "
+                    "(socket held %ds; swapped while flat)",
+                    _WS_PROMOTE_STABILITY_SEC,
+                )
+                # Let any in-flight REST account calls on the old adapters
+                # finish before closing their sessions.
+                await asyncio.sleep(15)
+                for ad in (old_spot, old_fut):
+                    try:
+                        await ad.disconnect()
+                    except Exception:
+                        pass
+                return
+        except Exception as e:
+            logger.debug("WS promotion attempt failed (will retry): %s", e)
+        finally:
+            if not promoted:
+                for ad in (spot, futures):
+                    try:
+                        await ad.disconnect()
+                    except Exception:
+                        pass
+
+
 def start_engine_loop():
     """Start the trading engine in a background thread."""
     global loop, engine_thread, ws_manager
@@ -442,6 +519,19 @@ def start_engine_loop():
         _execution_backend = backend_label
         logger.info("%s adapters configured: demo=%s, paper=%s, symbols=(%s, %s)",
                    backend_label, is_demo, config.paper_trading, config.spot_symbol, config.futures_symbol)
+
+        # If the operator wanted WS execution but we fell back to REST, arm the
+        # promotion watcher: it hot-swaps back to WS (between trades) once the
+        # socket stabilizes, instead of requiring a restart.
+        if (backend_label == "rest"
+                and os.getenv('EXCHANGE_BACKEND', 'rest').strip().lower() == 'websocket'):
+            asyncio.run_coroutine_threadsafe(
+                _ws_promotion_loop(api_key, secret_key, passphrase, is_demo), loop)
+            logger.info(
+                "WS promotion watcher armed — will hot-swap execution back to "
+                "WebSocket when the socket stabilizes (every %ds, flat-only swap)",
+                _WS_PROMOTE_CHECK_SEC,
+            )
 
         # RFQ executor — wired when rfq_notional_threshold_usd > 0.
         # Routes large-notional trades to OKX atomic RFQ instead of the order book,
