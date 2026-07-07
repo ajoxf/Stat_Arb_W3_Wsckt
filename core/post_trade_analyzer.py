@@ -646,8 +646,10 @@ class PostTradeAnalyzer:
         _ls = getattr(trade, 'lifecycle_stats', None)
         if _ls:
             if _ls.get('peak_net') is not None:
-                scorecard.append({"label": "Peak/Trough",
-                                  "value": f"+${_ls['peak_net']:.2f} / {_ls['trough_net']:+.2f}"})
+                _pm, _tm = _ls.get('peak_min'), _ls.get('trough_min')
+                _pk = f"+${_ls['peak_net']:.2f}" + (f" ({_pm:.0f}m)" if _pm is not None else "")
+                _tr = f"{_ls['trough_net']:+.2f}" + (f" ({_tm:.0f}m)" if _tm is not None else "")
+                scorecard.append({"label": "Peak/Trough", "value": f"{_pk} / {_tr}"})
             if _ls.get('z_min') is not None and _ls.get('z_max') is not None:
                 scorecard.append({"label": "Z range",
                                   "value": f"{_ls['z_min']:+.2f} … {_ls['z_max']:+.2f}"})

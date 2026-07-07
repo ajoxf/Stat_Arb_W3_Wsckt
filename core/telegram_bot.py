@@ -437,9 +437,26 @@ class TelegramNotifier:
             if stats:
                 rows += ["", "<b>ANALYSIS</b>",
                          R("Outcome", self._outcome_tag(trade, stats))]
+                # Which stop actually fired — dollar (capital cap) vs z backstop —
+                # so the reason never needs forensic log reading.
+                reason_u = (trade.exit_reason or "").upper()
+                s_usd = stats.get('stop_usd') or 0
+                s_z = stats.get('stop_z') or 0
+                if reason_u == "DOLLAR_STOP" and s_usd:
+                    rows.append(R("Stop type",
+                                  f"DOLLAR stop — gross ≤ -${s_usd:.2f} (capital cap)"))
+                elif reason_u in ("STOP_LOSS", "DAILY_LOSS") and (s_usd or s_z):
+                    note = f"z-stop (|z| ≥ {s_z:g})" if s_z else "z-stop"
+                    if s_usd:
+                        note += (f" — dollar stop -${s_usd:.2f} NOT reached "
+                                 f"(gross ${trade.pnl_gross_usd:+.2f})")
+                    rows.append(R("Stop type", note))
                 peak, trough = stats.get('peak_net'), stats.get('trough_net')
                 if peak is not None and trough is not None:
-                    rows.append(R("Peak/Trough", f"+${peak:.2f} / {trough:+.2f}"))
+                    pm, tm = stats.get('peak_min'), stats.get('trough_min')
+                    pk = f"+${peak:.2f}" + (f" ({pm:.0f}m)" if pm is not None else "")
+                    tr = f"{trough:+.2f}" + (f" ({tm:.0f}m)" if tm is not None else "")
+                    rows.append(R("Peak/Trough", f"{pk} / {tr}"))
                 avail = stats.get('available_usd') or 0
                 if avail > 0:
                     cap_pct = (trade.pnl_gross_usd or 0) / avail * 100

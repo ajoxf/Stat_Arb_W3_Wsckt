@@ -119,6 +119,8 @@ def _closed_trade_78():
 
 
 STATS_78 = {'peak_net': 1.19, 'trough_net': -4.46, 'z_min': -5.67, 'z_max': 1.23,
+            'peak_min': 6.0, 'trough_min': 88.0,
+            'stop_usd': 3.63, 'stop_z': 4.0,
             'gate_holds': 52, 'gate_held_min': 79.0, 'gate_floor': 1.21,
             'held_min': 88.0, 'max_hold_min': 20.0, 'available_usd': 6.15,
             'exit_threshold': 0.5}
@@ -131,10 +133,24 @@ def test_exit_notification_renders_crisp_analysis():
     msg = captured[0]
     assert "ANALYSIS" in msg
     assert "STOPPED AFTER FULL REVERSION" in msg      # z_max 1.23 crossed -0.5
-    assert "Peak/Trough" in msg and "+$1.19" in msg and "-4.46" in msg
+    assert "Peak/Trough" in msg
+    assert "+$1.19 (6m)" in msg and "-4.46 (88m)" in msg
     assert "held 52" in msg and "floor $1.21" in msg
     assert "88m" in msg and "×4.4" in msg
     assert "range -5.67" in msg and "+1.23" in msg
+    # which stop fired, stated explicitly (z-stop; dollar line not reached)
+    assert "z-stop" in msg and "≥ 4" in msg
+    assert "NOT reached" in msg and "$-3.16" in msg
+
+
+def test_stop_type_row_for_dollar_stop():
+    captured = []
+    n = make_notifier(captured)
+    t = _closed_trade_78()
+    t.exit_reason = "DOLLAR_STOP"
+    n.notify_trade_exit(t, stats=STATS_78)
+    msg = captured[0]
+    assert "DOLLAR stop" in msg and "-$3.63" in msg and "capital cap" in msg
 
 
 def test_outcome_tag_distinguishes_trend_stop():

@@ -262,6 +262,8 @@ class TradingEngine:
         # profit gate held a reversion exit. Feeds the crisp post-trade
         # scorecard on Telegram and in the AI review.
         self._trough_pnl: float = 0.0
+        self._peak_at: Optional[datetime] = None
+        self._trough_at: Optional[datetime] = None
         self._z_seen_min: Optional[float] = None
         self._z_seen_max: Optional[float] = None
         self._gate_hold_count: int = 0
@@ -1132,8 +1134,10 @@ class TradingEngine:
         # Always track the high-water mark so the trailing stop has an accurate peak.
         if net_pnl > self._peak_pnl:
             self._peak_pnl = net_pnl
+            self._peak_at = datetime.utcnow()
         if net_pnl < self._trough_pnl:
             self._trough_pnl = net_pnl
+            self._trough_at = datetime.utcnow()
         _z = signal.zscore
         if _z is not None:
             if self._z_seen_min is None or _z < self._z_seen_min:
@@ -1652,6 +1656,8 @@ class TradingEngine:
         self._spread_velocity_window.clear()
         self._peak_pnl = 0.0
         self._trough_pnl = 0.0
+        self._peak_at = None
+        self._trough_at = None
         self._z_seen_min = None
         self._z_seen_max = None
         self._gate_hold_count = 0
@@ -1897,9 +1903,20 @@ class TradingEngine:
                          * (trade.entry_spread_std or 0.0) * (trade.quantity or 0.0))
             gate_held_min = ((datetime.utcnow() - self._gate_first_hold).total_seconds() / 60.0
                              if self._gate_first_hold else 0.0)
+
+            def _min_since_entry(ts):
+                if ts is None or not trade.entry_time:
+                    return None
+                return round((ts - trade.entry_time).total_seconds() / 60.0, 1)
+
+            _tg = self._effective_exit_targets(trade)
             trade.lifecycle_stats = {
                 'peak_net': round(self._peak_pnl, 2),
                 'trough_net': round(self._trough_pnl, 2),
+                'peak_min': _min_since_entry(self._peak_at),
+                'trough_min': _min_since_entry(self._trough_at),
+                'stop_usd': round(_tg['stop_usd'], 2) if _tg['stop_usd'] > 0 else 0.0,
+                'stop_z': getattr(self.config, 'stop_loss_threshold', 0.0) or 0.0,
                 'z_min': self._z_seen_min,
                 'z_max': self._z_seen_max,
                 'gate_holds': self._gate_hold_count,
