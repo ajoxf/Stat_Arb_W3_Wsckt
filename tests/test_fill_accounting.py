@@ -70,6 +70,31 @@ def test_lattice_ignores_non_contract_instruments():
     assert lattice_leg_sizes(1.0, 0.027, BETA, 0.0, 0.01, 1778.0, 63288.0) is None
 
 
+def test_lattice_spot_size_must_reach_executor_regression():
+    """Regression for the 2026-07-07 09:42 live incident: the lattice chose
+    spot 1.1 ETH (11 ct), but the executor re-derived its target as
+    quantity × beta = 1.0674, placed floor(10.674) = 10 contracts, and the
+    fill-ratio guard then rejected a FULLY FILLED entry at 93.7% < 95% —
+    orphaning both legs. The lattice spot size must be carried on
+    trade.spot_qty so the target and the placed size agree exactly."""
+    beta = 35.58
+    res = lattice_leg_sizes(1.013334, 0.028480, beta, 0.1, 0.01, 1776.95, 63224.4)
+    assert res is not None
+    lattice_spot, lattice_fut = res[0], res[1]
+    assert lattice_spot == pytest.approx(1.1)
+
+    # Correct wiring: target == lattice spot -> full fill is exactly 100%.
+    placed_ct = floor_contracts(lattice_spot / 0.1)
+    assert placed_ct == 11
+    filled_base = placed_ct * 0.1
+    assert filled_base / lattice_spot >= 0.999
+
+    # The buggy wiring (target re-derived from beta) rejects its own fill.
+    buggy_target = lattice_fut * beta                      # 1.0674
+    buggy_ct = floor_contracts(buggy_target / 0.1)         # 10
+    assert (buggy_ct * 0.1) / buggy_target < 0.95          # the 93.7% reject
+
+
 # ── per-leg gross P&L (matches OKX to the cent) ──────────────────────────────
 
 def test_per_leg_pnl_matches_okx_short_trade():

@@ -1547,6 +1547,13 @@ class TradingEngine:
             entry_spread_mean=signal.spread_mean,
             entry_spread_std=signal.spread_std,
             quantity=quantity,
+            # REQUESTED spot size (lattice-adjusted). The executor targets this
+            # — without it, it re-derives spot as quantity × β, which discards
+            # the lattice's spot leg (1.1 vs 1.0674 ETH), floors to one fewer
+            # contract, and the fill-ratio guard then rejects a FILLED entry
+            # (93.7% < 95%) whose legs the orphan-closer must then unwind.
+            # Overwritten with the actually-filled base quantity after entry.
+            spot_qty=spot_qty,
             notional_usd=round(total_notional, 2),
             margin_usd=round(total_margin, 2),
             is_open=True,
@@ -2385,8 +2392,9 @@ class TradingEngine:
             fut_filled_base = fut_filled_qty * fut_unit
             if target_spot_qty > 0 and (spot_filled_base / target_spot_qty) < min_fill_ratio:
                 logger.error(
-                    "Entry fill ratio %.1f%% below min_fill_ratio %.1f%% — rejecting entry",
-                    100.0 * spot_filled_qty / target_spot_qty,
+                    "Entry fill ratio %.1f%% (%.6f of %.6f base) below min_fill_ratio %.1f%% — rejecting entry",
+                    100.0 * spot_filled_base / target_spot_qty,
+                    spot_filled_base, target_spot_qty,
                     100.0 * min_fill_ratio,
                 )
                 self._last_entry_throttled = getattr(last_spread_order, 'throttled', False) if last_spread_order else False
