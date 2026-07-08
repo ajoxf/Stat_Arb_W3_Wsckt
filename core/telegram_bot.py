@@ -2,7 +2,8 @@
 Telegram Bot Integration - Real-time trade notifications and interactive commands.
 
 Sends trade entry/exit alerts, signals, and errors to a Telegram chat.
-Supports interactive commands: /status, /positions, /trades, /balance, /pnl, /eod, /closeall
+Supports interactive commands: /status, /positions, /trades, /balance, /pnl,
+/eod, /pause, /resume, /settings, /set, /optimize, /closeall
 
 Only requires the 'requests' library (already in requirements.txt).
 """
@@ -19,6 +20,27 @@ import requests
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
+
+# Commands published to Telegram's chat menu (the "Menu" button next to the
+# input field, and the popup shown when typing "/"). Displayed in this order.
+# Bot API rules: names lowercase a-z0-9_, descriptions 1-256 chars.
+BOT_COMMAND_MENU = [
+    ("dashboard", "Full system snapshot"),
+    ("status",    "Engine & algo state"),
+    ("positions", "Open positions: live P&L + exit levels"),
+    ("trades",    "Recent closed trades"),
+    ("pnl",       "P&L summary"),
+    ("balance",   "Account balance"),
+    ("pause",     "Algo OFF — halt new entries"),
+    ("resume",    "Algo ON — allow new entries"),
+    ("eod",       "End-of-day report"),
+    ("settings",  "Show all tunable settings"),
+    ("set",       "Change a setting: /set key value"),
+    ("optimize",  "Run parameter grid search"),
+    ("closeall",  "EMERGENCY: market-close all positions"),
+    ("help",      "List all commands"),
+    ("ping",      "Alive check"),
+]
 
 
 def send_telegram_message(token: str, chat_id: str, text: str,
@@ -113,6 +135,11 @@ class TelegramNotifier:
         self._poll_thread: Optional[threading.Thread] = None
         self._polling = False
         self._last_update_id = 0
+
+        # Token the command menu was last registered under (via setMyCommands).
+        # None until the first successful registration; compared against the
+        # live token each poll cycle so a token change re-registers the menu.
+        self._menu_token: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Config
@@ -687,12 +714,39 @@ class TelegramNotifier:
             self._poll_thread.join(timeout=3)
         logger.info("Telegram command polling stopped")
 
+    def _register_command_menu(self) -> bool:
+        """Publish BOT_COMMAND_MENU to Telegram via setMyCommands.
+
+        This is what makes commands appear under the chat's "Menu" button and
+        in the autocomplete popup when typing "/". Without it, only commands
+        configured through BotFather (if any) are visible — /pause and /resume
+        existed as handlers but were invisible in the menu. On failure the
+        method leaves _menu_token unset so the poll loop retries next cycle.
+        """
+        try:
+            url = f"{TELEGRAM_API_BASE.format(token=self._token)}/setMyCommands"
+            payload = {"commands": [{"command": c, "description": d}
+                                    for c, d in BOT_COMMAND_MENU]}
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.status_code == 200 and resp.json().get("ok"):
+                self._menu_token = self._token
+                logger.info("Telegram command menu registered (%d commands)",
+                            len(BOT_COMMAND_MENU))
+                return True
+            logger.warning("Telegram setMyCommands failed (%d): %s",
+                           resp.status_code, resp.text[:200])
+        except Exception as e:
+            logger.warning("Telegram setMyCommands error: %s", e)
+        return False
+
     def _poll_loop(self) -> None:
         """Long-poll Telegram getUpdates endpoint for commands."""
         while self._polling:
             if not self.is_ready():
                 time.sleep(5)
                 continue
+            if self._menu_token != self._token:
+                self._register_command_menu()
             try:
                 url = f"{TELEGRAM_API_BASE.format(token=self._token)}/getUpdates"
                 params = {
@@ -799,7 +853,7 @@ class TelegramNotifier:
         elif text.startswith("/"):
             self._send(
                 "Unknown command. Available:\n"
-                "/settings /set /status /positions /trades /balance /pnl /eod /closeall /optimize"
+                + " ".join(f"/{c}" for c, _ in BOT_COMMAND_MENU)
             )
 
     # ------------------------------------------------------------------
