@@ -1456,13 +1456,49 @@ class DatabaseManager:
             # Win rate
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
 
+            losing_trades = total_trades - winning_trades
+
+            # Edge-quality inputs: gross profit/loss and average win/loss. These
+            # drive reward:risk, profit factor, break-even win rate and expectancy
+            # — the numbers that say whether the strategy is +EV, not just the
+            # raw P&L. avg_loss is stored as a POSITIVE magnitude (1R).
+            cursor.execute("SELECT COALESCE(SUM(pnl_usd),0), COALESCE(AVG(pnl_usd),0), "
+                           "COALESCE(MAX(pnl_usd),0) FROM trades "
+                           "WHERE is_open=0 AND is_paper=0 AND pnl_usd > 0")
+            gross_profit, avg_win, max_win = cursor.fetchone()
+            cursor.execute("SELECT COALESCE(SUM(pnl_usd),0), COALESCE(AVG(pnl_usd),0), "
+                           "COALESCE(MIN(pnl_usd),0) FROM trades "
+                           "WHERE is_open=0 AND is_paper=0 AND pnl_usd < 0")
+            gross_loss_signed, avg_loss_signed, max_loss = cursor.fetchone()
+            gross_loss = -(gross_loss_signed or 0.0)          # positive magnitude
+            avg_loss = -(avg_loss_signed or 0.0)              # positive magnitude (1R)
+
+            reward_risk = (avg_win / avg_loss) if avg_loss > 0 and avg_win > 0 else None
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else None
+            # Break-even WR = 1/(1+RR): the win rate this reward:risk needs just
+            # to not lose money. Compare against the actual win_rate above.
+            breakeven_wr = (100.0 * avg_loss / (avg_win + avg_loss)
+                            if (avg_win + avg_loss) > 0 else None)
+            # Expectancy in R units (EV per trade ÷ 1R). >0 = +EV.
+            expectancy_r = (avg_pnl / avg_loss) if avg_loss > 0 else None
+
             return {
                 "total_trades": total_trades,
                 "winning_trades": winning_trades,
-                "losing_trades": total_trades - winning_trades,
+                "losing_trades": losing_trades,
                 "win_rate": round(win_rate, 2),
                 "total_pnl": round(total_pnl, 2),
                 "avg_pnl": round(avg_pnl, 2),
+                "avg_win": round(avg_win or 0.0, 2),
+                "avg_loss": round(avg_loss, 2),
+                "max_win": round(max_win or 0.0, 2),
+                "max_loss": round(max_loss or 0.0, 2),
+                "gross_profit": round(gross_profit or 0.0, 2),
+                "gross_loss": round(gross_loss, 2),
+                "reward_risk": round(reward_risk, 2) if reward_risk is not None else None,
+                "profit_factor": round(profit_factor, 2) if profit_factor is not None else None,
+                "breakeven_win_rate": round(breakeven_wr, 1) if breakeven_wr is not None else None,
+                "expectancy_r": round(expectancy_r, 3) if expectancy_r is not None else None,
             }
 
     # Spread History Methods (for persistence/recovery)

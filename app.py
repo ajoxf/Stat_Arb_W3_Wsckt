@@ -837,12 +837,17 @@ def analysis():
     config = db.get_config()
     sd_touches = db.get_sd_touches(asset=config.asset, limit=500)
     stats = db.get_trade_statistics()
+    try:
+        shadow = db.get_shadow_summary(limit=50)
+    except Exception:
+        shadow = {"count": 0}
     is_demo = os.getenv('OKX_DEMO_MODE', 'false').lower() == 'true'
     return render_template('analysis.html',
                            config=config,
                            is_demo=is_demo,
                            sd_touches=[t.to_dict() for t in sd_touches],
                            stats=stats,
+                           shadow=shadow,
                            assets=CRYPTO_ASSETS)
 
 

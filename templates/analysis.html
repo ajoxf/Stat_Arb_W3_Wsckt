@@ -3,57 +3,181 @@
 {% block title %}Analysis - Nexus{% endblock %}
 
 {% block content %}
+<style>
+    /* Compact explanatory note under each metric value. */
+    .metric-note { font-size: 0.66rem; line-height: 1.2; color: var(--text-secondary, #6c757d);
+                   margin-top: 4px; }
+    .metric-card .metric-value { line-height: 1.1; }
+    .analysis-legend { font-size: 0.75rem; }
+</style>
+
+<div class="alert alert-secondary py-2 px-3 mb-3 analysis-legend" role="alert">
+    <i class="bi bi-info-circle me-1"></i>
+    All figures below are for <strong>real (non-paper) closed trades</strong>. The
+    top row is outcomes; the second row is <strong>edge quality</strong> — whether
+    the strategy is <em>+EV</em>, not just whether it made money recently. Hover any
+    tile for the formula. Rule of thumb: you are profitable when
+    <strong>Win Rate &gt; Break-even WR</strong> <em>or</em>
+    <strong>Profit Factor &gt; 1</strong>.
+</div>
+
+<!-- Row 1 — Outcomes -->
+<div class="row g-3 mb-3">
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Number of real (non-paper) trades that have been closed. Open and paper trades are excluded from every figure on this page.">
+            <div class="metric-value">{{ stats.total_trades }}</div>
+            <div class="metric-label">Total Trades</div>
+            <div class="metric-note">Closed real trades in the book.</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Closed trades with net P&L &gt; 0 (after all fees).">
+            <div class="metric-value price-up">{{ stats.winning_trades }}</div>
+            <div class="metric-label">Winning</div>
+            <div class="metric-note">Net P&amp;L &gt; 0 after fees.</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Closed trades with net P&L ≤ 0. Stops, time exits and reversion exits that closed at a loss all count here.">
+            <div class="metric-value price-down">{{ stats.losing_trades }}</div>
+            <div class="metric-label">Losing</div>
+            <div class="metric-note">Net P&amp;L ≤ 0 after fees.</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Winning ÷ Total. On its own this says nothing about profit — it must be read against the Break-even WR tile. Green here = above break-even.">
+            <div class="metric-value {% if stats.breakeven_win_rate is not none and stats.win_rate >= stats.breakeven_win_rate %}price-up{% else %}price-down{% endif %}">{{ stats.win_rate }}%</div>
+            <div class="metric-label">Win Rate</div>
+            <div class="metric-note">
+                {% if stats.breakeven_win_rate is not none %}
+                    Need &gt; {{ stats.breakeven_win_rate }}% to be +EV.
+                {% else %}Wins ÷ total.{% endif %}
+            </div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Sum of net P&L across all closed real trades. Equals Avg P&L × Total Trades.">
+            <div class="metric-value {% if stats.total_pnl >= 0 %}price-up{% else %}price-down{% endif %}">${{ stats.total_pnl }}</div>
+            <div class="metric-label">Total P&L</div>
+            <div class="metric-note">Sum of all closed net P&amp;L.</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Mean net P&L per trade = your expectancy. This is the single number that says, on average, what each trade is worth. Positive = the system pays you to trade.">
+            <div class="metric-value {% if stats.avg_pnl >= 0 %}price-up{% else %}price-down{% endif %}">${{ stats.avg_pnl }}</div>
+            <div class="metric-label">Avg P&L / Expectancy</div>
+            <div class="metric-note">Per-trade EV in $. ×trades = total.</div>
+        </div></div>
+    </div>
+</div>
+
+<!-- Row 2 — Edge quality -->
 <div class="row g-3 mb-4">
-    <!-- Statistics Cards -->
-    <div class="col-md-2">
-        <div class="card">
-            <div class="card-body metric-card">
-                <div class="metric-value">{{ stats.total_trades }}</div>
-                <div class="metric-label">Total Trades</div>
-            </div>
-        </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Average net P&L of winning trades. The numerator of Reward:Risk. Capped by how far the spread actually reverts before you exit.">
+            <div class="metric-value price-up">${{ stats.avg_win }}</div>
+            <div class="metric-label">Avg Win</div>
+            <div class="metric-note">Mean winning trade.</div>
+        </div></div>
     </div>
-    <div class="col-md-2">
-        <div class="card">
-            <div class="card-body metric-card">
-                <div class="metric-value price-up">{{ stats.winning_trades }}</div>
-                <div class="metric-label">Winning</div>
-            </div>
-        </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Average net loss of losing trades (shown positive). This is '1R' — one unit of risk. Every other figure is measured in multiples of this.">
+            <div class="metric-value price-down">${{ stats.avg_loss }}</div>
+            <div class="metric-label">Avg Loss (1R)</div>
+            <div class="metric-note">Mean losing trade = your risk unit.</div>
+        </div></div>
     </div>
-    <div class="col-md-2">
-        <div class="card">
-            <div class="card-body metric-card">
-                <div class="metric-value price-down">{{ stats.losing_trades }}</div>
-                <div class="metric-label">Losing</div>
-            </div>
-        </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Avg Win ÷ Avg Loss. Below 1 = winners are smaller than losers (you must win more often than you lose). Raise it with a bigger/further target or by not cutting winners short.">
+            <div class="metric-value">{{ stats.reward_risk if stats.reward_risk is not none else '—' }}</div>
+            <div class="metric-label">Reward : Risk</div>
+            <div class="metric-note">Avg win ÷ avg loss.</div>
+        </div></div>
     </div>
-    <div class="col-md-2">
-        <div class="card">
-            <div class="card-body metric-card">
-                <div class="metric-value">{{ stats.win_rate }}%</div>
-                <div class="metric-label">Win Rate</div>
-            </div>
-        </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Gross profit ÷ gross loss across all trades. >1 = profitable, <1 = bleeding, 1 = break-even. The most direct 'is this working' number.">
+            <div class="metric-value {% if stats.profit_factor is not none and stats.profit_factor >= 1 %}price-up{% elif stats.profit_factor is not none %}price-down{% endif %}">{{ stats.profit_factor if stats.profit_factor is not none else '—' }}</div>
+            <div class="metric-label">Profit Factor</div>
+            <div class="metric-note">Gross win ÷ gross loss. &gt;1 = green.</div>
+        </div></div>
     </div>
-    <div class="col-md-2">
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="1 / (1 + Reward:Risk). The win rate this Reward:Risk needs just to break even. If your actual Win Rate is below this, you are −EV no matter how it feels.">
+            <div class="metric-value">{{ stats.breakeven_win_rate ~ '%' if stats.breakeven_win_rate is not none else '—' }}</div>
+            <div class="metric-label">Break-even WR</div>
+            <div class="metric-note">
+                {% if stats.breakeven_win_rate is not none %}
+                    You: {{ stats.win_rate }}%
+                    {% if stats.win_rate >= stats.breakeven_win_rate %}<span class="price-up">(above ✓)</span>{% else %}<span class="price-down">(below ✗)</span>{% endif %}
+                {% else %}Needs some losses to compute.{% endif %}
+            </div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Expectancy expressed in R (avg P&L ÷ 1R). +0.44R means each trade nets, on average, 0.44 of one risk unit. >0 = +EV. Formula: p·(1+RR) − 1.">
+            <div class="metric-value {% if stats.expectancy_r is not none and stats.expectancy_r >= 0 %}price-up{% elif stats.expectancy_r is not none %}price-down{% endif %}">{{ ('%+.2f' % stats.expectancy_r) ~ ' R' if stats.expectancy_r is not none else '—' }}</div>
+            <div class="metric-label">Expectancy (R)</div>
+            <div class="metric-note">EV per trade in risk units.</div>
+        </div></div>
+    </div>
+</div>
+
+<!-- Shadow "what-if-held" summary -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
         <div class="card">
-            <div class="card-body metric-card">
-                <div class="metric-value {% if stats.total_pnl >= 0 %}price-up{% else %}price-down{% endif %}">
-                    ${{ stats.total_pnl }}
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-hourglass-split me-2"></i>Shadow "What-if-Held" &mdash; did the stopped trades actually revert?</span>
+                <span class="badge bg-secondary" title="Number of stopped/losing trades whose post-exit path has completed its 60-minute watch window.">{{ shadow.count if shadow and shadow.count else 0 }} watched</span>
+            </div>
+            <div class="card-body">
+                {% if shadow and shadow.count %}
+                <div class="row text-center g-3">
+                    <div class="col-md-3 col-6" title="Of the stopped/losing trades watched, how many would have climbed back to break-even within 60 min if you had NOT closed. High = your stops may be cutting trades that revert; low = the stops were right and the move was real.">
+                        <div class="metric-value">{{ shadow.reverted_be }}/{{ shadow.count }}</div>
+                        <div class="metric-label">Reverted to break-even</div>
+                        <div class="metric-note">{{ (shadow.revert_be_rate * 100) | round(0) | int }}% of stopped trades</div>
+                    </div>
+                    <div class="col-md-3 col-6" title="How many would have reached the full profit target within the window — a stronger bar than break-even.">
+                        <div class="metric-value">{{ shadow.reverted_target }}/{{ shadow.count }}</div>
+                        <div class="metric-label">Reverted to target</div>
+                        <div class="metric-note">{{ (shadow.revert_target_rate * 100) | round(0) | int }}% reached the target</div>
+                    </div>
+                    <div class="col-md-3 col-6" title="Median minutes-after-entry it took the revert-to-break-even trades to get back to zero. Compare with your Max Hold — if it's longer, no realistic hold would have caught it.">
+                        <div class="metric-value">{{ shadow.median_be_min if shadow.median_be_min is not none else '—' }}{% if shadow.median_be_min is not none %}m{% endif %}</div>
+                        <div class="metric-label">Median time to BE</div>
+                        <div class="metric-note">minutes after entry</div>
+                    </div>
+                    <div class="col-md-3 col-6" title="Average of the best held-P&L each stopped trade reached in the window. If this is small and negative, 'just wait' would not have saved them.">
+                        <div class="metric-value {% if shadow.avg_peak_usd >= 0 %}price-up{% else %}price-down{% endif %}">${{ shadow.avg_peak_usd }}</div>
+                        <div class="metric-label">Avg peak if held</div>
+                        <div class="metric-note">best net P&amp;L reached post-exit</div>
+                    </div>
                 </div>
-                <div class="metric-label">Total P&L</div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-2">
-        <div class="card">
-            <div class="card-body metric-card">
-                <div class="metric-value {% if stats.avg_pnl >= 0 %}price-up{% else %}price-down{% endif %}">
-                    ${{ stats.avg_pnl }}
+                <div class="metric-note mt-3">
+                    Measured test of &ldquo;the price always reverts, just wait.&rdquo; Each stopped/losing
+                    trade's real held P&amp;L is tracked for 60&nbsp;min after exit (on the actual filled
+                    legs, immune to z / &beta; drift). <strong>High revert rate</strong> &rarr; stops may be too
+                    tight; <strong>low</strong> &rarr; the stops were right and the trade was genuinely trending.
                 </div>
-                <div class="metric-label">Avg P&L</div>
+                {% else %}
+                <div class="text-secondary small">
+                    No completed watches yet. After a stopped or losing trade, its real held P&amp;L is
+                    tracked for 60&nbsp;min; results appear here once the first window closes.
+                </div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -64,7 +188,10 @@
     <div class="col-lg-6">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-bar-chart me-2"></i>SD Touch Distribution</span>
+                <span title="How often the spread has touched each standard-deviation band (±1/±2/±3 σ from the rolling mean). Fatter bars at ±2/±3 = plenty of stretched entries available; mostly ±1 = a quiet, low-vol regime with little to trade.">
+                    <i class="bi bi-bar-chart me-2"></i>SD Touch Distribution
+                    <i class="bi bi-question-circle small text-secondary ms-1"></i>
+                </span>
                 <select class="form-select form-select-sm" style="width: auto;" id="asset-filter">
                     <option value="">All Assets</option>
                     {% for key in assets.keys() %}
@@ -89,11 +216,11 @@
                     <table class="table table-striped table-hover mb-0">
                         <thead style="position: sticky; top: 0; background: var(--bg-secondary);">
                             <tr>
-                                <th>Time</th>
-                                <th>SD Level</th>
-                                <th>Direction</th>
-                                <th>Z-Score</th>
-                                <th>Spread</th>
+                                <th title="When the spread crossed this SD band (UTC).">Time</th>
+                                <th title="Which standard-deviation band was touched: ±1, ±2, ±3 σ from the rolling mean. + = spread above mean (SHORT-the-spread setup), − = below (LONG-the-spread setup).">SD Level</th>
+                                <th title="Direction the spread was moving when it touched: UP = widening, DOWN = narrowing.">Direction</th>
+                                <th title="The rolling z-score at the touch = (spread − mean) ÷ σ. Your entry fires at |z| ≥ entry threshold ({{ config.entry_threshold }}).">Z-Score</th>
+                                <th title="Raw spread value at the touch = futures − β × spot, in price units.">Spread</th>
                             </tr>
                         </thead>
                         <tbody id="sd-touch-table">
@@ -140,21 +267,21 @@
                     <table class="table table-striped table-hover mb-0">
                         <thead style="background: var(--bg-secondary);">
                             <tr>
-                                <th>Entry Time</th>
-                                <th>Exit Time</th>
-                                <th>Asset</th>
-                                <th>Type</th>
-                                <th>Entry Z</th>
-                                <th>Exit Z</th>
-                                <th>Entry Spot</th>
-                                <th>Entry Fut</th>
-                                <th>Exit Spot</th>
-                                <th>Exit Fut</th>
+                                <th title="When the trade was opened (local time).">Entry Time</th>
+                                <th title="When the trade was closed. Blank = still open.">Exit Time</th>
+                                <th title="The traded pair, e.g. ETH/BTC (spot leg / futures leg).">Asset</th>
+                                <th title="LONG = long the spot leg, short the futures leg (profits when the spread falls). SHORT = the mirror (profits when the spread rises).">Type</th>
+                                <th title="Rolling z-score at entry = (spread − mean) ÷ σ. Bigger |z| = a more stretched divergence.">Entry Z</th>
+                                <th title="Rolling z-score at exit. NOTE: z drifts during the hold as the rolling mean moves — it can read near 0 while the position is still down. P&L, not this, is the truth.">Exit Z</th>
+                                <th title="Spot (Leg A) mid price at entry.">Entry Spot</th>
+                                <th title="Futures (Leg B) mid price at entry.">Entry Fut</th>
+                                <th title="Spot (Leg A) mid price at exit.">Exit Spot</th>
+                                <th title="Futures (Leg B) mid price at exit.">Exit Fut</th>
                                 <th title="Leg A notional = position size (sizing anchor). Total exposure across both legs is ~2× this.">Notional</th>
-                                <th>P&L</th>
+                                <th title="Net P&L in dollars after all fees — the realized take-home for the round trip.">P&L</th>
                                 <th title="Return on Leg A notional — strategy edge metric.">P&L %</th>
                                 <th title="Return on actually-locked capital: per-leg margin (notional ÷ leverage) + M2M buffer. The honest 'return on what I couldn't deploy elsewhere'.">Cap %</th>
-                                <th>Exit Reason</th>
+                                <th title="Why the trade closed: PROFIT_TARGET, DOLLAR_STOP (%-capital), STOP_LOSS (z), MAX_HOLD (time), EXIT (reversion), or a manual/cleanup close.">Exit Reason</th>
                             </tr>
                         </thead>
                         <tbody id="trade-journal-table">
