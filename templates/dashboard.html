@@ -702,6 +702,11 @@
                           title="Cleanup closes today (orphan auto-closes): money that moved on OKX OUTSIDE any recorded trade — position P&L at close minus estimated taker fee. These costs are counted in the daily-loss tracker but appear in no trade row.">
                         cleanup: &mdash;
                     </span>
+                    <span id="shadow-hold-badge" class="badge bg-info text-dark ms-2"
+                          style="font-size: 0.62rem; display: none;"
+                          title="Shadow 'what-if-held': of the last stopped/losing trades, how many WOULD have reverted to break-even within 60 min of exit (measured on the real held position, not the z-score). High = the stops are cutting winners; low = the stops are right and the trade really was trending.">
+                        shadow: &mdash;
+                    </span>
                 </small>
                 <div>
                     <a href="/api/trades/csv" class="btn btn-sm btn-outline-success py-0 me-1" style="font-size: 0.65rem;" title="Download CSV">
@@ -1478,11 +1483,26 @@
     }
     function pollUntrackedCloses() {
         fetch('/api/engine/status').then(r => r.json())
-            .then(d => updateUntrackedCloses(d.untracked_closes_today))
+            .then(d => { updateUntrackedCloses(d.untracked_closes_today); updateShadowHold(d.shadow_summary); })
             .catch(() => {});
     }
     pollUntrackedCloses();
     setInterval(pollUntrackedCloses, 60000);
+
+    // Shadow "what-if-held" badge: of the last stopped/losing trades, how many
+    // would have reverted to break-even within the watch window. This is the
+    // measured test of "just wait, it reverts" — updates on the 60s status poll.
+    function updateShadowHold(s) {
+        const el = document.getElementById('shadow-hold-badge');
+        if (!el) return;
+        if (!s || !s.count) { el.style.display = 'none'; return; }
+        const pct = Math.round((s.revert_be_rate || 0) * 100);
+        const med = (s.median_be_min != null) ? (', ~' + s.median_be_min + 'm') : '';
+        el.textContent = 'shadow: ' + s.reverted_be + '/' + s.count + ' reverted (' + pct + '%' + med + ')';
+        // High revert rate → stops may be too tight (info); low → stops are right (neutral).
+        el.className = 'badge ms-2 ' + (pct >= 60 ? 'bg-info text-dark' : 'bg-secondary');
+        el.style.display = '';
+    }
     // ══════════════════════════════════════════════════════════════════
 
     // Fallback polling

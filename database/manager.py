@@ -73,6 +73,15 @@ class DatabaseManager:
                     stop_loss_capital_pct REAL DEFAULT 0.0,
                     max_loss_usd REAL DEFAULT 0.0,
                     min_entry_rr_multiple REAL DEFAULT 0.0,
+                    hurst_exit_enabled INTEGER DEFAULT 0,
+                    hurst_exit_threshold REAL DEFAULT 0.55,
+                    hurst_exit_n_ticks INTEGER DEFAULT 3,
+                    velocity_exit_enabled INTEGER DEFAULT 0,
+                    velocity_exit_pts_per_min REAL DEFAULT 2.0,
+                    velocity_exit_n_ticks INTEGER DEFAULT 5,
+                    velocity_exit_window_ticks INTEGER DEFAULT 20,
+                    trailing_stop_pct REAL DEFAULT 0.0,
+                    trailing_stop_floor_pct REAL DEFAULT 0.0,
                     exit_signal_mode TEXT DEFAULT 'zscore',
                     lookback_period INTEGER DEFAULT 100,
                     stats_update_interval INTEGER DEFAULT 300,
@@ -333,6 +342,33 @@ class DatabaseManager:
                 )
             """)
 
+            # Shadow "what-if-held" ledger: for each stopped/losing trade, what
+            # the position's REAL held P&L did in the window after we exited —
+            # did it revert to break-even / the profit target, and when. Turns
+            # "it would have reverted" into logged data.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shadow_holds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    trade_id INTEGER,
+                    position_type TEXT,
+                    exit_reason TEXT,
+                    exit_net_usd REAL DEFAULT 0,
+                    target_usd REAL DEFAULT 0,
+                    window_min REAL DEFAULT 0,
+                    peak_net_usd REAL DEFAULT 0,
+                    peak_min REAL,
+                    trough_net_usd REAL DEFAULT 0,
+                    trough_min REAL,
+                    hit_break_even INTEGER DEFAULT 0,
+                    hit_be_min REAL,
+                    hit_target INTEGER DEFAULT 0,
+                    hit_target_min REAL,
+                    final_net_usd REAL DEFAULT 0,
+                    verdict TEXT
+                )
+            """)
+
             # Insert default config if not exists
             cursor.execute("SELECT COUNT(*) FROM trading_config")
             if cursor.fetchone()[0] == 0:
@@ -444,6 +480,29 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_fallback_to_orderbook INTEGER DEFAULT 1")
             if 'rfq_max_markup_bps' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN rfq_max_markup_bps REAL DEFAULT 5.0")
+
+            # Post-entry exit overrides (Hurst regime exit, spread velocity exit,
+            # trailing stop). These existed in TradingConfig and the settings UI
+            # but were never persisted — so trailing stops / regime exits set on
+            # the page silently reverted to defaults on the next reload.
+            if 'hurst_exit_enabled' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN hurst_exit_enabled INTEGER DEFAULT 0")
+            if 'hurst_exit_threshold' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN hurst_exit_threshold REAL DEFAULT 0.55")
+            if 'hurst_exit_n_ticks' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN hurst_exit_n_ticks INTEGER DEFAULT 3")
+            if 'velocity_exit_enabled' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN velocity_exit_enabled INTEGER DEFAULT 0")
+            if 'velocity_exit_pts_per_min' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN velocity_exit_pts_per_min REAL DEFAULT 2.0")
+            if 'velocity_exit_n_ticks' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN velocity_exit_n_ticks INTEGER DEFAULT 5")
+            if 'velocity_exit_window_ticks' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN velocity_exit_window_ticks INTEGER DEFAULT 20")
+            if 'trailing_stop_pct' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN trailing_stop_pct REAL DEFAULT 0.0")
+            if 'trailing_stop_floor_pct' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN trailing_stop_floor_pct REAL DEFAULT 0.0")
 
             # Migrate learnings table to include richer analysis fields
             cursor.execute("PRAGMA table_info(learnings)")
@@ -568,6 +627,15 @@ class DatabaseManager:
                     rfq_min_quotes=row["rfq_min_quotes"] if "rfq_min_quotes" in row.keys() else 1,
                     rfq_fallback_to_orderbook=bool(row["rfq_fallback_to_orderbook"]) if "rfq_fallback_to_orderbook" in row.keys() else True,
                     rfq_max_markup_bps=row["rfq_max_markup_bps"] if "rfq_max_markup_bps" in row.keys() else 5.0,
+                    hurst_exit_enabled=bool(row["hurst_exit_enabled"]) if "hurst_exit_enabled" in row.keys() and row["hurst_exit_enabled"] is not None else False,
+                    hurst_exit_threshold=row["hurst_exit_threshold"] if "hurst_exit_threshold" in row.keys() and row["hurst_exit_threshold"] is not None else 0.55,
+                    hurst_exit_n_ticks=row["hurst_exit_n_ticks"] if "hurst_exit_n_ticks" in row.keys() and row["hurst_exit_n_ticks"] is not None else 3,
+                    velocity_exit_enabled=bool(row["velocity_exit_enabled"]) if "velocity_exit_enabled" in row.keys() and row["velocity_exit_enabled"] is not None else False,
+                    velocity_exit_pts_per_min=row["velocity_exit_pts_per_min"] if "velocity_exit_pts_per_min" in row.keys() and row["velocity_exit_pts_per_min"] is not None else 2.0,
+                    velocity_exit_n_ticks=row["velocity_exit_n_ticks"] if "velocity_exit_n_ticks" in row.keys() and row["velocity_exit_n_ticks"] is not None else 5,
+                    velocity_exit_window_ticks=row["velocity_exit_window_ticks"] if "velocity_exit_window_ticks" in row.keys() and row["velocity_exit_window_ticks"] is not None else 20,
+                    trailing_stop_pct=row["trailing_stop_pct"] if "trailing_stop_pct" in row.keys() and row["trailing_stop_pct"] is not None else 0.0,
+                    trailing_stop_floor_pct=row["trailing_stop_floor_pct"] if "trailing_stop_floor_pct" in row.keys() and row["trailing_stop_floor_pct"] is not None else 0.0,
                 )
 
             return TradingConfig()
@@ -646,7 +714,16 @@ class DatabaseManager:
                     rfq_quote_timeout_sec = ?,
                     rfq_min_quotes = ?,
                     rfq_fallback_to_orderbook = ?,
-                    rfq_max_markup_bps = ?
+                    rfq_max_markup_bps = ?,
+                    hurst_exit_enabled = ?,
+                    hurst_exit_threshold = ?,
+                    hurst_exit_n_ticks = ?,
+                    velocity_exit_enabled = ?,
+                    velocity_exit_pts_per_min = ?,
+                    velocity_exit_n_ticks = ?,
+                    velocity_exit_window_ticks = ?,
+                    trailing_stop_pct = ?,
+                    trailing_stop_floor_pct = ?
                 WHERE id = 1
             """, (
                 config.asset,
@@ -718,6 +795,15 @@ class DatabaseManager:
                 config.rfq_min_quotes,
                 int(config.rfq_fallback_to_orderbook),
                 config.rfq_max_markup_bps,
+                int(config.hurst_exit_enabled),
+                config.hurst_exit_threshold,
+                config.hurst_exit_n_ticks,
+                int(config.velocity_exit_enabled),
+                config.velocity_exit_pts_per_min,
+                config.velocity_exit_n_ticks,
+                config.velocity_exit_window_ticks,
+                config.trailing_stop_pct,
+                config.trailing_stop_floor_pct,
             ))
             logger.info("Config saved")
 
@@ -987,6 +1073,70 @@ class DatabaseManager:
             n, pnl, fees = row["n"], row["pnl"], row["fees"]
             return {"count": n, "pnl_usd": round(pnl, 4),
                     "fee_est_usd": round(fees, 4), "net_usd": round(pnl - fees, 4)}
+
+    def save_shadow_hold(self, rec: Dict[str, Any]) -> None:
+        """Persist a completed shadow 'what-if-held' watch (see engine)."""
+        with self._get_connection() as conn:
+            conn.cursor().execute(
+                "INSERT INTO shadow_holds (trade_id, position_type, exit_reason, "
+                "exit_net_usd, target_usd, window_min, peak_net_usd, peak_min, "
+                "trough_net_usd, trough_min, hit_break_even, hit_be_min, "
+                "hit_target, hit_target_min, final_net_usd, verdict) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (rec.get("trade_id"), rec.get("position_type"), rec.get("exit_reason"),
+                 rec.get("exit_net_usd", 0.0), rec.get("target_usd", 0.0),
+                 rec.get("window_min", 0.0), rec.get("peak_net_usd", 0.0),
+                 rec.get("peak_min"), rec.get("trough_net_usd", 0.0),
+                 rec.get("trough_min"), int(bool(rec.get("hit_break_even"))),
+                 rec.get("hit_be_min"), int(bool(rec.get("hit_target"))),
+                 rec.get("hit_target_min"), rec.get("final_net_usd", 0.0),
+                 rec.get("verdict", "")),
+            )
+
+    def get_shadow_holds(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM shadow_holds ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_shadow_summary(self, limit: int = 50) -> Dict[str, Any]:
+        """Aggregate the last N shadow holds: of the trades we stopped/exited at
+        a loss, how many would have reverted to break-even / to the profit
+        target within the window, plus the median minutes-after-entry to get
+        there and the average peak. This is the read on whether 'just wait' is
+        true for your pair — measured, not assumed."""
+        rows = self.get_shadow_holds(limit=limit)
+        n = len(rows)
+        if n == 0:
+            return {"count": 0, "reverted_be": 0, "reverted_target": 0,
+                    "kept_bleeding": 0, "revert_be_rate": 0.0,
+                    "revert_target_rate": 0.0, "median_be_min": None,
+                    "median_target_min": None, "avg_peak_usd": 0.0}
+
+        def _median(vals):
+            vals = sorted(v for v in vals if v is not None)
+            if not vals:
+                return None
+            m = len(vals) // 2
+            return round(vals[m] if len(vals) % 2 else (vals[m - 1] + vals[m]) / 2.0, 1)
+
+        be = [r for r in rows if r.get("hit_break_even")]
+        tg = [r for r in rows if r.get("hit_target")]
+        peaks = [r.get("peak_net_usd", 0.0) or 0.0 for r in rows]
+        return {
+            "count": n,
+            "reverted_be": len(be),
+            "reverted_target": len(tg),
+            "kept_bleeding": n - len(be),
+            "revert_be_rate": round(len(be) / n, 3),
+            "revert_target_rate": round(len(tg) / n, 3),
+            "median_be_min": _median([r.get("hit_be_min") for r in be]),
+            "median_target_min": _median([r.get("hit_target_min") for r in tg]),
+            "avg_peak_usd": round(sum(peaks) / n, 2),
+        }
 
     def get_trades(self, limit: int = 100, open_only: bool = False) -> List[Trade]:
         """Get trades."""

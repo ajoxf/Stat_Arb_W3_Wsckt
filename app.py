@@ -390,6 +390,15 @@ def start_engine_loop():
             logger.warning("Failed to persist untracked close: %s", _e)
     engine.on_untracked_close = on_untracked_close_callback
 
+    # Persist completed shadow "what-if-held" watches so the "would this stopped
+    # trade have reverted?" question is answered from logged data, not hindsight.
+    def on_shadow_hold_callback(rec: Dict[str, Any]) -> None:
+        try:
+            db.save_shadow_hold(rec)
+        except Exception as _e:
+            logger.warning("Failed to persist shadow hold: %s", _e)
+    engine.on_shadow_hold = on_shadow_hold_callback
+
     # Give the auto-tuner a reference to the live engine so it can update config in-process
     auto_tuner.engine = engine
 
@@ -877,6 +886,20 @@ def api_beta_zscore():
         return jsonify({'status': 'ERR', 'z': None})
 
 
+@app.route('/api/shadow-summary', methods=['GET'])
+def api_shadow_summary():
+    """Shadow 'what-if-held' summary for the dashboard: of the last N trades we
+    stopped / exited at a loss, how many WOULD have reverted to break-even or to
+    the profit target within the watch window, and how long that took. This is
+    the measured answer to 'the price always reverts, just wait' — read-only,
+    no involvement in signals or orders."""
+    try:
+        return jsonify(db.get_shadow_summary(limit=50))
+    except Exception as e:
+        app.logger.debug("shadow-summary endpoint error: %s", e)
+        return jsonify({'count': 0, 'error': str(e)})
+
+
 def _hedge_ratio_change_blocked(new_beta):
     """Return a rejection message if changing the hedge ratio (β) right now is
     unsafe, else None.
@@ -1282,6 +1305,10 @@ def get_engine_status():
     status['execution_backend'] = _execution_backend
     try:
         status['untracked_closes_today'] = db.get_untracked_totals_today()
+    except Exception:
+        pass
+    try:
+        status['shadow_summary'] = db.get_shadow_summary(limit=50)
     except Exception:
         pass
     return jsonify(status)

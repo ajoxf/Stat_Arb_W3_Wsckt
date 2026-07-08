@@ -44,6 +44,47 @@ class EngineState:
     error: str = ""
 
 
+# ── Shadow "what-if-held" tracker ───────────────────────────────────────────
+# After a losing/stopped trade closes, keep marking the REAL held P&L of the
+# position we just exited for a fixed window — using the actual filled legs and
+# entry prices (per_leg_gross_pnl), so it is immune to rolling-mean / beta
+# drift. It answers, with logged data instead of hindsight, "if we hadn't
+# closed, would it have reverted to profit, and when?" Pure observation: it
+# never touches signals, orders, or the live position.
+_SHADOW_HOLD_MINUTES = 60.0      # how long after exit to keep watching
+_SHADOW_HOLD_MAX_ACTIVE = 20     # bound memory: most recent N watches only
+
+
+@dataclass
+class ShadowHold:
+    """One post-exit what-if-held watch. Accumulates peak/trough and the first
+    time held-net P&L crossed break-even and the profit target over the window.
+    peak_net/trough_net are None until the first tick seeds them."""
+    trade_id: Optional[int]
+    position_type: str
+    entry_time: Optional[datetime]
+    exit_time: datetime
+    entry_spot: float
+    entry_fut: float
+    spot_qty: float
+    futures_qty: float
+    fees_usd: float          # frozen round-trip fee estimate (from close time)
+    target_usd: float        # net profit that would have counted as a target hit
+    exit_net: float          # realized net at the real close (reference)
+    exit_reason: str
+    peak_net: Optional[float] = None
+    peak_min: Optional[float] = None
+    trough_net: Optional[float] = None
+    trough_min: Optional[float] = None
+    hit_be: bool = False
+    hit_be_min: Optional[float] = None
+    hit_target: bool = False
+    hit_target_min: Optional[float] = None
+    final_net: float = 0.0
+    last_min: float = 0.0
+    ticks: int = 0
+
+
 def exit_spread_levels(entry_spread: float, quantity: float, position_type: str,
                        fees_usd: float, target_usd: float,
                        stop_usd: float, gate_usd: float = 0.0) -> Optional[Dict[str, Any]]:
@@ -176,6 +217,9 @@ class TradingEngine:
         # Fired when money moves OUTSIDE a recorded trade (orphan auto-close),
         # so the app can persist it to the untracked-close ledger.
         self.on_untracked_close: Optional[Callable[[Dict[str, Any]], None]] = None
+        # Fired when a shadow "what-if-held" watch completes its window, so the
+        # app can persist the "would this stopped trade have reverted?" record.
+        self.on_shadow_hold: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_status: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
 
@@ -276,6 +320,11 @@ class TradingEngine:
         # return to normal before the same side is re-entered).
         # None = no gate active.  "SHORT" or "LONG" = gate for that direction.
         self._z_reset_block_direction: Optional[str] = None
+
+        # Active shadow "what-if-held" watches (see ShadowHold). Populated when a
+        # losing/stopped trade closes, drained as each window elapses. In-memory
+        # only — a restart drops any in-flight watches (they're diagnostic).
+        self._shadow_holds: List[ShadowHold] = []
 
         # Optional callback invoked when the engine self-corrects config values
         # (e.g. leverage capped by exchange). Register in app.py to persist to DB.
@@ -667,6 +716,13 @@ class TradingEngine:
 
         self.state.last_tick_time = datetime.utcnow()
 
+        # Post-exit "what-if-held" watches (pure observation — never affects
+        # trading; wrapped so a bug here can't break the tick loop).
+        try:
+            self._update_shadow_holds()
+        except Exception:
+            pass
+
         # Periodic position reconciliation (every 60 seconds)
         if not self.state.paper_trading:
             await self._periodic_position_check()
@@ -889,6 +945,121 @@ class TradingEngine:
             a_exit  / 10000.0 * spot_qty       * exit_spot +
             b_exit  / 10000.0 * trade.quantity * exit_fut
         )
+
+    # ── Shadow "what-if-held" tracker ──────────────────────────────────────
+    # All three methods are pure observation: bounded, best-effort, and they
+    # never raise into the trading loop. They answer the recurring question
+    # "if we hadn't stopped out, would it have reverted?" with logged data.
+
+    def _open_shadow_hold(self, trade: Trade, signal_type: str) -> None:
+        """Arm a post-exit watch for a stopped/losing trade. Skips winners —
+        the question only matters when we took a loss."""
+        try:
+            pnl = trade.pnl_usd if trade.pnl_usd is not None else 0.0
+            is_stop = (signal_type == "STOP_LOSS"
+                       or self._override_exit_reason in ("DOLLAR_STOP", "DAILY_LOSS"))
+            if not (is_stop or pnl < 0):
+                return
+            if not (self.spot_tick and self.futures_tick):
+                return
+            beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+            spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
+            tg = self._effective_exit_targets(trade)
+            hold = ShadowHold(
+                trade_id=getattr(trade, 'id', None),
+                position_type=trade.position_type,
+                entry_time=trade.entry_time,
+                exit_time=trade.exit_time or datetime.utcnow(),
+                entry_spot=trade.entry_spot_price,
+                entry_fut=trade.entry_futures_price,
+                spot_qty=spot_qty,
+                futures_qty=trade.quantity,
+                fees_usd=self._round_trip_fees(trade),
+                target_usd=tg.get('target_usd', 0.0) or 0.0,
+                exit_net=round(pnl, 2),
+                exit_reason=(self._override_exit_reason or signal_type or ""),
+            )
+            self._shadow_holds.append(hold)
+            if len(self._shadow_holds) > _SHADOW_HOLD_MAX_ACTIVE:
+                self._shadow_holds = self._shadow_holds[-_SHADOW_HOLD_MAX_ACTIVE:]
+            logger.info("Shadow-hold armed for trade #%s (%s, %s $%.2f) — "
+                        "tracking real reversion for %.0f min",
+                        hold.trade_id, hold.position_type, hold.exit_reason,
+                        hold.exit_net, _SHADOW_HOLD_MINUTES)
+        except Exception as e:
+            logger.debug("Shadow-hold arm skipped: %s", e)
+
+    def _update_shadow_holds(self) -> None:
+        """Mark each active watch to the current mids and finalize any whose
+        window has elapsed. Called every tick."""
+        if not self._shadow_holds or not (self.spot_tick and self.futures_tick):
+            return
+        now = datetime.utcnow()
+        cur_spot, cur_fut = self.spot_tick.mid, self.futures_tick.mid
+        still_active: List[ShadowHold] = []
+        for h in self._shadow_holds:
+            try:
+                gross = per_leg_gross_pnl(h.position_type, h.spot_qty, h.futures_qty,
+                                          h.entry_spot, h.entry_fut, cur_spot, cur_fut)
+                net = gross - h.fees_usd
+                mins = ((now - h.entry_time).total_seconds() / 60.0
+                        if h.entry_time else 0.0)
+                h.ticks += 1
+                h.final_net = round(net, 2)
+                h.last_min = round(mins, 1)
+                if h.peak_net is None or net > h.peak_net:
+                    h.peak_net, h.peak_min = round(net, 2), round(mins, 1)
+                if h.trough_net is None or net < h.trough_net:
+                    h.trough_net, h.trough_min = round(net, 2), round(mins, 1)
+                if not h.hit_be and net >= 0:
+                    h.hit_be, h.hit_be_min = True, round(mins, 1)
+                if not h.hit_target and h.target_usd > 0 and net >= h.target_usd:
+                    h.hit_target, h.hit_target_min = True, round(mins, 1)
+                # Window is measured from EXIT — how long we'd have had to wait.
+                if (now - h.exit_time).total_seconds() / 60.0 >= _SHADOW_HOLD_MINUTES:
+                    self._finalize_shadow_hold(h)
+                else:
+                    still_active.append(h)
+            except Exception as e:
+                logger.debug("Shadow-hold update skipped for #%s: %s",
+                             getattr(h, 'trade_id', '?'), e)
+                still_active.append(h)   # keep it; retry next tick
+        self._shadow_holds = still_active
+
+    def _finalize_shadow_hold(self, h: ShadowHold) -> None:
+        """Log a one-line verdict and hand the completed record to the app."""
+        try:
+            verdict = ("REVERTED TO TARGET" if h.hit_target
+                       else "REVERTED TO BREAK-EVEN" if h.hit_be
+                       else "KEPT BLEEDING")
+            logger.info(
+                "Shadow-hold #%s done: exit %s $%.2f → held %.0fm: %s "
+                "(peak $%.2f @%sm, trough $%.2f @%sm, final $%.2f)",
+                h.trade_id, h.exit_reason, h.exit_net, _SHADOW_HOLD_MINUTES, verdict,
+                h.peak_net or 0.0, h.peak_min, h.trough_net or 0.0, h.trough_min,
+                h.final_net)
+            if self.on_shadow_hold:
+                self.on_shadow_hold({
+                    'trade_id': h.trade_id,
+                    'position_type': h.position_type,
+                    'exit_reason': h.exit_reason,
+                    'exit_net_usd': h.exit_net,
+                    'target_usd': round(h.target_usd, 2),
+                    'window_min': _SHADOW_HOLD_MINUTES,
+                    'peak_net_usd': h.peak_net or 0.0,
+                    'peak_min': h.peak_min,
+                    'trough_net_usd': h.trough_net or 0.0,
+                    'trough_min': h.trough_min,
+                    'hit_break_even': h.hit_be,
+                    'hit_be_min': h.hit_be_min,
+                    'hit_target': h.hit_target,
+                    'hit_target_min': h.hit_target_min,
+                    'final_net_usd': h.final_net,
+                    'verdict': verdict,
+                })
+        except Exception as e:
+            logger.debug("Shadow-hold finalize skipped for #%s: %s",
+                         getattr(h, 'trade_id', '?'), e)
 
     def _exit_spread_levels(self, trade: Trade) -> Optional[Dict[str, Any]]:
         """Live BE/TP/SL spread levels for the open trade, using the SAME
@@ -1985,6 +2156,11 @@ class TradingEngine:
         trade.trough_minutes = _ls.get('trough_min')
 
         get_notifier().notify_trade_exit(trade, stats=getattr(trade, 'lifecycle_stats', None))
+
+        # Arm a shadow "what-if-held" watch for a stopped/losing trade, so the
+        # "it would have reverted" question is answered from logged reality, not
+        # hindsight. Observation only — never touches the reset/state below.
+        self._open_shadow_hold(trade, signal.signal_type)
 
         # Reset state
         self.state.current_position = "NONE"
@@ -3115,6 +3291,7 @@ class TradingEngine:
             'exit_execution_mode': getattr(self.config, 'exit_execution_mode', 'LIMIT'),
             'daily_loss_usd': round(self._daily_loss_usd, 2),
             'daily_loss_limit': self.config.daily_max_loss_usd,
+            'shadow_active': len(self._shadow_holds),
         }
 
     def get_spread_history(self, n: int = 100) -> List[float]:
