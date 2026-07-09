@@ -544,6 +544,15 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trades ADD COLUMN peak_minutes REAL")
             if 'trough_minutes' not in trade_cols:
                 cursor.execute("ALTER TABLE trades ADD COLUMN trough_minutes REAL")
+            # Exit geometry in spread units, resolved at close (BE/EX/TP/SL).
+            if 'be_spread' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN be_spread REAL")
+            if 'ex_spread' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN ex_spread REAL")
+            if 'tp_spread' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN tp_spread REAL")
+            if 'sl_spread' not in trade_cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN sl_spread REAL")
 
             logger.info("Database initialized: %s", self.db_path)
 
@@ -975,6 +984,10 @@ class DatabaseManager:
                         trough_net_usd = ?,
                         peak_minutes = ?,
                         trough_minutes = ?,
+                        be_spread = ?,
+                        ex_spread = ?,
+                        tp_spread = ?,
+                        sl_spread = ?,
                         is_open = ?
                     WHERE id = ?
                 """, (
@@ -995,6 +1008,10 @@ class DatabaseManager:
                     trade.trough_net_usd,
                     trade.peak_minutes,
                     trade.trough_minutes,
+                    trade.be_spread,
+                    trade.ex_spread,
+                    trade.tp_spread,
+                    trade.sl_spread,
                     int(trade.is_open),
                     trade.id,
                 ))
@@ -1181,6 +1198,10 @@ class DatabaseManager:
             trough_net_usd=(row["trough_net_usd"] or 0) if "trough_net_usd" in row.keys() else 0,
             peak_minutes=row["peak_minutes"] if "peak_minutes" in row.keys() else None,
             trough_minutes=row["trough_minutes"] if "trough_minutes" in row.keys() else None,
+            be_spread=row["be_spread"] if "be_spread" in row.keys() else None,
+            ex_spread=row["ex_spread"] if "ex_spread" in row.keys() else None,
+            tp_spread=row["tp_spread"] if "tp_spread" in row.keys() else None,
+            sl_spread=row["sl_spread"] if "sl_spread" in row.keys() else None,
             notional_usd=row["notional_usd"] or 0,
             pnl_usd=row["pnl_usd"] or 0,
             pnl_percent=row["pnl_percent"] or 0,

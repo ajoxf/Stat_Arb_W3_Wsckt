@@ -481,6 +481,16 @@ class Trade:
     peak_minutes: Optional[float] = None
     trough_minutes: Optional[float] = None
 
+    # Exit geometry in SPREAD units, resolved at close (drift-free — unlike the
+    # rolling z). The absolute spread values at which the trade breaks even
+    # (BE), is first allowed to bank a reversion exit past the profit gate (EX),
+    # takes profit (TP) and stops out (SL). None = that level was disabled /
+    # not recorded (legacy trades). See exit_spread_levels().
+    be_spread: Optional[float] = None
+    ex_spread: Optional[float] = None
+    tp_spread: Optional[float] = None
+    sl_spread: Optional[float] = None
+
     # ACTUAL spot-leg quantity executed (base units), recorded from fills at
     # entry. Contract rounding means the real position can differ from the
     # requested beta-derived size (e.g. 1.0 ETH / 0.02 BTC = ratio 50 when
@@ -545,6 +555,10 @@ class Trade:
             'exit_reason': self.exit_reason,
             'quantity': self.quantity,
             'spot_qty': self.spot_qty,
+            'be_spread': self.be_spread,
+            'ex_spread': self.ex_spread,
+            'tp_spread': self.tp_spread,
+            'sl_spread': self.sl_spread,
             'peak_net_usd': self.peak_net_usd,
             'trough_net_usd': self.trough_net_usd,
             'peak_minutes': self.peak_minutes,

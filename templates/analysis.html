@@ -276,6 +276,10 @@
                                 <th title="Spread at entry = futures − β × spot, in price units. This is the value the trade is actually betting will revert.">Entry Spread</th>
                                 <th title="Spread at exit. Compare with Entry Spread: this is the real move, drift-free — unlike the exit z-score.">Exit Spread</th>
                                 <th title="Δ Spread the trade CAPTURED, signed to your direction: +ve = the spread moved your way (profit before fees), −ve = it moved against you. LONG captures a fall, SHORT captures a rise. This is the key parameter — it decides the P&L.">Δ Spread</th>
+                                <th class="text-nowrap" title="BE Spread — the spread value where net P&L = 0 (fees exactly covered). Cross it in your favor and the trade is above water.">BE Sprd</th>
+                                <th class="text-nowrap" title="EX Spread (gate-release) — the spread value where a reversion EXIT is first allowed to bank a profit past the exit profit gate (= break-even + the gate %). Below the gate, a reversion signal is held. Equals BE when the gate is 0.">EX Sprd</th>
+                                <th class="text-nowrap" title="TP Spread — the spread value at which the profit target fires (net P&L = target). Blank if no profit target was set for the trade.">TP Sprd</th>
+                                <th class="text-nowrap" title="SL Spread — the spread value at which the dollar stop fires (gross move = −stop). Blank if no dollar stop was armed.">SL Sprd</th>
                                 <th title="Leg A notional = position size (sizing anchor). Total exposure across both legs is ~2× this.">Notional</th>
                                 <th title="Net P&L in dollars after all fees — the realized take-home for the round trip.">P&L</th>
                                 <th title="Return on Leg A notional — strategy edge metric.">P&L %</th>
@@ -285,7 +289,7 @@
                         </thead>
                         <tbody id="trade-journal-table">
                             <tr>
-                                <td colspan="14" class="text-center text-secondary">Loading...</td>
+                                <td colspan="18" class="text-center text-secondary">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -352,7 +356,7 @@
             tbody.innerHTML = '';
 
             if (data.trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="14" class="text-center text-secondary">No trades recorded</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="18" class="text-center text-secondary">No trades recorded</td></tr>';
                 return;
             }
 
@@ -381,6 +385,10 @@
                     <td>${fmtSpread(trade.entry_spread)}</td>
                     <td>${hasExit ? fmtSpread(trade.exit_spread) : '-'}</td>
                     ${deltaCell}
+                    <td class="text-secondary">${fmtSpread(trade.be_spread)}</td>
+                    <td class="text-secondary">${fmtSpread(trade.ex_spread)}</td>
+                    <td class="text-secondary">${fmtSpread(trade.tp_spread)}</td>
+                    <td class="text-secondary">${fmtSpread(trade.sl_spread)}</td>
                     <td>$${(trade.notional_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">$${(trade.pnl_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">${(trade.pnl_percent || 0).toFixed(2)}%</td>
@@ -393,7 +401,7 @@
         .catch(error => {
             console.error('Error:', error);
             document.getElementById('trade-journal-table').innerHTML =
-                '<tr><td colspan="14" class="text-center text-danger">Error loading trades</td></tr>';
+                '<tr><td colspan="18" class="text-center text-danger">Error loading trades</td></tr>';
         });
 
     // Asset filter

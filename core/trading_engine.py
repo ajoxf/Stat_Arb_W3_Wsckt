@@ -2155,6 +2155,18 @@ class TradingEngine:
         trade.peak_minutes = _ls.get('peak_min')
         trade.trough_minutes = _ls.get('trough_min')
 
+        # Persist the exit geometry in SPREAD units (BE/EX/TP/SL) so the trade
+        # journal can show the drift-free levels this trade was managed against.
+        try:
+            _lv = self._exit_spread_levels(trade)
+            if _lv:
+                trade.be_spread = _lv.get('break_even')
+                trade.ex_spread = _lv.get('gate_release')
+                trade.tp_spread = _lv.get('take_profit')
+                trade.sl_spread = _lv.get('stop')
+        except Exception:
+            pass
+
         get_notifier().notify_trade_exit(trade, stats=getattr(trade, 'lifecycle_stats', None))
 
         # Arm a shadow "what-if-held" watch for a stopped/losing trade, so the
