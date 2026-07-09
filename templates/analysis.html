@@ -273,10 +273,9 @@
                                 <th title="LONG = long the spot leg, short the futures leg (profits when the spread falls). SHORT = the mirror (profits when the spread rises).">Type</th>
                                 <th title="Rolling z-score at entry = (spread − mean) ÷ σ. Bigger |z| = a more stretched divergence.">Entry Z</th>
                                 <th title="Rolling z-score at exit. NOTE: z drifts during the hold as the rolling mean moves — it can read near 0 while the position is still down. P&L, not this, is the truth.">Exit Z</th>
-                                <th title="Spot (Leg A) mid price at entry.">Entry Spot</th>
-                                <th title="Futures (Leg B) mid price at entry.">Entry Fut</th>
-                                <th title="Spot (Leg A) mid price at exit.">Exit Spot</th>
-                                <th title="Futures (Leg B) mid price at exit.">Exit Fut</th>
+                                <th title="Spread at entry = futures − β × spot, in price units. This is the value the trade is actually betting will revert.">Entry Spread</th>
+                                <th title="Spread at exit. Compare with Entry Spread: this is the real move, drift-free — unlike the exit z-score.">Exit Spread</th>
+                                <th title="Δ Spread the trade CAPTURED, signed to your direction: +ve = the spread moved your way (profit before fees), −ve = it moved against you. LONG captures a fall, SHORT captures a rise. This is the key parameter — it decides the P&L.">Δ Spread</th>
                                 <th title="Leg A notional = position size (sizing anchor). Total exposure across both legs is ~2× this.">Notional</th>
                                 <th title="Net P&L in dollars after all fees — the realized take-home for the round trip.">P&L</th>
                                 <th title="Return on Leg A notional — strategy edge metric.">P&L %</th>
@@ -286,7 +285,7 @@
                         </thead>
                         <tbody id="trade-journal-table">
                             <tr>
-                                <td colspan="15" class="text-center text-secondary">Loading...</td>
+                                <td colspan="14" class="text-center text-secondary">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -353,14 +352,24 @@
             tbody.innerHTML = '';
 
             if (data.trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="15" class="text-center text-secondary">No trades recorded</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="14" class="text-center text-secondary">No trades recorded</td></tr>';
                 return;
             }
 
-            const formatPrice = (price) => price ? '$' + price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '-';
+            const fmtSpread = (s) => (s === null || s === undefined) ? '-' : s.toFixed(2);
 
             data.trades.forEach(trade => {
                 const pnlClass = trade.pnl_usd > 0 ? 'price-up' : trade.pnl_usd < 0 ? 'price-down' : '';
+                // Δ Spread captured, signed to the trade's direction: LONG profits
+                // when the spread falls (dfav = -1), SHORT when it rises (dfav = +1).
+                const hasExit = trade.exit_spread !== null && trade.exit_spread !== undefined && !trade.is_open;
+                let deltaCell = '<td>-</td>';
+                if (hasExit) {
+                    const dfav = trade.position_type === 'LONG' ? -1 : 1;
+                    const captured = dfav * ((trade.exit_spread || 0) - (trade.entry_spread || 0));
+                    const dCls = captured > 0 ? 'price-up' : captured < 0 ? 'price-down' : '';
+                    deltaCell = `<td class="${dCls}">${captured >= 0 ? '+' : ''}${captured.toFixed(2)}</td>`;
+                }
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>${trade.entry_time ? new Date(trade.entry_time).toLocaleString() : '-'}</td>
@@ -369,10 +378,9 @@
                     <td><span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}">${trade.position_type}</span></td>
                     <td>${(trade.entry_zscore || 0).toFixed(4)}</td>
                     <td>${trade.exit_zscore ? trade.exit_zscore.toFixed(4) : '-'}</td>
-                    <td>${formatPrice(trade.entry_spot_price)}</td>
-                    <td>${formatPrice(trade.entry_futures_price)}</td>
-                    <td>${formatPrice(trade.exit_spot_price)}</td>
-                    <td>${formatPrice(trade.exit_futures_price)}</td>
+                    <td>${fmtSpread(trade.entry_spread)}</td>
+                    <td>${hasExit ? fmtSpread(trade.exit_spread) : '-'}</td>
+                    ${deltaCell}
                     <td>$${(trade.notional_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">$${(trade.pnl_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">${(trade.pnl_percent || 0).toFixed(2)}%</td>
@@ -385,7 +393,7 @@
         .catch(error => {
             console.error('Error:', error);
             document.getElementById('trade-journal-table').innerHTML =
-                '<tr><td colspan="15" class="text-center text-danger">Error loading trades</td></tr>';
+                '<tr><td colspan="14" class="text-center text-danger">Error loading trades</td></tr>';
         });
 
     // Asset filter
