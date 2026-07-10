@@ -21,6 +21,25 @@ as a constraint discovered with real money — do not "simplify" it away.
 - FEES per leg (maker/taker, bps) — **measured from real fills, not the fee page**
 - TICK CADENCE: `{e.g. 0.5–1s}` · ROLLING LOOKBACK: `{e.g. 7,200 ticks}`
 
+**Porting to a new broker / market / instrument — RE-DERIVE these, never copy ours:**
+1. **The pair must be cointegrated** on the new market — verify (ADF/Engle-Granger
+   on the spread, stable β) BEFORE trading. The whole edge assumes reversion exists.
+2. **β** for the new pair, and a re-anchoring cadence (β drifts; a re-rating moves
+   the spread by Δβ·P_A — enough to blow a no-stop position, so β is structural, §2).
+3. **Contract/lot granularity and exchange minimums** per leg — these drive the
+   lattice sizer (§4) and the min-fill check; wrong values silently break the hedge.
+4. **Fees AND slippage from REAL fills** on the new venue (§3.3) — the fee page lies;
+   an inflated cost estimate makes the edge filter and cost floor misbehave (§6.2).
+5. **The venue's order semantics**: post-only/maker flag, reduce-only, close-whole-
+   position endpoint, and — critically — the **WebSocket reconnect + resubscribe**
+   behaviour (§8). Every venue's socket dies differently; the break-on-timeout rule
+   is universal, the details are not.
+6. **Tick cadence and volatility** decide the lookback and whether reversions are
+   large enough vs cost (§12's hard truth). A quiet or trending instrument makes the
+   same code −EV; confirm the spread actually swings enough to pay the toll first.
+Everything else in this spec (the exit ladder, accounting, resilience, EV discipline)
+is venue-agnostic — port it verbatim, including the WHY notes.
+
 ## 1. The strategy in one paragraph
 
 Trade the **spread** `S = P_B − β·P_A` between two cointegrated instruments, where β
@@ -42,6 +61,13 @@ goes one way and stays (trend → regime guards), or your executed legs don't ma
 - Half-life of mean reversion via OU regression (ΔS = θ(μ−S)+ε; HL = ln2/θ) — used
   for max-hold and as a mean-reversion sanity check. Skip Hurst as a gate: on slow
   reverting spreads it reads ~0.9 at tick timescales and blocks everything (measured).
+  And do NOT let a finite half-life "rescue" a Hurst gate: a finite HL on a strongly
+  trending spread (measured live: H≈0.87, HL≈250 periods, every such entry stopped
+  out in the trend) is the rolling mean running away from price, not reversion — the
+  rescue clause silently defeated the whole filter. Verdict from live money: keep
+  regime detection OUT of the automatic entry gate entirely; run it as a manual /
+  monitoring signal (drift, anchor z-score) and let the operator decide. Automated
+  regime gates cost more in missed-and-mislabeled trades than they save.
 
 ## 3. Entry rules — ALL must pass
 
@@ -137,6 +163,19 @@ Priority order each tick (risk first):
    **Cost floor**: `target = max(target, cost_floor_mult × round_trip_cost)`,
    `cost_floor_mult ≈ 1.0–1.5`. Check floor ≤ plausible full reversion
    (`|z|×σ×qty`) — if the floor exceeds it, the trade can never win; block entry.
+   **CRITICAL (cost the most live money of any single misconfig this program hit):**
+   the %-of-capital target is ALREADY net of all fees, so the cost floor is
+   REDUNDANT for it — and worse than redundant. At small capital the floor
+   (1.5× an inflated cost estimate) pushed the target to $2.67 when a FULL
+   reversion was only worth ~$2.08, so the take-profit could never fire; every
+   winner leaked out through the trailing stop / gate at a fraction of its value
+   (18–45% capture), and one trade that later reverted clean to its TP had
+   already been scraped at $0.15 instead of $1.81. Fix: with a %-of-capital or
+   σ-fraction target, set `cost_floor_mult = 0`. Keep the floor only for a raw
+   fixed-$ target (which is NOT fee-aware). And fix the cost estimate at the
+   source (see §3.3 — inflated slippage doubled the modeled cost, which doubled
+   the floor). Print the RESOLVED target $ at entry and eyeball it against a full
+   reversion — if target ≥ |z|·σ·qty, it will never fire.
 3. **Reversion exit, GATED** (z returns inside `exit_z = 0.5`): allowed to close
    ONLY if `net ≥ gate_floor` (`0` = break-even; or `gate_capital_pct`, e.g.
    0.3–0.5%). Never book a losing "profit-take". Fail-open if P&L can't be
@@ -161,12 +200,39 @@ Priority order each tick (risk first):
    way. When you disable it, LOG every occasion it would have fired — those
    lines + trade outcomes score the design change with data.
 
+**Trailing stop — usually OFF for mean reversion (learned live).** A trailing
+stop exits on a pullback from an interim peak, but in mean reversion you WANT
+to hold to the target. With a reachable TP it is redundant-or-harmful: live, a
+trade peaked at +$1.13, the trailing stop cut it at +$0.15 on a 35% pullback,
+and the spread then reverted straight through to its TP (+$1.81) minutes later.
+A trailing stop is a trend-riding tool; it fights a reversion book. If the TP is
+reachable (see §6.2), let the TP bank the win and the dollar stop cap the loss —
+keep trailing OFF. Only consider it to protect an OVERSHOOT *past* the TP, and
+even then the TP fires first on the way through.
+
+**Exit execution is classified by URGENCY, not by the word "stop" (fee lesson).**
+A loss cut (dollar/daily/z stop) is urgent → straight to market; you cannot rest
+a maker order while the market runs. But a PROFIT-protecting exit (TP, trailing,
+reversion) is NOT urgent — give it a maker probe first (one attempt, then market
+fallback). Live: a trailing-stop exit was miscategorized as a "stop" and forced
+to a taker fill; the taker fee ate ~$0.5 of a ~$0.65 gain (85% of gross). Route
+every profit-side exit maker-first; reserve straight-to-market for genuine loss
+cuts. (Group the reasons explicitly, e.g. `MAKER_PROBE_EXITS = {TAKE_PROFIT,
+TRAILING, REVERSION, DOLLAR_STOP}` vs `MARKET_NOW = {STOP_LOSS, DAILY_LOSS}`.)
+
 **Exit-path completeness rule (learned the expensive way):** enumerate every
 exit's preconditions and prove at least one exit is reachable in EVERY
 (P&L, z, time) state. Watch the corner with z-stop exits disabled: a sideways
 loser (net < 0, z never reverting) has no clock — max-hold skips losers and
 the gate needs a reversion signal. Either accept that it waits for TP/SL, or
 add a hard time-stop (close ANY trade at ~3× max-hold regardless of P&L).
+The **break-even hoverer** is the same failure wearing a smile: because MAX_HOLD
+only fires when net > 0, a trade that sits at ~break-even is held indefinitely
+until net ticks barely positive — live, one hovered **78 minutes** then exited
+−$0.16 as fees ate a $0.25 gross. That is capital held hostage for nothing. The
+hard time-stop must close on TIME regardless of P&L SIGN, not just rescue
+runaway losers — a trade going nowhere is a loss of the thing you're actually
+short: deployable capital and the next setup.
 
 ## 7. Execution engine
 
@@ -198,7 +264,37 @@ add a hard time-stop (close ANY trade at ~3× max-hold regardless of P&L).
   succeed; if the close crashes mid-accounting the engine must not order-spam
   (reduce-only + reconcile make retries harmless — we survived exactly this).
 - On restart: recover any open trade from the DB, then reconcile against the
-  exchange before acting. A watchdog process relaunches the app on hang.
+  exchange before acting. Recovery is what makes an auto-restart safe — the
+  position stays on the exchange and is re-adopted with its stop/target intact.
+
+**Connection resilience — the single biggest source of live "hangs" (port these
+verbatim):**
+- **Every WebSocket receive loop MUST `break`→reconnect on a receive-timeout, never
+  `continue`.** A socket can go silently half-dead (TCP up, zero data — routine
+  behind a load balancer); re-arming `receive()` on the same dead socket just spins
+  forever. Live, the price feed did exactly this: it logged "receive timeout" every
+  35 s but never reconnected, ticks stopped, and the process got restarted every
+  ~30 min — while the execution socket beside it (which broke→reconnected correctly)
+  recovered in one attempt. On break: reconnect AND **re-subscribe** (a reconnected
+  socket with no subscriptions delivers nothing) and **discard cached ticks** from
+  before the gap so the engine never acts on stale prices.
+- **Liveness heartbeat must prove the LOOP is alive, not that DATA is flowing.**
+  If you write the heartbeat only from the tick callback, a data outage is
+  indistinguishable from a frozen loop, and the watchdog restarts the whole process
+  for what a reconnect would fix. Write it from a small timer coroutine (proves the
+  async loop is spinning) and handle "no ticks for N s" separately by forcing a WS
+  reconnect — a surgical fix, not a process kill.
+- **External watchdog** (separate process): restart the app if the process dies OR
+  the heartbeat file goes stale (a hang a crash-only supervisor can't catch). Keep
+  relaunch fast (seconds) — a slow relaunch is unmanaged-position time. If it also
+  auto-restarts (a supervisor loop), the app must EXIT (not self-exec) on a remote
+  restart, or you get two live engines placing double orders — gate on an env flag.
+- **Remote restart command** (e.g. Telegram `/restart`) for a soft hang when you
+  have no shell: it re-launches the process; the open position is re-adopted on
+  startup. It only works while the poll thread still runs — a true freeze needs the
+  heartbeat watchdog. Both together = self-healing from any stuck state.
+- Give EVERY exchange call (WS and REST) a tight timeout and a REST circuit breaker
+  so a slow venue fails fast instead of stacking 10 s waits that starve the loop.
 
 ## 9. Configuration principles
 
@@ -223,6 +319,31 @@ lifecycle extremes: peak and trough net P&L WITH minutes-after-entry. Then:
   takes hit more often but demand a higher win rate — e.g. 0.3% take vs 1%
   stop needs ~80%; 0.5% needs ~71%). The distribution decides, not intuition.
 
+**Run the whole book on one expectancy sheet, in R (= one stop's worth of
+money).** Compute and surface live: win rate `p`, realized reward:risk
+`RR = avg_win/avg_loss`, profit factor `Σwin/Σloss`, break-even WR `1/(1+RR)`,
+and expectancy `EV/R = p·(1+RR) − 1`. Two hard truths that saved a lot of
+flailing: (a) **chase R:R, not win rate** — a system with RR 1.5 is *allowed*
+to lose 60% of the time; obsessing over "fewer losers" optimizes the wrong
+knob. (b) **On a fixed reversion distribution, RR and WR trade off** — a smaller
+target lifts WR but craters RR, a larger one the reverse; you CANNOT dial both
+up by tuning target/stop. The only way to move both is a better trade
+*population* (more selective entries, a livelier regime). If the sheet says
+you're below break-even WR, you are −EV no matter how any single trade "felt."
+
+**Measure whether you're exiting too early — the "what-if-held" shadow.** After
+every exit that is NOT a clean target hit (stops, trailing, sub-target
+reversions, small early wins), keep marking the position's REAL held P&L (per
+§5 accounting, on the frozen fills — immune to z/β drift) for a window
+(~60 min) and record whether/when it would have reverted to break-even and to
+the target, plus the peak it reached. High revert-rate ⇒ your exits are
+premature (cutting winners, stops too tight); low ⇒ the exits were right and
+the move was real. This turned "it would have reverted, just wait" from an
+argument into logged data. **Persist each watch the moment it's armed and
+resume it on restart** — an in-memory-only watch is silently lost every restart,
+so during a tuning session (frequent restarts) it never finalizes and looks
+broken.
+
 ## 10. Observability (all of it earned its place)
 
 - Position card: live net P&L, **BE/EX/TP/SL levels** AND the net dollar value
@@ -241,6 +362,18 @@ lifecycle extremes: peak and trough net P&L WITH minutes-after-entry. Then:
   pull-based real-time tracking beats periodic push spam.
 - Per-trade review: entry/exit z, available Δ (|z|·σ), realized Δ, **capture
   ratio**, cost ratio, fee split (est vs real), exit reason, streaks, PF, EV/trade.
+- Deterministic config-coherence audit ("is a target set? is a stop armed?") must
+  check ALL the forms that configure a thing, not a subset. Live, the audit
+  screamed "no profit target set" for 30+ reviews because it checked only the
+  σ-fraction and fixed-$ fields and ignored the %-of-capital field that WAS set —
+  sending every review (human and LLM) chasing a non-issue while the real problem
+  (the cost floor, §6.2) sat one line away. A false "missing" alarm is worse than
+  none: it launders attention away from the actual bug.
+- Journal each trade's persisted exit geometry (BE/EX/TP/SL as spread levels) and
+  the realized Δspread + signed captured-Δ, so history reads in the one variable
+  that pays — not four raw leg prices you have to do arithmetic on.
+- Surface the what-if-held shadow (§9): "N tracking" the moment a trade closes,
+  then "reverted X/Y within the window" once watches complete.
 - Trade-vs-broker reconciliation to the cent (per-leg accounting makes this exact).
 - Untracked-close badge; daily loss vs limit; regime/drift state; hedge-ratio
   z-score vs a frozen morning anchor (sustained |z|>2 that doesn't return =
@@ -278,6 +411,17 @@ lifecycle extremes: peak and trough net P&L WITH minutes-after-entry. Then:
     through the DB and render in the close report ("+$1.19 (6m) / −$4.46 (88m)").
 16. The full close/accounting path runs end-to-end in paper mode with lifecycle
     stats attached — any dangling reference in it fails the suite.
+17. **WS receive loop breaks on the FIRST receive-timeout and schedules a
+    reconnect** (assert exactly one receive call, not a spin) — regression for
+    the silently-dead-socket hang that restarted the process every ~30 min.
+18. Exit-fee routing: profit-side exits (TAKE_PROFIT/TRAILING/REVERSION) take a
+    maker probe before market; genuine loss cuts (STOP_LOSS/DAILY_LOSS) go
+    straight to market — regression for the taker fee that ate 85% of a gain.
+19. Cost floor is skipped for a %-of-capital / σ-fraction target (already fee-net)
+    and applied only to a raw fixed-$ target; resolved target < |z|·σ·qty.
+20. What-if-held shadow: arms on every non-target exit (incl. small wins),
+    skips a clean target hit; the pending watch persists on arm, resumes on
+    restart, and drops (not lingers) if its window elapsed during downtime.
 
 ## 12. Non-goals / hard warnings
 
@@ -299,3 +443,19 @@ lifecycle extremes: peak and trough net P&L WITH minutes-after-entry. Then:
 - Every dollar level needs a cost-floor sanity check at the operating size: a
   cost floor multiple of 1.5× silently pinned our "0.5% of capital" target ~50%
   higher at small capital. Print the RESOLVED levels at entry, not the configs.
+- **A trailing stop is a trend tool; do not run it on a reversion book with a
+  reachable TP** — it cuts winners mid-reversion before the TP fires (§6).
+- **The hardest truth, and no config fixes it: if most reversions are smaller
+  than the round-trip cost, the strategy cannot make money on that pair/period.**
+  Measure it — count the fraction of recent trades whose gross move was below
+  cost (ours ran 16/20). When it's high, you are not mis-tuned, you are on a dead
+  or trending market: the spread must SWING with enough amplitude AND actually
+  REVERT to pay the toll. The edge filter (amplitude vs cost) and the regime read
+  (does it revert or trend) are the two gates that enforce "only trade swings big
+  and clean enough to pay." When they leave the bot flat for hours, that is the
+  system working, not broken — trading a toll-sized wiggle just donates the toll.
+  Fix selection or change instrument; do not tune the stop/target and hope.
+- Watch the exchange's real fill types: a maker-intended book that fills taker
+  (post-only rejects → market fallback) pays multiples more; if fees are a large
+  fraction of a small gross move (ours hit 82–103% of gross on the worst trades),
+  the fee model and the exit routing (§6) matter as much as the signal.
