@@ -425,6 +425,42 @@ def start_engine_loop():
         return engine.state.algo_enabled
     _telegram.toggle_algo_cb = _toggle_algo_from_telegram
 
+    def _restart_from_telegram() -> dict:
+        """Restart the whole process — the Telegram 'it's stuck' button. Runs on
+        a short delay in a daemon thread so the confirmation reply flushes first.
+
+        Two modes, chosen so we NEVER end up with two live engines (double OKX
+        orders):
+          - Supervised (STATARB_SUPERVISED=1, i.e. launched from run.bat's loop):
+            exit with code 42 and let the loop relaunch. Do NOT self-exec here.
+          - Standalone: os.execv to re-launch this same `python app.py` in place.
+        The open position (if any) is left on the exchange and re-adopted from
+        the DB on startup, so its stop/target resume automatically.
+        """
+        import threading
+        supervised = os.getenv('STATARB_SUPERVISED', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+        def _do():
+            time.sleep(1.5)  # let the Telegram reply send before we vanish
+            logger.warning("RESTART requested via Telegram (supervised=%s) — %s",
+                           supervised, "exiting code 42 for supervisor" if supervised
+                           else "re-executing in place")
+            try:
+                sys.stdout.flush(); sys.stderr.flush()
+            except Exception:
+                pass
+            if supervised:
+                os._exit(42)     # run.bat relaunches; execv here would DUPLICATE the process
+            try:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception as e:
+                logger.error("Re-exec failed (%s) — hard-exiting code 42", e)
+                os._exit(42)
+
+        threading.Thread(target=_do, name="tg-restart", daemon=True).start()
+        return {"ok": True, "supervised": supervised}
+    _telegram.restart_cb = _restart_from_telegram
+
     def _set_config_from_telegram(key: str, value) -> dict:
         """Update a single config field, persist to DB, and hot-reload the engine."""
         try:

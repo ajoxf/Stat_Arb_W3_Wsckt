@@ -61,6 +61,26 @@ def test_menu_command_names_are_api_legal():
         assert 1 <= len(desc) <= 256
 
 
+def test_restart_command_invokes_callback(monkeypatch):
+    bot = _ready_bot()
+    sent, called = [], []
+    monkeypatch.setattr(bot, "_send", lambda t: sent.append(t))
+    bot.restart_cb = lambda: (called.append(True), {"ok": True})[1]
+    bot._handle_update({"message": {"chat": {"id": 42}, "text": "/restart"}})
+    assert called == [True]                          # restart callback fired
+    assert any("RESTART" in t for t in sent)         # user got a confirmation first
+
+
+def test_restart_without_callback_is_safe(monkeypatch):
+    # No callback wired -> replies 'Not configured' and does NOT exec anything.
+    bot = _ready_bot()
+    sent = []
+    monkeypatch.setattr(bot, "_send", lambda t: sent.append(t))
+    bot.restart_cb = None
+    bot._handle_update({"message": {"chat": {"id": 42}, "text": "/restart"}})
+    assert any("Not configured" in t for t in sent)
+
+
 def test_every_menu_command_reaches_a_handler(monkeypatch):
     """Feed each advertised command through _handle_update: none may fall
     through to the 'Unknown command' branch. Handlers may reply 'Not

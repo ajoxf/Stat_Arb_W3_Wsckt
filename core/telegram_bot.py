@@ -33,6 +33,7 @@ BOT_COMMAND_MENU = [
     ("balance",   "Account balance"),
     ("pause",     "Algo OFF — halt new entries"),
     ("resume",    "Algo ON — allow new entries"),
+    ("restart",   "Restart the program (if it feels stuck)"),
     ("eod",       "End-of-day report"),
     ("settings",  "Show all tunable settings"),
     ("set",       "Change a setting: /set key value"),
@@ -119,6 +120,10 @@ class TelegramNotifier:
         self.get_balance_cb: Optional[Callable[[], Dict[str, Any]]] = None
         self.get_config_cb: Optional[Callable[[], Dict[str, Any]]] = None
         self.close_all_cb: Optional[Callable[[], Dict[str, Any]]] = None
+        # Restart the whole program (the "it's stuck" button). Signature:
+        # restart_cb() -> Dict. Re-launches the process; an open position is
+        # left on the exchange and re-adopted from the DB on startup.
+        self.restart_cb: Optional[Callable[[], Dict[str, Any]]] = None
         # Returns result of SignalGenerator.optimize_parameters()
         self.optimize_cb: Optional[Callable[[], Dict[str, Any]]] = None
         # Flip algo_enabled on/off from Telegram (panic switch).
@@ -815,6 +820,7 @@ class TelegramNotifier:
             "/optimize": self._cmd_optimize,
             "/pause": self._cmd_pause,
             "/resume": self._cmd_resume,
+            "/restart": self._cmd_restart,
             "/settings": self._cmd_settings,
         }
 
@@ -886,6 +892,7 @@ class TelegramNotifier:
             f"{'/set key val':<{C}}change a setting live",
             f"{'/pause':<{C}}halt new entries",
             f"{'/resume':<{C}}re-enable new entries",
+            f"{'/restart':<{C}}restart if stuck",
             f"{'/closeall':<{C}}emergency: close all",
         ]
         self._send(
@@ -1559,6 +1566,29 @@ class TelegramNotifier:
                 f"<b>EMERGENCY CLOSE  ·  {ts}</b>\n"
                 f"<b>Error</b>  <code>{e}</code>"
             )
+
+    def _cmd_restart(self) -> None:
+        """Restart the whole program — the 'it's stuck' button. Re-launches the
+        process; any open position is left on the exchange and re-adopted from
+        the DB on startup, so its stop/target resume automatically."""
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        if not self.restart_cb:
+            self._send(f"<b>♻️ RESTART  ·  {ts}</b>\n<pre>Not configured.</pre>")
+            return
+        # Send the confirmation BEFORE triggering, because the process is about
+        # to be replaced — the reply won't go out afterwards.
+        self._send(
+            f"<b>♻️ RESTART  ·  {ts}</b>\n"
+            "Re-launching now — back in ~15&ndash;30s.\n"
+            "Any open position stays on the exchange and is re-adopted on "
+            "startup (stop &amp; target resume).\n"
+            "Send <code>/ping</code> in a minute — if it answers, we're back. "
+            "If it stays silent, the host itself is hung (needs the watchdog)."
+        )
+        try:
+            self.restart_cb()
+        except Exception as e:
+            self._send(f"<b>♻️ RESTART</b>\n<b>Error</b>  <code>{html.escape(str(e))}</code>")
 
     def _cmd_optimize(self) -> None:
         """Run parameter optimisation and report the result."""
