@@ -11,7 +11,7 @@ What it sets and WHY (short form):
   - profit_target_min_cost_mult = 0    OFF — the 1.5x cost floor was pushing the target
                                        ABOVE a full reversion's value so it never fired
   - slippage_bps = 0.7             match real maker fills (was 1.5 -> inflated cost by ~2x)
-  - hurst_enabled = True           regime gate: don't enter a trending spread
+  - hurst_enabled = False          Hurst is too often misleading — kept OFF (regime watched manually)
   - trailing_stop 50/35            bank the peak before it round-trips to a loss
   - z_stop_exit_enabled = False    in-trade stop is the %-capital dollar stop only
   - min_entry_rr_multiple = 0.0    let the 1% capital cap set the stop (0.3 was inert)
@@ -41,9 +41,7 @@ RECOMMENDED = {
     "stop_loss_threshold": 5.5,       # entry ceiling (blocks |z| >= this)
     "std_filter_enabled": True,
     "min_std_multiple": 2.0,          # Edge Filter: sigma >= 2x round-trip cost
-    # ── regime gate: don't trade a trending spread ──
-    "hurst_enabled": True,            # block entries when H >= threshold (trending)
-    "hurst_threshold": 0.5,           # H < 0.5 = mean-reverting; strong trends (>=0.65) can't be HL-rescued
+    "hurst_enabled": False,           # Hurst is too often misleading — regime is watched manually, not gated
     "slippage_bps": 0.7,              # match real maker fills — un-inflates the cost floor & edge gate
     # ── exit signal ──
     "exit_threshold": 0.5,
