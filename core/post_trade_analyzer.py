@@ -804,13 +804,18 @@ Call record_trade_analysis now."""
         gf = lambda k, dv=0.0: (getattr(config, k, dv) or dv)
 
         # ── SETTINGS coherence ──
+        # A profit target can be set THREE ways (precedence σ > cap% > usd); the
+        # target is "unset" only when ALL three are 0. Checking just sigma_frac
+        # and usd falsely flagged "no target" whenever the %-of-capital form was
+        # in use (which is the recommended form).
         sig_frac = gf('profit_target_sigma_frac')
+        cap_tgt = gf('profit_target_capital_pct')
         fixed_tgt = gf('profit_target_usd')
-        if sig_frac <= 0 and fixed_tgt <= 0:
+        if sig_frac <= 0 and cap_tgt <= 0 and fixed_tgt <= 0:
             d.append(("HIGH", "settings",
-                      "No profit target set (profit_target_sigma_frac=0 AND profit_target_usd=0) — "
+                      "No profit target set (sigma_frac / capital_pct / usd all 0) — "
                       "trades have no dollar profit-take; a stalled winner round-trips instead of "
-                      "banking. Set profit_target_sigma_frac ~0.5."))
+                      "banking. Set profit_target_capital_pct ~0.5 or profit_target_sigma_frac ~0.5."))
         if gf('min_entry_rr_multiple') <= 0:
             d.append(("LOW", "settings",
                       "min_entry_rr_multiple=0 — the stop is the %-capital cap only, not derived "
