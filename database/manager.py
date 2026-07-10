@@ -369,6 +369,28 @@ class DatabaseManager:
                 )
             """)
 
+            # In-progress shadow watches — persisted the moment a watch is armed
+            # so a restart mid-window resumes it instead of silently dropping it
+            # (the reason the shadow "never updated" during a tuning session with
+            # frequent restarts). pending_key = exit_time ISO (one watch/close).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shadow_pending (
+                    pending_key TEXT PRIMARY KEY,
+                    trade_id INTEGER,
+                    position_type TEXT,
+                    entry_time TEXT,
+                    exit_time TEXT,
+                    entry_spot REAL,
+                    entry_fut REAL,
+                    spot_qty REAL,
+                    futures_qty REAL,
+                    fees_usd REAL,
+                    target_usd REAL,
+                    exit_net REAL,
+                    exit_reason TEXT
+                )
+            """)
+
             # Insert default config if not exists
             cursor.execute("SELECT COUNT(*) FROM trading_config")
             if cursor.fetchone()[0] == 0:
@@ -1117,6 +1139,35 @@ class DatabaseManager:
                 "SELECT * FROM shadow_holds ORDER BY timestamp DESC LIMIT ?",
                 (limit,),
             )
+            return [dict(r) for r in cursor.fetchall()]
+
+    # ── in-progress shadow watches (survive restarts) ────────────────────────
+    _SHADOW_PENDING_COLS = (
+        "pending_key", "trade_id", "position_type", "entry_time", "exit_time",
+        "entry_spot", "entry_fut", "spot_qty", "futures_qty", "fees_usd",
+        "target_usd", "exit_net", "exit_reason",
+    )
+
+    def save_shadow_pending(self, rec: Dict[str, Any]) -> None:
+        """Upsert an in-progress shadow watch by pending_key."""
+        cols = self._SHADOW_PENDING_COLS
+        placeholders = ", ".join("?" for _ in cols)
+        with self._get_connection() as conn:
+            conn.cursor().execute(
+                f"INSERT OR REPLACE INTO shadow_pending ({', '.join(cols)}) "
+                f"VALUES ({placeholders})",
+                tuple(rec.get(c) for c in cols),
+            )
+
+    def delete_shadow_pending(self, pending_key: str) -> None:
+        with self._get_connection() as conn:
+            conn.cursor().execute(
+                "DELETE FROM shadow_pending WHERE pending_key = ?", (pending_key,))
+
+    def get_shadow_pending(self) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM shadow_pending")
             return [dict(r) for r in cursor.fetchall()]
 
     def get_shadow_summary(self, limit: int = 50) -> Dict[str, Any]:

@@ -1483,23 +1483,32 @@
     }
     function pollUntrackedCloses() {
         fetch('/api/engine/status').then(r => r.json())
-            .then(d => { updateUntrackedCloses(d.untracked_closes_today); updateShadowHold(d.shadow_summary); })
+            .then(d => { updateUntrackedCloses(d.untracked_closes_today);
+                         updateShadowHold(d.shadow_summary, d.shadow_active); })
             .catch(() => {});
     }
     pollUntrackedCloses();
     setInterval(pollUntrackedCloses, 60000);
 
-    // Shadow "what-if-held" badge: of the last stopped/losing trades, how many
-    // would have reverted to break-even within the watch window. This is the
-    // measured test of "just wait, it reverts" — updates on the 60s status poll.
-    function updateShadowHold(s) {
+    // Shadow "what-if-held" badge. `active` = watches still inside their 60-min
+    // window (no verdict yet); `s` = completed verdicts. Showing the active
+    // count means the badge reacts the moment a trade closes, not 60 min later.
+    function updateShadowHold(s, active) {
         const el = document.getElementById('shadow-hold-badge');
         if (!el) return;
-        if (!s || !s.count) { el.style.display = 'none'; return; }
+        active = active || 0;
+        const done = (s && s.count) ? s.count : 0;
+        if (!done && !active) { el.style.display = 'none'; return; }
+        if (!done) {                                   // tracking, no verdicts yet
+            el.textContent = 'shadow: ' + active + ' tracking (≤60m)';
+            el.className = 'badge ms-2 bg-secondary';
+            el.style.display = ''; return;
+        }
         const pct = Math.round((s.revert_be_rate || 0) * 100);
         const med = (s.median_be_min != null) ? (', ~' + s.median_be_min + 'm') : '';
-        el.textContent = 'shadow: ' + s.reverted_be + '/' + s.count + ' reverted (' + pct + '%' + med + ')';
-        // High revert rate → stops may be too tight (info); low → stops are right (neutral).
+        const trk = active ? ' +' + active + ' live' : '';
+        el.textContent = 'shadow: ' + s.reverted_be + '/' + s.count + ' reverted (' + pct + '%' + med + ')' + trk;
+        // High revert rate → you're exiting too early (info); low → exits were right.
         el.className = 'badge ms-2 ' + (pct >= 60 ? 'bg-info text-dark' : 'bg-secondary');
         el.style.display = '';
     }

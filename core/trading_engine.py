@@ -90,6 +90,40 @@ class ShadowHold:
     final_net: float = 0.0
     last_min: float = 0.0
     ticks: int = 0
+    # Stable key (exit_time ISO) used to persist/resume this watch across a
+    # restart so a mid-window restart doesn't silently drop it. None = not yet
+    # persisted (in-memory only).
+    pending_key: Optional[str] = None
+
+    def persist_dict(self) -> Dict[str, Any]:
+        """The immutable params needed to resume this watch after a restart.
+        Accumulators are NOT stored — on resume they re-accumulate from the
+        restart forward (a quick restart loses only a few seconds of peak)."""
+        return {
+            "pending_key": self.pending_key,
+            "trade_id": self.trade_id,
+            "position_type": self.position_type,
+            "entry_time": self.entry_time.isoformat() if self.entry_time else None,
+            "exit_time": self.exit_time.isoformat() if self.exit_time else None,
+            "entry_spot": self.entry_spot, "entry_fut": self.entry_fut,
+            "spot_qty": self.spot_qty, "futures_qty": self.futures_qty,
+            "fees_usd": self.fees_usd, "target_usd": self.target_usd,
+            "exit_net": self.exit_net, "exit_reason": self.exit_reason,
+        }
+
+    @classmethod
+    def from_persist(cls, row: Dict[str, Any]) -> "ShadowHold":
+        def _dt(s):
+            return datetime.fromisoformat(s) if s else None
+        return cls(
+            trade_id=row.get("trade_id"), position_type=row.get("position_type", ""),
+            entry_time=_dt(row.get("entry_time")), exit_time=_dt(row.get("exit_time")),
+            entry_spot=row.get("entry_spot", 0.0), entry_fut=row.get("entry_fut", 0.0),
+            spot_qty=row.get("spot_qty", 0.0), futures_qty=row.get("futures_qty", 0.0),
+            fees_usd=row.get("fees_usd", 0.0), target_usd=row.get("target_usd", 0.0),
+            exit_net=row.get("exit_net", 0.0), exit_reason=row.get("exit_reason", ""),
+            pending_key=row.get("pending_key"),
+        )
 
 
 def exit_spread_levels(entry_spread: float, quantity: float, position_type: str,
@@ -227,6 +261,11 @@ class TradingEngine:
         # Fired when a shadow "what-if-held" watch completes its window, so the
         # app can persist the "would this stopped trade have reverted?" record.
         self.on_shadow_hold: Optional[Callable[[Dict[str, Any]], None]] = None
+        # Fired to persist/drop an IN-PROGRESS shadow watch so a restart mid-
+        # window doesn't lose it. Signature: on_shadow_pending(action, payload)
+        # where action is "save" (payload = persist_dict) or "delete"
+        # (payload = pending_key).
+        self.on_shadow_pending: Optional[Callable[[str, Any], None]] = None
         self.on_status: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
 
@@ -992,15 +1031,48 @@ class TradingEngine:
                 exit_net=round(pnl, 2),
                 exit_reason=(self._override_exit_reason or signal_type or ""),
             )
+            hold.pending_key = hold.exit_time.isoformat()
             self._shadow_holds.append(hold)
             if len(self._shadow_holds) > _SHADOW_HOLD_MAX_ACTIVE:
                 self._shadow_holds = self._shadow_holds[-_SHADOW_HOLD_MAX_ACTIVE:]
+            # Persist the watch so a restart mid-window resumes it instead of
+            # silently dropping it (the #1 reason the shadow "never updates").
+            if self.on_shadow_pending:
+                try:
+                    self.on_shadow_pending("save", hold.persist_dict())
+                except Exception as e:
+                    logger.debug("Shadow-pending save skipped: %s", e)
             logger.info("Shadow-hold armed for trade #%s (%s, %s $%.2f) — "
                         "tracking real reversion for %.0f min",
                         hold.trade_id, hold.position_type, hold.exit_reason,
                         hold.exit_net, _SHADOW_HOLD_MINUTES)
         except Exception as e:
             logger.debug("Shadow-hold arm skipped: %s", e)
+
+    def restore_shadow_holds(self, rows: List[Dict[str, Any]]) -> int:
+        """Re-arm persisted in-progress watches after a restart. Skips any whose
+        window has already elapsed during downtime (can't reconstruct their
+        peak). Returns the count resumed. Called once at startup by the app."""
+        resumed = 0
+        now = datetime.utcnow()
+        for row in rows or []:
+            try:
+                hold = ShadowHold.from_persist(row)
+                if not hold.exit_time:
+                    continue
+                if (now - hold.exit_time).total_seconds() / 60.0 >= _SHADOW_HOLD_MINUTES:
+                    # Window elapsed while we were down — drop the stale record.
+                    if self.on_shadow_pending:
+                        self.on_shadow_pending("delete", hold.pending_key)
+                    continue
+                self._shadow_holds.append(hold)
+                resumed += 1
+            except Exception as e:
+                logger.debug("Shadow-hold restore skipped: %s", e)
+        if resumed:
+            logger.info("Resumed %d in-progress shadow watch(es) after restart", resumed)
+        self._shadow_holds = self._shadow_holds[-_SHADOW_HOLD_MAX_ACTIVE:]
+        return resumed
 
     def _update_shadow_holds(self) -> None:
         """Mark each active watch to the current mids and finalize any whose
@@ -1070,6 +1142,9 @@ class TradingEngine:
                     'final_net_usd': h.final_net,
                     'verdict': verdict,
                 })
+            # The watch is complete — drop its in-progress persisted copy.
+            if self.on_shadow_pending and h.pending_key:
+                self.on_shadow_pending("delete", h.pending_key)
         except Exception as e:
             logger.debug("Shadow-hold finalize skipped for #%s: %s",
                          getattr(h, 'trade_id', '?'), e)

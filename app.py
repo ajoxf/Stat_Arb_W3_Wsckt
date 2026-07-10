@@ -399,6 +399,18 @@ def start_engine_loop():
             logger.warning("Failed to persist shadow hold: %s", _e)
     engine.on_shadow_hold = on_shadow_hold_callback
 
+    # Persist/drop IN-PROGRESS shadow watches so a restart mid-window resumes
+    # them instead of dropping them (why the shadow appeared to "never update").
+    def on_shadow_pending_callback(action: str, payload) -> None:
+        try:
+            if action == "save":
+                db.save_shadow_pending(payload)
+            elif action == "delete":
+                db.delete_shadow_pending(payload)
+        except Exception as _e:
+            logger.warning("Shadow-pending %s failed: %s", action, _e)
+    engine.on_shadow_pending = on_shadow_pending_callback
+
     # Give the auto-tuner a reference to the live engine so it can update config in-process
     auto_tuner.engine = engine
 
@@ -538,6 +550,13 @@ def start_engine_loop():
         else:
             logger.warning("Open trade exists for different asset (%s vs %s), not recovering",
                           open_trade.asset, config.asset)
+
+    # Resume any in-progress shadow "what-if-held" watches that were mid-window
+    # when the app last stopped, so a restart no longer silently drops them.
+    try:
+        engine.restore_shadow_holds(db.get_shadow_pending())
+    except Exception as e:
+        logger.warning("Shadow-pending restore failed: %s", e)
 
     # Set up WebSocket streaming if enabled
     use_websocket = os.getenv('USE_WEBSOCKET', 'true').lower() == 'true'
