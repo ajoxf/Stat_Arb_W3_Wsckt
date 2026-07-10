@@ -704,7 +704,7 @@
                     </span>
                     <span id="shadow-hold-badge" class="badge bg-info text-dark ms-2"
                           style="font-size: 0.62rem; display: none;"
-                          title="Shadow 'what-if-held': of the last stopped/losing trades, how many WOULD have reverted to break-even within 60 min of exit (measured on the real held position, not the z-score). High = the stops are cutting winners; low = the stops are right and the trade really was trending.">
+                          title="Shadow 'what-if-held': of the last EARLY exits (stops, trailing stops, sub-target reversions — everything except a clean target hit), how many WOULD have reverted to break-even within 60 min of exit, measured on the real held position, not the z-score. High = you're exiting too early (winners cut, stops premature); low = the exits were right.">
                         shadow: &mdash;
                     </span>
                 </small>

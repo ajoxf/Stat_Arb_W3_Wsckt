@@ -12,7 +12,7 @@ What it sets and WHY (short form):
                                        ABOVE a full reversion's value so it never fired
   - slippage_bps = 0.7             match real maker fills (was 1.5 -> inflated cost by ~2x)
   - hurst_enabled = False          Hurst is too often misleading — kept OFF (regime watched manually)
-  - trailing_stop 50/35            bank the peak before it round-trips to a loss
+  - trailing_stop OFF              with a reachable TP it only cut winners early (live #91: $0.15 vs $1.81)
   - z_stop_exit_enabled = False    in-trade stop is the %-capital dollar stop only
   - min_entry_rr_multiple = 0.0    let the 1% capital cap set the stop (0.3 was inert)
   - min_std_multiple = 2.0         edge gate: only trade sigma >= 2x cost
@@ -65,9 +65,13 @@ RECOMMENDED = {
     # ── exit profit gate (win floor on reversion exits) ──
     "exit_profit_gate_pct": 0.3,
     "exit_profit_gate_usd": 1.0,
-    # ── bank the peak ──
-    "trailing_stop_pct": 35.0,        # exit if P&L retraces 35% from its high
-    "trailing_stop_floor_pct": 50.0,  # ...once it has reached 50% of the target
+    # ── trailing stop: OFF ──
+    # With a REACHABLE take-profit (cost floor now 0), the trailing stop only
+    # cuts winners mid-reversion before TP fires — live #91 banked $0.15 via a
+    # 35% pullback while the spread kept reverting and would have hit TP for
+    # $1.81. Let the target bank the win; the dollar stop caps the loss at -1R.
+    "trailing_stop_pct": 0.0,
+    "trailing_stop_floor_pct": 0.0,
 }
 
 

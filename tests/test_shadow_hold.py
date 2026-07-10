@@ -137,10 +137,20 @@ def _trade(pnl):
                  quantity=0.03, spot_qty=1.06, pnl_usd=pnl)
 
 
-def test_open_skips_winners():
+def test_open_skips_clean_target_hit():
+    # A full PROFIT_TARGET capture got the intended profit — nothing to learn.
     eng = _armable_engine()
-    eng._open_shadow_hold(_trade(pnl=2.5), "EXIT")
+    eng._override_exit_reason = "PROFIT_TARGET"
+    eng._open_shadow_hold(_trade(pnl=2.5), "STOP_LOSS")
     assert eng._shadow_holds == []
+
+
+def test_open_arms_early_win():
+    # A small win that exited early (reversion EXIT / trailing, not a target
+    # hit) IS now tracked — it may have left money on the table (live #91).
+    eng = _armable_engine()
+    eng._open_shadow_hold(_trade(pnl=0.15), "EXIT")
+    assert len(eng._shadow_holds) == 1
 
 
 def test_open_arms_on_loss():

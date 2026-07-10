@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 # bot targets; perpetuals go higher but we use the more conservative ceiling.
 MAX_SAFE_FUTURES_LEVERAGE = 20
 
+# Exits worth ONE quick MAKER probe (to save the taker fee) before escalating
+# to a guaranteed MARKET close. A DOLLAR_STOP is frequent and fee-heavy; a
+# TRAILING_STOP banks a pulled-back PROFIT — forcing a guaranteed taker fee on
+# it ate ~$0.5 of a ~$0.65 win on live trade #91. Genuine loss stops
+# (STOP_LOSS / DAILY_LOSS) stay straight-to-MARKET — cutting a loss is urgent.
+MAKER_PROBE_EXIT_REASONS = ("DOLLAR_STOP", "TRAILING_STOP")
+
 
 @dataclass
 class EngineState:
@@ -956,9 +963,15 @@ class TradingEngine:
         the question only matters when we took a loss."""
         try:
             pnl = trade.pnl_usd if trade.pnl_usd is not None else 0.0
-            is_stop = (signal_type == "STOP_LOSS"
-                       or self._override_exit_reason in ("DOLLAR_STOP", "DAILY_LOSS"))
-            if not (is_stop or pnl < 0):
+            # Track every exit EXCEPT a clean profit-target hit. A PROFIT_TARGET
+            # exit already captured the full intended profit, so "should I have
+            # held?" doesn't apply. Everything else — stops, losses, AND small
+            # WINS that exited early (a trailing stop or a sub-target reversion)
+            # can leave money on the table: live #91 banked $0.15 via a trailing
+            # stop while the spread kept reverting to the TP level ($1.81). That
+            # under-capture is exactly what this watch is for.
+            reason = (trade.exit_reason or self._override_exit_reason or signal_type or "").upper()
+            if reason == "PROFIT_TARGET":
                 return
             if not (self.spot_tick and self.futures_tick):
                 return
@@ -1990,10 +2003,11 @@ class TradingEngine:
                 # does NOT set _last_exit_postonly_rejected below) — so the stop still
                 # escalates to a guaranteed MARKET close after N tries instead of
                 # resting forever while the spread runs.
-                if (trade.exit_reason or "").upper() == "DOLLAR_STOP" and not self._last_exit_was_market:
+                if (trade.exit_reason or "").upper() in MAKER_PROBE_EXIT_REASONS and not self._last_exit_was_market:
                     self._dollar_stop_maker_attempts += 1
                     logger.warning(
-                        "DOLLAR_STOP maker attempt %d/%d did not fill — %s",
+                        "Maker-probe exit (%s) attempt %d/%d did not fill — %s",
+                        (trade.exit_reason or "").upper(),
                         self._dollar_stop_maker_attempts, self._DOLLAR_STOP_MAKER_ATTEMPTS,
                         "MARKET on next attempt"
                         if self._dollar_stop_maker_attempts >= self._DOLLAR_STOP_MAKER_ATTEMPTS
@@ -3122,14 +3136,14 @@ class TradingEngine:
             # Non-stop exits keep the maker-first (LIMIT/POST_ONLY) path to save fees.
             _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD")
             exit_reason_u = (trade.exit_reason or "").upper()
-            is_stop_exit = exit_reason_u not in _NON_URGENT_EXITS
-            is_dollar_stop = exit_reason_u == "DOLLAR_STOP"
-            # DOLLAR_STOP is the frequent, fee-heavy exit — try MAKER first (up to N
+            is_stop_exit = exit_reason_u not in _NON_URGENT_EXITS   # keeps RFQ off for all stops
+            is_maker_probe = exit_reason_u in MAKER_PROBE_EXIT_REASONS
+            # Maker-probe exits (DOLLAR_STOP, TRAILING_STOP) try MAKER first (up to N
             # attempts) to save the taker fee, then fall back to MARKET to guarantee the
-            # close. STOP_LOSS / DAILY_LOSS stay straight-to-MARKET (genuinely urgent).
-            # RFQ stays off for every stop (allow_rfq below) — even a maker DOLLAR_STOP
-            # goes to the order book, never the slow request→quote→execute cycle.
-            if is_dollar_stop:
+            # close. A TRAILING_STOP banks a PROFIT — forcing a taker fee on it ate ~$0.5
+            # of a ~$0.65 win (live #91). STOP_LOSS / DAILY_LOSS stay straight-to-MARKET
+            # (cutting a loss is genuinely urgent). RFQ stays off for every stop.
+            if is_maker_probe:
                 use_market = self._dollar_stop_maker_attempts >= self._DOLLAR_STOP_MAKER_ATTEMPTS
             elif is_stop_exit:
                 use_market = True
@@ -3142,10 +3156,10 @@ class TradingEngine:
                     exit_reason_u, self._dollar_stop_maker_attempts, self._DOLLAR_STOP_MAKER_ATTEMPTS,
                     self._exit_postonly_reject_count, self._EXIT_POSTONLY_MARKET_AFTER,
                 )
-            elif is_dollar_stop:
+            elif is_maker_probe:
                 logger.info(
-                    "DOLLAR_STOP trying MAKER (attempt %d/%d) to save the taker fee before MARKET fallback",
-                    self._dollar_stop_maker_attempts + 1, self._DOLLAR_STOP_MAKER_ATTEMPTS,
+                    "%s trying MAKER (attempt %d/%d) to save the taker fee before MARKET fallback",
+                    exit_reason_u, self._dollar_stop_maker_attempts + 1, self._DOLLAR_STOP_MAKER_ATTEMPTS,
                 )
             # Exit the ACTUAL recorded position; beta-derived fallback for
             # legacy trades opened before spot_qty was recorded.

@@ -167,10 +167,11 @@
                     </div>
                 </div>
                 <div class="metric-note mt-3">
-                    Measured test of &ldquo;the price always reverts, just wait.&rdquo; Each stopped/losing
-                    trade's real held P&amp;L is tracked for 60&nbsp;min after exit (on the actual filled
-                    legs, immune to z / &beta; drift). <strong>High revert rate</strong> &rarr; stops may be too
-                    tight; <strong>low</strong> &rarr; the stops were right and the trade was genuinely trending.
+                    Measured test of &ldquo;did we exit too early?&rdquo; Every exit EXCEPT a clean target hit
+                    (stops, trailing stops, sub-target reversions, and small early wins) is tracked: its real
+                    held P&amp;L for 60&nbsp;min after exit, on the actual filled legs, immune to z / &beta; drift.
+                    <strong>High revert rate</strong> &rarr; you&rsquo;re leaving money on the table (winners cut,
+                    stops premature); <strong>low</strong> &rarr; the exits were right and the move was real.
                 </div>
                 {% else %}
                 <div class="text-secondary small">
