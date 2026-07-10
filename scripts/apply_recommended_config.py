@@ -8,11 +8,15 @@ changes. Safe to re-run (idempotent).
 What it sets and WHY (short form):
   - exit_signal_mode = spread      capture the REAL reversion, not drifted-mean z
   - profit_target_capital_pct = 0.5    a real win target (you had NONE: 0.0)
+  - profit_target_min_cost_mult = 0    OFF — the 1.5x cost floor was pushing the target
+                                       ABOVE a full reversion's value so it never fired
+  - slippage_bps = 0.7             match real maker fills (was 1.5 -> inflated cost by ~2x)
+  - hurst_enabled = True           regime gate: don't enter a trending spread
   - trailing_stop 50/35            bank the peak before it round-trips to a loss
   - z_stop_exit_enabled = False    in-trade stop is the %-capital dollar stop only
   - min_entry_rr_multiple = 0.0    let the 1% capital cap set the stop (0.3 was inert)
   - min_std_multiple = 2.0         edge gate: only trade sigma >= 2x cost
-  - stop 1.0% / gate 0.3% / max-hold 4x(20m) / cost-floor 1.5   kept, made explicit
+  - stop 1.0% / gate 0.3% / max-hold 4x(20m)   kept, made explicit
 
 The running engine loads config from the DB at start and on a Settings save, so
 after this writes: RESTART the app, OR open Settings and hit Save once, for the
@@ -37,6 +41,10 @@ RECOMMENDED = {
     "stop_loss_threshold": 5.5,       # entry ceiling (blocks |z| >= this)
     "std_filter_enabled": True,
     "min_std_multiple": 2.0,          # Edge Filter: sigma >= 2x round-trip cost
+    # ── regime gate: don't trade a trending spread ──
+    "hurst_enabled": True,            # block entries when H >= threshold (trending)
+    "hurst_threshold": 0.5,           # H < 0.5 = mean-reverting; strong trends (>=0.65) can't be HL-rescued
+    "slippage_bps": 0.7,              # match real maker fills — un-inflates the cost floor & edge gate
     # ── exit signal ──
     "exit_threshold": 0.5,
     "exit_signal_mode": "spread",     # freeze entry mean; exit on true reversion
@@ -44,7 +52,9 @@ RECOMMENDED = {
     "profit_target_sigma_frac": 0.0,
     "profit_target_capital_pct": 0.5,  # BANK THE WIN at BE + 0.5% of capital
     "profit_target_usd": 0.0,
-    "profit_target_min_cost_mult": 1.5,
+    "profit_target_min_cost_mult": 0.0,  # OFF — the %-capital target is already net-of-fees;
+                                         # the 1.5x floor was shoving the target ABOVE a full
+                                         # reversion's value, so it could never fire.
     # ── loss side (stop) ──
     "stop_loss_capital_pct": 1.0,     # 1% capital catastrophe cap = your 1R
     "max_loss_usd": 0.0,

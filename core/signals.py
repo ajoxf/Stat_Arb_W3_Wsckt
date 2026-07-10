@@ -538,6 +538,34 @@ class SignalGenerator:
         self.last_sd_level = current_sd_level
         return None
 
+    # Hurst at or above this is a STRONG trend that the half-life cross-check
+    # may NOT override. A finite half-life on a strongly-trending spread is the
+    # rolling MEAN running away from price, not price reverting to the mean —
+    # live evidence: H≈0.87 with HL≈250 periods "confirmed MR" on entry, yet
+    # every one of those trades stopped out in the trend. The HL rescue is only
+    # meant to save BORDERLINE cases (Hurst just over the threshold).
+    _HL_OVERRIDE_HURST_CEILING = 0.65
+
+    def _hurst_gate_ok(self) -> bool:
+        """True if the Hurst/regime filter permits an entry.
+
+        Passes when the filter is OFF, or Hurst is below the mean-reversion
+        threshold, or a finite half-life confirms mean reversion AND Hurst is
+        not in a strong trend. That last clause is the fix: previously ANY
+        finite half-life let a strongly-trending series through, so an enabled
+        Hurst filter never actually blocked the trend entries it exists for.
+        """
+        if not self.config.hurst_enabled:
+            return True
+        if self.current_hurst < self.config.hurst_threshold:
+            return True
+        # Trending by Hurst — only a finite half-life can rescue it, and only
+        # while the trend is not strong.
+        ceiling = max(self._HL_OVERRIDE_HURST_CEILING, self.config.hurst_threshold)
+        hl_confirms_mr = (self.current_half_life != float('inf')
+                          and 0 < self.current_half_life < self.lookback * 0.5)
+        return bool(hl_confirms_mr and self.current_hurst < ceiling)
+
     def generate_signal(self) -> Signal:
         """
         Generate trading signal based on current state.
@@ -563,16 +591,10 @@ class SignalGenerator:
                 half_life=self.current_half_life,
             )
 
-        # Check filters
-        # Half-life is a direct OU proof of mean reversion — use as cross-check so
-        # a finite positive half-life passes even when Hurst is above threshold.
-        _hl_confirms_mr = bool(
-            self.current_half_life != float('inf')
-            and 0 < self.current_half_life < self.lookback * 0.5
-        )
-        hurst_ok = bool(not self.config.hurst_enabled or (
-            self.current_hurst < self.config.hurst_threshold or _hl_confirms_mr
-        ))
+        # Check filters. The Hurst/regime gate now blocks strong trends even
+        # when a finite half-life is present (see _hurst_gate_ok) — a finite HL
+        # on a strongly-trending spread is not real mean reversion.
+        hurst_ok = self._hurst_gate_ok()
         std_ok, _ = self._check_std_filter()
 
         # Determine regime
