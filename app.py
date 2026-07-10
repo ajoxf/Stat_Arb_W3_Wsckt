@@ -954,10 +954,17 @@ def api_shadow_summary():
     the measured answer to 'the price always reverts, just wait' — read-only,
     no involvement in signals or orders."""
     try:
-        return jsonify(db.get_shadow_summary(limit=50))
+        summary = db.get_shadow_summary(limit=50)
+        # In-progress watches (armed, still inside their 60-min window) — so the
+        # panel can show "N tracking" the moment a trade closes, not 60 min later.
+        try:
+            summary['active'] = len(getattr(engine, '_shadow_holds', []) or [])
+        except Exception:
+            summary['active'] = 0
+        return jsonify(summary)
     except Exception as e:
         app.logger.debug("shadow-summary endpoint error: %s", e)
-        return jsonify({'count': 0, 'error': str(e)})
+        return jsonify({'count': 0, 'active': 0, 'error': str(e)})
 
 
 def _hedge_ratio_change_blocked(new_beta):

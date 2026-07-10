@@ -139,10 +139,10 @@
     <div class="col-12">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-hourglass-split me-2"></i>Shadow "What-if-Held" &mdash; did the stopped trades actually revert?</span>
-                <span class="badge bg-secondary" title="Number of stopped/losing trades whose post-exit path has completed its 60-minute watch window.">{{ shadow.count if shadow and shadow.count else 0 }} watched</span>
+                <span><i class="bi bi-hourglass-split me-2"></i>Shadow "What-if-Held" &mdash; did the exited trades actually revert?</span>
+                <span id="shadow-watched-badge" class="badge bg-secondary" title="Completed watches (finished their 60-min window) + any still in progress. Updates live.">{{ shadow.count if shadow and shadow.count else 0 }} watched</span>
             </div>
-            <div class="card-body">
+            <div class="card-body" id="shadow-panel-body">
                 {% if shadow and shadow.count %}
                 <div class="row text-center g-3">
                     <div class="col-md-3 col-6" title="Of the stopped/losing trades watched, how many would have climbed back to break-even within 60 min if you had NOT closed. High = your stops may be cutting trades that revert; low = the stops were right and the move was real.">
@@ -444,5 +444,56 @@
                 });
             });
     });
+
+    // ── Shadow "What-if-Held" live refresh ──────────────────────────────────
+    // The panel is server-rendered at page load, so completed watches never
+    // appeared without a manual reload. Poll the summary and rebuild the body,
+    // and show in-progress ("tracking") watches so it reacts the moment a trade
+    // closes — not 60 min later when the window finalizes.
+    function renderShadowPanel(s) {
+        const badge = document.getElementById('shadow-watched-badge');
+        const body = document.getElementById('shadow-panel-body');
+        if (!badge || !body || !s) return;
+        const done = s.count || 0;
+        const active = s.active || 0;
+        badge.textContent = done + ' watched' + (active ? ' · ' + active + ' tracking' : '');
+        const pctBe = Math.round((s.revert_be_rate || 0) * 100);
+        const pctTgt = Math.round((s.revert_target_rate || 0) * 100);
+        const peakCls = (s.avg_peak_usd >= 0) ? 'price-up' : 'price-down';
+        if (done > 0) {
+            body.innerHTML = `
+              <div class="row text-center g-3">
+                <div class="col-md-3 col-6"><div class="metric-value">${s.reverted_be}/${done}</div>
+                  <div class="metric-label">Reverted to break-even</div>
+                  <div class="metric-note">${pctBe}% of watched exits</div></div>
+                <div class="col-md-3 col-6"><div class="metric-value">${s.reverted_target}/${done}</div>
+                  <div class="metric-label">Reverted to target</div>
+                  <div class="metric-note">${pctTgt}% reached the target</div></div>
+                <div class="col-md-3 col-6"><div class="metric-value">${s.median_be_min != null ? s.median_be_min + 'm' : '—'}</div>
+                  <div class="metric-label">Median time to BE</div>
+                  <div class="metric-note">minutes after entry</div></div>
+                <div class="col-md-3 col-6"><div class="metric-value ${peakCls}">$${(s.avg_peak_usd || 0).toFixed(2)}</div>
+                  <div class="metric-label">Avg peak if held</div>
+                  <div class="metric-note">best net P&amp;L reached post-exit</div></div>
+              </div>
+              <div class="metric-note mt-3">
+                Measured test of &ldquo;did we exit too early?&rdquo; Every exit EXCEPT a clean target hit is
+                tracked: its real held P&amp;L for 60&nbsp;min after exit, on the actual filled legs, immune to
+                z / &beta; drift. <strong>High revert rate</strong> &rarr; you&rsquo;re leaving money on the
+                table; <strong>low</strong> &rarr; the exits were right.
+                ${active ? '<br><span class="text-secondary">' + active + ' watch(es) still in their 60-min window — results append as each finalizes.</span>' : ''}
+              </div>`;
+        } else {
+            body.innerHTML = `<div class="text-secondary small">
+                ${active ? active + ' trade(s) being tracked now — the first result appears here when its 60-min window closes.'
+                         : 'No completed watches yet. After a non-target exit, its real held P&amp;L is tracked for 60 min; results appear here once the first window closes.'}
+              </div>`;
+        }
+    }
+    function pollShadowPanel() {
+        fetch('/api/shadow-summary').then(r => r.json()).then(renderShadowPanel).catch(() => {});
+    }
+    pollShadowPanel();
+    setInterval(pollShadowPanel, 30000);
 </script>
 {% endblock %}
