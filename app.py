@@ -955,16 +955,24 @@ def api_shadow_summary():
     no involvement in signals or orders."""
     try:
         summary = db.get_shadow_summary(limit=50)
-        # In-progress watches (armed, still inside their 60-min window) — so the
-        # panel can show "N tracking" the moment a trade closes, not 60 min later.
+        # Live in-progress watches (their CURRENT held P&L), so the panel shows
+        # per-trade progress and moves while watches are open — instead of a
+        # single aggregate that only changes when a watch finalizes (up to 8 h).
         try:
-            summary['active'] = len(getattr(engine, '_shadow_holds', []) or [])
+            summary['tracking'] = engine.shadow_live_rows()
         except Exception:
-            summary['active'] = 0
+            summary['tracking'] = []
+        summary['active'] = len(summary['tracking'])
+        # A handful of the most recent COMPLETED watches, shown as individual
+        # rows so one trade reads as one trade — not an over-confident "100%".
+        try:
+            summary['recent'] = db.get_shadow_holds(limit=8)
+        except Exception:
+            summary['recent'] = []
         return jsonify(summary)
     except Exception as e:
         app.logger.debug("shadow-summary endpoint error: %s", e)
-        return jsonify({'count': 0, 'active': 0, 'error': str(e)})
+        return jsonify({'count': 0, 'active': 0, 'tracking': [], 'recent': [], 'error': str(e)})
 
 
 def _hedge_ratio_change_blocked(new_beta):

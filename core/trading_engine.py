@@ -1157,6 +1157,42 @@ class TradingEngine:
             logger.debug("Shadow-hold finalize skipped for #%s: %s",
                          getattr(h, 'trade_id', '?'), e)
 
+    def shadow_live_rows(self) -> List[Dict[str, Any]]:
+        """Live status of the in-progress shadow watches for the UI: each one's
+        CURRENT held net P&L (marked to the latest mids), minutes since entry,
+        peak so far, and whether it has crossed BE / target yet. Read-only,
+        best-effort — this is what makes the panel move while watches are open
+        (they otherwise only surface on finalize, up to 8 h later)."""
+        rows: List[Dict[str, Any]] = []
+        cs = self.spot_tick.mid if self.spot_tick else None
+        cf = self.futures_tick.mid if self.futures_tick else None
+        now = datetime.utcnow()
+        for h in getattr(self, '_shadow_holds', []) or []:
+            try:
+                cur = None
+                if cs is not None and cf is not None:
+                    gross = per_leg_gross_pnl(h.position_type, h.spot_qty, h.futures_qty,
+                                              h.entry_spot, h.entry_fut, cs, cf)
+                    cur = round(gross - h.fees_usd, 2)
+                mins = round((now - h.entry_time).total_seconds() / 60.0, 1) if h.entry_time else None
+                rows.append({
+                    'trade_id': h.trade_id,
+                    'exit_reason': h.exit_reason,
+                    'exit_net_usd': h.exit_net,
+                    'current_net_usd': cur,
+                    'mins_since_entry': mins,
+                    'hit_be': h.hit_be,
+                    'hit_be_min': h.hit_be_min,
+                    'hit_target': h.hit_target,
+                    'peak_net_usd': (h.peak_net if h.peak_net is not None else cur),
+                    'target_usd': round(h.target_usd, 2),
+                })
+            except Exception:
+                continue
+        # Newest first for display.
+        rows.sort(key=lambda r: (r.get('mins_since_entry') or 0))
+        return rows
+
     def _exit_spread_levels(self, trade: Trade) -> Optional[Dict[str, Any]]:
         """Live BE/TP/SL spread levels for the open trade, using the SAME
         target/stop/fee sources as the fast-exit overrides — so these are

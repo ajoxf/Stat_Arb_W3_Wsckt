@@ -140,46 +140,10 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-hourglass-split me-2"></i>Shadow "What-if-Held" &mdash; did the exited trades actually revert?</span>
-                <span id="shadow-watched-badge" class="badge bg-secondary" title="Completed watches (finished their 60-min window) + any still in progress. Updates live.">{{ shadow.count if shadow and shadow.count else 0 }} watched</span>
+                <span id="shadow-watched-badge" class="badge bg-secondary" title="Completed watches (reverted to target, or ran the full 8 h) · live watches still in progress. Live rows update every 30 s.">{{ shadow.count if shadow and shadow.count else 0 }} completed</span>
             </div>
             <div class="card-body" id="shadow-panel-body">
-                {% if shadow and shadow.count %}
-                <div class="row text-center g-3">
-                    <div class="col-md-3 col-6" title="How many watched exits would have reached the full profit target if held. Each finalizes the moment it hits TP.">
-                        <div class="metric-value">{{ shadow.reverted_target }}/{{ shadow.count }}</div>
-                        <div class="metric-label">Reverted to target</div>
-                        <div class="metric-note">{{ (shadow.revert_target_rate * 100) | round(0) | int }}% reached the target</div>
-                    </div>
-                    <div class="col-md-3 col-6" title="Median minutes-AFTER-ENTRY it took the trades that did revert to reach the take-profit level. This is the real hold time a winner needed — compare it with your Max Hold.">
-                        <div class="metric-value price-up">{{ shadow.median_target_min if shadow.median_target_min is not none else '—' }}{% if shadow.median_target_min is not none %}m{% endif %}</div>
-                        <div class="metric-label">Median time to TP</div>
-                        <div class="metric-note">minutes after entry</div>
-                    </div>
-                    <div class="col-md-3 col-6" title="How many watched exits would have climbed back at least to break-even if held.">
-                        <div class="metric-value">{{ shadow.reverted_be }}/{{ shadow.count }}</div>
-                        <div class="metric-label">Reverted to break-even</div>
-                        <div class="metric-note">{{ (shadow.revert_be_rate * 100) | round(0) | int }}% got back to even</div>
-                    </div>
-                    <div class="col-md-3 col-6" title="Median minutes-after-entry it took to get back to break-even. If it's longer than your Max Hold, no realistic hold would have caught it.">
-                        <div class="metric-value">{{ shadow.median_be_min if shadow.median_be_min is not none else '—' }}{% if shadow.median_be_min is not none %}m{% endif %}</div>
-                        <div class="metric-label">Median time to BE</div>
-                        <div class="metric-note">minutes after entry</div>
-                    </div>
-                </div>
-                <div class="metric-note mt-3">
-                    Measured test of &ldquo;did we exit too early, and how long would a winner have needed?&rdquo;
-                    Every exit EXCEPT a clean target hit is tracked: its real held P&amp;L on the actual filled
-                    legs (immune to z / &beta; drift) until it reverts to target or up to 8&nbsp;h. Avg peak if
-                    held: <strong class="{% if shadow.avg_peak_usd >= 0 %}price-up{% else %}price-down{% endif %}">${{ shadow.avg_peak_usd }}</strong>.
-                    <strong>High revert rate</strong> &rarr; you&rsquo;re leaving money on the table (winners cut,
-                    stops premature); <strong>low</strong> &rarr; the exits were right.
-                </div>
-                {% else %}
-                <div class="text-secondary small">
-                    No completed watches yet. After a non-target exit, its real held P&amp;L is tracked until it
-                    reverts to target (or up to 8&nbsp;h); results appear here as each finalizes.
-                </div>
-                {% endif %}
+                <div class="text-secondary small">Loading shadow watches&hellip;</div>
             </div>
         </div>
     </div>
@@ -451,49 +415,107 @@
     // appeared without a manual reload. Poll the summary and rebuild the body,
     // and show in-progress ("tracking") watches so it reacts the moment a trade
     // closes — not 60 min later when the window finalizes.
+    // Per-trade view: one row per watch, so a single outcome reads as ONE trade
+    // (not an over-confident "100%"), and the live rows move every poll as prices
+    // change — so the panel is never stale even though a watch can stay open for
+    // hours. Fixes the two problems with the old aggregate tiles:
+    //   • "misleading"      — 1/1 shown as 100% off a single trade
+    //   • "does not update" — the 8 h window kept the completed count flat
+    function _shMoney(v) {
+        if (v == null || v === undefined) return '<span class="text-secondary">—</span>';
+        const cls = (v >= 0) ? 'price-up' : 'price-down';
+        return '<span class="' + cls + '">' + (v >= 0 ? '+$' : '−$') + Math.abs(v).toFixed(2) + '</span>';
+    }
+    function _shMin(v) {
+        return (v == null) ? '<span class="text-secondary">—</span>' : (Math.round(v) + 'm');
+    }
     function renderShadowPanel(s) {
         const badge = document.getElementById('shadow-watched-badge');
         const body = document.getElementById('shadow-panel-body');
         if (!badge || !body || !s) return;
         const done = s.count || 0;
-        const active = s.active || 0;
-        badge.textContent = done + ' watched' + (active ? ' · ' + active + ' tracking' : '');
-        const pctBe = Math.round((s.revert_be_rate || 0) * 100);
-        const pctTgt = Math.round((s.revert_target_rate || 0) * 100);
-        const peakCls = (s.avg_peak_usd >= 0) ? 'price-up' : 'price-down';
-        if (done > 0) {
-            const tTp = (s.median_target_min != null) ? s.median_target_min + 'm' : '—';
-            const tBe = (s.median_be_min != null) ? s.median_be_min + 'm' : '—';
-            body.innerHTML = `
-              <div class="row text-center g-3">
-                <div class="col-md-3 col-6"><div class="metric-value">${s.reverted_target}/${done}</div>
-                  <div class="metric-label">Reverted to target</div>
-                  <div class="metric-note">${pctTgt}% reached the target</div></div>
-                <div class="col-md-3 col-6"><div class="metric-value price-up">${tTp}</div>
-                  <div class="metric-label">Median time to TP</div>
-                  <div class="metric-note">minutes after entry</div></div>
-                <div class="col-md-3 col-6"><div class="metric-value">${s.reverted_be}/${done}</div>
-                  <div class="metric-label">Reverted to break-even</div>
-                  <div class="metric-note">${pctBe}% got back to even</div></div>
-                <div class="col-md-3 col-6"><div class="metric-value">${tBe}</div>
-                  <div class="metric-label">Median time to BE</div>
-                  <div class="metric-note">minutes after entry</div></div>
-              </div>
-              <div class="metric-note mt-3">
-                Measured test of &ldquo;did we exit too early, and how long would a winner have needed?&rdquo;
-                Every exit EXCEPT a clean target hit is tracked on the actual filled legs (immune to z / &beta;
-                drift) until it reverts to target or up to 8&nbsp;h. Avg peak if held:
-                <strong class="${peakCls}">$${(s.avg_peak_usd || 0).toFixed(2)}</strong>.
-                <strong>High revert rate</strong> &rarr; you&rsquo;re leaving money on the table;
-                <strong>low</strong> &rarr; the exits were right.
-                ${active ? '<br><span class="text-secondary">' + active + ' watch(es) still open (finalize on target-hit or up to 8 h) — results append as each finalizes.</span>' : ''}
-              </div>`;
-        } else {
-            body.innerHTML = `<div class="text-secondary small">
-                ${active ? active + ' trade(s) being tracked now — a result appears the moment one reverts to target (or after up to 8 h).'
-                         : 'No completed watches yet. After a non-target exit, its real held P&amp;L is tracked until it reverts to target (or up to 8 h); results appear here as each finalizes.'}
-              </div>`;
+        const tracking = s.tracking || [];
+        const recent = s.recent || [];
+        const active = (s.active != null) ? s.active : tracking.length;
+        badge.textContent = done + ' completed' + (active ? ' · ' + active + ' live' : '');
+
+        let rows = '';
+        // Live in-progress watches — updated on every 30 s poll to the CURRENT
+        // held P&L on the real filled legs (immune to z / β drift).
+        tracking.forEach(t => {
+            const be = t.hit_be ? _shMin(t.hit_be_min) : '<span class="text-secondary">not yet</span>';
+            const tp = t.hit_target ? '<span class="price-up">hit</span>'
+                                    : '<span class="text-secondary">watching</span>';
+            const tgt = (t.target_usd != null) ? ' · tgt +$' + Number(t.target_usd).toFixed(2) : '';
+            rows += `
+              <tr>
+                <td>#${t.trade_id} <span class="text-secondary small">${t.position_type || ''}</span></td>
+                <td>${t.exit_reason || 'EXIT'} ${_shMoney(t.exit_net_usd)}</td>
+                <td><span class="badge bg-info text-dark">LIVE ${_shMin(t.mins_since_entry)}</span>
+                    now ${_shMoney(t.current_net_usd)}<span class="text-secondary small">${tgt}</span></td>
+                <td>${be}</td>
+                <td>${tp}</td>
+                <td>${_shMoney(t.peak_net_usd)}</td>
+              </tr>`;
+        });
+        // Completed watches — one row each, verdict spelled out per trade.
+        recent.forEach(r => {
+            let vcls = 'bg-secondary';
+            if (r.verdict === 'REVERTED TO TARGET') vcls = 'bg-success';
+            else if (r.verdict === 'REVERTED TO BREAK-EVEN') vcls = 'bg-warning text-dark';
+            else if (r.verdict === 'KEPT BLEEDING') vcls = 'bg-danger';
+            rows += `
+              <tr>
+                <td>#${r.trade_id} <span class="text-secondary small">${r.position_type || ''}</span></td>
+                <td>${r.exit_reason || 'EXIT'} ${_shMoney(r.exit_net_usd)}</td>
+                <td><span class="badge ${vcls}">${r.verdict || '—'}</span></td>
+                <td>${r.hit_break_even ? _shMin(r.hit_be_min) : '<span class="text-secondary">—</span>'}</td>
+                <td>${r.hit_target ? _shMin(r.hit_target_min) : '<span class="text-secondary">—</span>'}</td>
+                <td>${_shMoney(r.peak_net_usd)}</td>
+              </tr>`;
+        });
+
+        if (!rows) {
+            body.innerHTML = '<div class="text-secondary small">No shadow watches yet. After any early exit ' +
+                '(stop, trailing stop, sub-target reversion) the real held P&amp;L is tracked here until it ' +
+                'reverts to target or up to 8&nbsp;h &mdash; so you can see whether &ldquo;just hold&rdquo; would ' +
+                'actually have paid.</div>';
+            return;
         }
+
+        // Aggregate footer — a rate off 1–4 trades is noise, so say so rather
+        // than print a confident "100%".
+        let footer = '';
+        if (done === 0) {
+            footer = '<span class="text-secondary">No <em>completed</em> watches yet &mdash; the live rows above ' +
+                     'finalize when they revert to target or after up to 8&nbsp;h.</span>';
+        } else if (done < 5) {
+            footer = 'Only <strong>' + done + '</strong> completed watch' + (done === 1 ? '' : 'es') +
+                     ' &mdash; too few to read as a rate; judge the individual outcomes above. ' +
+                     'Avg peak if held ' + _shMoney(s.avg_peak_usd) + '.';
+        } else {
+            const pctTgt = Math.round((s.revert_target_rate || 0) * 100);
+            const pctBe  = Math.round((s.revert_be_rate || 0) * 100);
+            const tTp = (s.median_target_min != null) ? Math.round(s.median_target_min) + 'm' : '—';
+            const tBe = (s.median_be_min != null) ? Math.round(s.median_be_min) + 'm' : '—';
+            footer = 'Across <strong>' + done + '</strong> completed: <strong>' + s.reverted_target +
+                     '</strong> reverted to target (' + pctTgt + '%, median ' + tTp + '), <strong>' +
+                     s.reverted_be + '</strong> got back to break-even (' + pctBe + '%, median ' + tBe +
+                     '). Avg peak if held ' + _shMoney(s.avg_peak_usd) +
+                     '. High target-revert rate &rarr; exits are too early; low &rarr; the exits were right.';
+        }
+
+        body.innerHTML = `
+          <div class="table-responsive">
+            <table class="table table-striped table-hover mb-2">
+              <thead><tr>
+                <th>Trade</th><th>Exited at</th><th>What-if-held</th>
+                <th>Back to BE</th><th>Hit TP</th><th>Peak</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+          <div class="metric-note">${footer}</div>`;
     }
     function pollShadowPanel() {
         fetch('/api/shadow-summary').then(r => r.json()).then(renderShadowPanel).catch(() => {});
