@@ -3231,6 +3231,20 @@ class TradingEngine:
                        trail_desc,
                        "ON" if getattr(cfg, 'hurst_exit_enabled', False) else "off",
                        "ON" if getattr(cfg, 'velocity_exit_enabled', False) else "off")
+            # Exit-signal mode + gate decide whether a reversion EXIT can close a
+            # trade at a LOSS on drifted-mean z (the trade-32 failure). 'spread'
+            # exits only on a real spread recovery; 'zscore' (default) can book a
+            # loss when the rolling mean chases the price. Log both so a stale
+            # 'zscore' is visible at startup, not discovered on a bad close.
+            gate_pct = getattr(cfg, 'exit_profit_gate_pct', 0.0) or 0.0
+            gate_usd = getattr(cfg, 'exit_profit_gate_usd', 0.0)
+            gate_desc = (f"{gate_pct:g}% of capital" if gate_pct > 0 else
+                         (f"${gate_usd:g}" if gate_usd is not None and gate_usd >= 0 and gate_usd > 0
+                          else "OFF"))
+            logger.info("EXIT SIGNAL: mode=%s, exit_z=%.2f, profit_gate=%s, z_stop_exit=%s",
+                       getattr(cfg, 'exit_signal_mode', 'zscore'),
+                       cfg.exit_threshold, gate_desc,
+                       "ON" if getattr(cfg, 'z_stop_exit_enabled', False) else "off")
             logger.info("=" * 60)
 
             # Also log to CSV for easy reference
