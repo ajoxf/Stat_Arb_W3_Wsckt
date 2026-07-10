@@ -3217,6 +3217,20 @@ class TradingEngine:
             logger.info("FILTERS: hurst=%s (threshold=%.2f), std=%s (min=%.1fx)",
                        cfg.hurst_enabled, cfg.hurst_threshold,
                        cfg.std_filter_enabled, cfg.min_std_multiple)
+            # Post-entry overrides can silently cut a trade before its TP/SL.
+            # Log them in plain sight so a stale value (e.g. a 35% trailing stop
+            # left armed on a mean-reversion book) is visible at startup, not
+            # only discovered when it cuts a winner.
+            trail_pct = getattr(cfg, 'trailing_stop_pct', 0.0) or 0.0
+            trail_floor = getattr(cfg, 'trailing_stop_floor_pct', 0.0) or 0.0
+            trail_desc = ("OFF" if trail_pct <= 0 else
+                          f"{trail_pct:.0f}% pullback"
+                          + (f" (arms at {trail_floor:.0f}% of target)" if trail_floor > 0
+                             else " (arms from first profit)"))
+            logger.info("POST-ENTRY OVERRIDES: trailing_stop=%s, hurst_exit=%s, velocity_exit=%s",
+                       trail_desc,
+                       "ON" if getattr(cfg, 'hurst_exit_enabled', False) else "off",
+                       "ON" if getattr(cfg, 'velocity_exit_enabled', False) else "off")
             logger.info("=" * 60)
 
             # Also log to CSV for easy reference
