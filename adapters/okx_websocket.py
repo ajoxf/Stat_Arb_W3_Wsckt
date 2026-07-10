@@ -234,8 +234,16 @@ class OKXWebSocket:
                     break
 
             except asyncio.TimeoutError:
-                logger.warning("WebSocket receive timeout")
-                continue
+                # 35 s with no data on a ticker stream that normally pushes
+                # several times a second means the socket is silently dead (TCP
+                # up, no data — routine for a WS behind a load balancer). BREAK
+                # to trigger reconnect + resubscribe. A bare `continue` here
+                # re-armed receive() on the SAME dead socket forever, so ticks
+                # never resumed, the tick-driven heartbeat went stale, and the
+                # watchdog restarted the whole process every ~30 min. The
+                # execution adapter (okx_ws_adapter) already breaks here.
+                logger.warning("WebSocket receive timeout (35s) — connection stale, reconnecting")
+                break
 
             except asyncio.CancelledError:
                 break
