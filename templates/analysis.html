@@ -145,38 +145,39 @@
             <div class="card-body" id="shadow-panel-body">
                 {% if shadow and shadow.count %}
                 <div class="row text-center g-3">
-                    <div class="col-md-3 col-6" title="Of the stopped/losing trades watched, how many would have climbed back to break-even within 60 min if you had NOT closed. High = your stops may be cutting trades that revert; low = the stops were right and the move was real.">
-                        <div class="metric-value">{{ shadow.reverted_be }}/{{ shadow.count }}</div>
-                        <div class="metric-label">Reverted to break-even</div>
-                        <div class="metric-note">{{ (shadow.revert_be_rate * 100) | round(0) | int }}% of stopped trades</div>
-                    </div>
-                    <div class="col-md-3 col-6" title="How many would have reached the full profit target within the window — a stronger bar than break-even.">
+                    <div class="col-md-3 col-6" title="How many watched exits would have reached the full profit target if held. Each finalizes the moment it hits TP.">
                         <div class="metric-value">{{ shadow.reverted_target }}/{{ shadow.count }}</div>
                         <div class="metric-label">Reverted to target</div>
                         <div class="metric-note">{{ (shadow.revert_target_rate * 100) | round(0) | int }}% reached the target</div>
                     </div>
-                    <div class="col-md-3 col-6" title="Median minutes-after-entry it took the revert-to-break-even trades to get back to zero. Compare with your Max Hold — if it's longer, no realistic hold would have caught it.">
+                    <div class="col-md-3 col-6" title="Median minutes-AFTER-ENTRY it took the trades that did revert to reach the take-profit level. This is the real hold time a winner needed — compare it with your Max Hold.">
+                        <div class="metric-value price-up">{{ shadow.median_target_min if shadow.median_target_min is not none else '—' }}{% if shadow.median_target_min is not none %}m{% endif %}</div>
+                        <div class="metric-label">Median time to TP</div>
+                        <div class="metric-note">minutes after entry</div>
+                    </div>
+                    <div class="col-md-3 col-6" title="How many watched exits would have climbed back at least to break-even if held.">
+                        <div class="metric-value">{{ shadow.reverted_be }}/{{ shadow.count }}</div>
+                        <div class="metric-label">Reverted to break-even</div>
+                        <div class="metric-note">{{ (shadow.revert_be_rate * 100) | round(0) | int }}% got back to even</div>
+                    </div>
+                    <div class="col-md-3 col-6" title="Median minutes-after-entry it took to get back to break-even. If it's longer than your Max Hold, no realistic hold would have caught it.">
                         <div class="metric-value">{{ shadow.median_be_min if shadow.median_be_min is not none else '—' }}{% if shadow.median_be_min is not none %}m{% endif %}</div>
                         <div class="metric-label">Median time to BE</div>
                         <div class="metric-note">minutes after entry</div>
                     </div>
-                    <div class="col-md-3 col-6" title="Average of the best held-P&L each stopped trade reached in the window. If this is small and negative, 'just wait' would not have saved them.">
-                        <div class="metric-value {% if shadow.avg_peak_usd >= 0 %}price-up{% else %}price-down{% endif %}">${{ shadow.avg_peak_usd }}</div>
-                        <div class="metric-label">Avg peak if held</div>
-                        <div class="metric-note">best net P&amp;L reached post-exit</div>
-                    </div>
                 </div>
                 <div class="metric-note mt-3">
-                    Measured test of &ldquo;did we exit too early?&rdquo; Every exit EXCEPT a clean target hit
-                    (stops, trailing stops, sub-target reversions, and small early wins) is tracked: its real
-                    held P&amp;L for 60&nbsp;min after exit, on the actual filled legs, immune to z / &beta; drift.
+                    Measured test of &ldquo;did we exit too early, and how long would a winner have needed?&rdquo;
+                    Every exit EXCEPT a clean target hit is tracked: its real held P&amp;L on the actual filled
+                    legs (immune to z / &beta; drift) until it reverts to target or up to 8&nbsp;h. Avg peak if
+                    held: <strong class="{% if shadow.avg_peak_usd >= 0 %}price-up{% else %}price-down{% endif %}">${{ shadow.avg_peak_usd }}</strong>.
                     <strong>High revert rate</strong> &rarr; you&rsquo;re leaving money on the table (winners cut,
-                    stops premature); <strong>low</strong> &rarr; the exits were right and the move was real.
+                    stops premature); <strong>low</strong> &rarr; the exits were right.
                 </div>
                 {% else %}
                 <div class="text-secondary small">
-                    No completed watches yet. After a stopped or losing trade, its real held P&amp;L is
-                    tracked for 60&nbsp;min; results appear here once the first window closes.
+                    No completed watches yet. After a non-target exit, its real held P&amp;L is tracked until it
+                    reverts to target (or up to 8&nbsp;h); results appear here as each finalizes.
                 </div>
                 {% endif %}
             </div>
@@ -461,32 +462,36 @@
         const pctTgt = Math.round((s.revert_target_rate || 0) * 100);
         const peakCls = (s.avg_peak_usd >= 0) ? 'price-up' : 'price-down';
         if (done > 0) {
+            const tTp = (s.median_target_min != null) ? s.median_target_min + 'm' : '—';
+            const tBe = (s.median_be_min != null) ? s.median_be_min + 'm' : '—';
             body.innerHTML = `
               <div class="row text-center g-3">
-                <div class="col-md-3 col-6"><div class="metric-value">${s.reverted_be}/${done}</div>
-                  <div class="metric-label">Reverted to break-even</div>
-                  <div class="metric-note">${pctBe}% of watched exits</div></div>
                 <div class="col-md-3 col-6"><div class="metric-value">${s.reverted_target}/${done}</div>
                   <div class="metric-label">Reverted to target</div>
                   <div class="metric-note">${pctTgt}% reached the target</div></div>
-                <div class="col-md-3 col-6"><div class="metric-value">${s.median_be_min != null ? s.median_be_min + 'm' : '—'}</div>
+                <div class="col-md-3 col-6"><div class="metric-value price-up">${tTp}</div>
+                  <div class="metric-label">Median time to TP</div>
+                  <div class="metric-note">minutes after entry</div></div>
+                <div class="col-md-3 col-6"><div class="metric-value">${s.reverted_be}/${done}</div>
+                  <div class="metric-label">Reverted to break-even</div>
+                  <div class="metric-note">${pctBe}% got back to even</div></div>
+                <div class="col-md-3 col-6"><div class="metric-value">${tBe}</div>
                   <div class="metric-label">Median time to BE</div>
                   <div class="metric-note">minutes after entry</div></div>
-                <div class="col-md-3 col-6"><div class="metric-value ${peakCls}">$${(s.avg_peak_usd || 0).toFixed(2)}</div>
-                  <div class="metric-label">Avg peak if held</div>
-                  <div class="metric-note">best net P&amp;L reached post-exit</div></div>
               </div>
               <div class="metric-note mt-3">
-                Measured test of &ldquo;did we exit too early?&rdquo; Every exit EXCEPT a clean target hit is
-                tracked: its real held P&amp;L for 60&nbsp;min after exit, on the actual filled legs, immune to
-                z / &beta; drift. <strong>High revert rate</strong> &rarr; you&rsquo;re leaving money on the
-                table; <strong>low</strong> &rarr; the exits were right.
-                ${active ? '<br><span class="text-secondary">' + active + ' watch(es) still in their 60-min window — results append as each finalizes.</span>' : ''}
+                Measured test of &ldquo;did we exit too early, and how long would a winner have needed?&rdquo;
+                Every exit EXCEPT a clean target hit is tracked on the actual filled legs (immune to z / &beta;
+                drift) until it reverts to target or up to 8&nbsp;h. Avg peak if held:
+                <strong class="${peakCls}">$${(s.avg_peak_usd || 0).toFixed(2)}</strong>.
+                <strong>High revert rate</strong> &rarr; you&rsquo;re leaving money on the table;
+                <strong>low</strong> &rarr; the exits were right.
+                ${active ? '<br><span class="text-secondary">' + active + ' watch(es) still open (finalize on target-hit or up to 8 h) — results append as each finalizes.</span>' : ''}
               </div>`;
         } else {
             body.innerHTML = `<div class="text-secondary small">
-                ${active ? active + ' trade(s) being tracked now — the first result appears here when its 60-min window closes.'
-                         : 'No completed watches yet. After a non-target exit, its real held P&amp;L is tracked for 60 min; results appear here once the first window closes.'}
+                ${active ? active + ' trade(s) being tracked now — a result appears the moment one reverts to target (or after up to 8 h).'
+                         : 'No completed watches yet. After a non-target exit, its real held P&amp;L is tracked until it reverts to target (or up to 8 h); results appear here as each finalizes.'}
               </div>`;
         }
     }

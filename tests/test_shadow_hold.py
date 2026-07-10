@@ -31,6 +31,7 @@ def _bare_engine():
     eng.config = TradingConfig(hedge_ratio=35.58)
     eng._shadow_holds = []
     eng.on_shadow_hold = None
+    eng.on_shadow_pending = None
     eng._override_exit_reason = None
     eng.spot_tick = None
     eng.futures_tick = None
@@ -61,16 +62,18 @@ def test_update_accumulates_peak_trough_and_crossings():
     assert h.peak_net == pytest.approx(3.0)
     assert h.hit_be_min is not None
 
-    eng.spot_tick = _tick(106.0)
-    eng._update_shadow_holds()
-    assert h.hit_target is True                          # net +6 >= target 5
-    assert h.peak_net == pytest.approx(6.0)
-
-    eng.spot_tick = _tick(98.0)
+    eng.spot_tick = _tick(98.0)                          # net -2: new trough, still under target
     eng._update_shadow_holds()
     assert h.trough_net == pytest.approx(-2.0)
+    assert h.hit_target is False
     assert h.hit_be is True                              # sticky once crossed
-    assert eng._shadow_holds == [h]                      # window not elapsed
+    assert eng._shadow_holds == [h]                      # still active (target not hit)
+
+    eng.spot_tick = _tick(106.0)                         # net +6 >= target -> finalizes early
+    eng._update_shadow_holds()
+    assert h.hit_target is True
+    assert h.peak_net == pytest.approx(6.0)
+    assert eng._shadow_holds == []                       # finalized the moment it hit target
 
 
 def test_short_direction_uses_real_leg_pnl():

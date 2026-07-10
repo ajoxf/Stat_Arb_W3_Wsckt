@@ -58,8 +58,13 @@ class EngineState:
 # drift. It answers, with logged data instead of hindsight, "if we hadn't
 # closed, would it have reverted to profit, and when?" Pure observation: it
 # never touches signals, orders, or the live position.
-_SHADOW_HOLD_MINUTES = 60.0      # how long after exit to keep watching
-_SHADOW_HOLD_MAX_ACTIVE = 20     # bound memory: most recent N watches only
+# Watch each exited trade for a LONG window so a slow reversion isn't truncated
+# — the operator wants the actual time-to-BE and time-to-TP, however long it
+# takes. A watch finalizes EARLY the moment it reverts to its target (the
+# question is answered — record the time and free the slot), so only the
+# never-reverters live out the full window. Cap raised to match the longer life.
+_SHADOW_HOLD_MINUTES = 480.0     # 8 h ceiling (finalizes early on target-hit)
+_SHADOW_HOLD_MAX_ACTIVE = 50     # bound memory: most recent N watches only
 
 
 @dataclass
@@ -1100,8 +1105,11 @@ class TradingEngine:
                     h.hit_be, h.hit_be_min = True, round(mins, 1)
                 if not h.hit_target and h.target_usd > 0 and net >= h.target_usd:
                     h.hit_target, h.hit_target_min = True, round(mins, 1)
-                # Window is measured from EXIT — how long we'd have had to wait.
-                if (now - h.exit_time).total_seconds() / 60.0 >= _SHADOW_HOLD_MINUTES:
+                # Finalize the moment it reverts to target (question answered —
+                # time-to-TP and time-to-BE are recorded), else keep watching up
+                # to the window ceiling measured from EXIT.
+                elapsed_min = (now - h.exit_time).total_seconds() / 60.0
+                if h.hit_target or elapsed_min >= _SHADOW_HOLD_MINUTES:
                     self._finalize_shadow_hold(h)
                 else:
                     still_active.append(h)
