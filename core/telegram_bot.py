@@ -44,6 +44,25 @@ BOT_COMMAND_MENU = [
 ]
 
 
+def _parse_exit_mode(raw: str) -> str:
+    """Validator for /set exit_signal_mode — one of zscore | spread | hybrid."""
+    v = str(raw).strip().lower()
+    if v not in ("zscore", "spread", "hybrid"):
+        raise ValueError("exit mode must be one of: zscore, spread, hybrid")
+    return v
+
+
+def _parse_onoff(raw: str) -> bool:
+    """Validator for /set on a boolean config field. Plain bool(str) is wrong
+    (bool('off') is True), so parse the words explicitly."""
+    v = str(raw).strip().lower()
+    if v in ("on", "true", "yes", "1", "enabled", "enable"):
+        return True
+    if v in ("off", "false", "no", "0", "disabled", "disable"):
+        return False
+    raise ValueError("expected on/off (also accepts true/false, yes/no, 1/0)")
+
+
 def send_telegram_message(token: str, chat_id: str, text: str,
                           parse_mode: Optional[str] = "HTML") -> bool:
     """
@@ -1648,6 +1667,15 @@ class TelegramNotifier:
         "stop_loss_capital_pct": ("Stop % of Capital",   float, "%"),
         "rfq_notional_threshold_usd": ("RFQ Min Notional", float, "USD"),
         "rfq_max_markup_bps":    ("RFQ Max Markup",       float, "bps"),
+        # ── exit tuning (the overrides that can cut a trade before TP/EX) ──
+        # max_hold has TWO drivers: zero BOTH to fully disable it (the
+        # ×half-life form takes precedence over the minutes fallback).
+        "max_hold_halflife_mult": ("Max Hold ×half-life", float, "×"),
+        "trailing_stop_pct":     ("Trailing Stop",       float, "%"),
+        "trailing_stop_floor_pct": ("Trailing Floor",    float, "%"),
+        "exit_profit_gate_pct":  ("Exit Profit Gate",    float, "%"),
+        "exit_signal_mode":      ("Exit Mode",           _parse_exit_mode, ""),
+        "z_stop_exit_enabled":   ("Z-Stop Exit",         _parse_onoff, ""),
     }
 
     def _cmd_settings(self) -> None:
@@ -1695,10 +1723,14 @@ class TelegramNotifier:
         label, type_fn, unit = self._SETTABLE[key]
         try:
             value = type_fn(raw_value)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            # Prefer the validator's own message (e.g. the allowed exit modes);
+            # fall back to the expected type name for the plain float/int casts.
+            hint = str(e) or f"expected {getattr(type_fn, '__name__', 'a value')}"
             self._send(
                 f"<b>Invalid value for <code>{html.escape(key)}</code></b>\n"
-                f"Expected {type_fn.__name__}, got: <code>{html.escape(raw_value)}</code>"
+                f"<code>{html.escape(hint)}</code>\n"
+                f"got: <code>{html.escape(raw_value)}</code>"
             )
             return
 
