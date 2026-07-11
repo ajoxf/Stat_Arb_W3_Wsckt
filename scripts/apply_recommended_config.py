@@ -58,9 +58,16 @@ RECOMMENDED = {
     "max_loss_usd": 0.0,
     "min_entry_rr_multiple": 0.0,     # cap sets the stop; RR field left inert
     "z_stop_exit_enabled": False,     # dollar stop only once in the trade
-    # ── max hold ──
-    "max_hold_halflife_mult": 4.0,
-    "max_hold_minutes": 20.0,
+    # ── max hold: OFF ──
+    # Disabled by choice — nothing time-based should cut a slow-reverting trade.
+    # With max-hold off, a trade ends only on TP, a real reversion (spread back
+    # to the entry mean), or the -1R dollar stop. BOTH drivers must be 0: the
+    # ×half-life form takes precedence over the minutes fallback, so zeroing one
+    # alone leaves it armed. Safe with exit_profit_gate on ONLY in spread mode
+    # (the reversion exit fires deep in profit there, so the gate never bites and
+    # can't deadlock); if you switch to zscore/hybrid, also set the gate to 0.
+    "max_hold_halflife_mult": 0.0,
+    "max_hold_minutes": 0.0,
     "max_hold_z_progress_min": 0.5,
     # ── exit profit gate (win floor on reversion exits) ──
     "exit_profit_gate_pct": 0.3,
