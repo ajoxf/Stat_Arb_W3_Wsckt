@@ -2348,8 +2348,8 @@ function updateFilterStatus(elementId, passed, value) {
                 const entryZEl = document.getElementById('position-entry-z');
                 if (entryZEl) entryZEl.textContent = t.entry_zscore != null ? parseFloat(t.entry_zscore).toFixed(3) : '-';
 
-                const pnl = t.unrealized_pnl != null ? parseFloat(t.unrealized_pnl) : null;
-                renderPositionPnl(pnl);
+                const netPnl = t.unrealized_pnl != null ? parseFloat(t.unrealized_pnl) : null;
+                renderPositionPnl(netPnl);
 
                 const spotEntryEl = document.getElementById('position-entry-spot');
                 if (spotEntryEl) spotEntryEl.textContent = t.entry_spot_price ? '$' + parseFloat(t.entry_spot_price).toFixed(2) : '-';
