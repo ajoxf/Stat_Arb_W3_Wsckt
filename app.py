@@ -719,6 +719,19 @@ def on_tick_callback(spot_tick: MarketTick, futures_tick: MarketTick):
             'futures': futures_tick.to_dict(),
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
+        # Push the open position's live net P&L with every tick so the dashboard
+        # P&L tracks the spread in real time. Without it, the P&L only refreshed
+        # on trade/signal/poll events (the fallback poll is even suppressed while
+        # ticks stream), so it visibly lagged the live spread. Same _live_net_pnl
+        # the position card uses, so the value is consistent — just more often.
+        try:
+            ot = getattr(engine, 'open_trade', None)
+            if ot is not None:
+                net = engine._live_net_pnl(ot)
+                if net is not None:
+                    tick_data['position_pnl'] = round(net, 2)
+        except Exception:
+            pass
         # Use socketio.emit with explicit namespace for background thread
         socketio.emit('tick', tick_data, namespace='/')
     except Exception as e:

@@ -1122,6 +1122,12 @@
     // Socket event handlers
     socket.on('tick', function(data) {
         updatePrices(data.spot, data.futures);
+        // Live net P&L arrives with the tick — refresh the position P&L now so
+        // it tracks the spread every tick, not only on trade/poll events.
+        if (data.position_pnl != null && currentOpenTrade) {
+            currentOpenTrade.unrealized_pnl = data.position_pnl;
+            renderPositionPnl(parseFloat(data.position_pnl));
+        }
         lastUpdateTime = Date.now();
         // Feed just arrived — reset tick age display immediately
         const tickAgeEl = document.getElementById('tick-age-ms');
@@ -2285,6 +2291,27 @@ function updateFilterStatus(elementId, passed, value) {
         }
     }
 
+    // Render the open position's net P&L to the card + top bar. Shared by
+    // updatePosition() (trade/poll events) and the per-tick socket handler, so
+    // the P&L tracks the spread on every tick instead of lagging it.
+    function renderPositionPnl(pnl) {
+        const pnlEl = document.getElementById('position-pnl');
+        if (!pnlEl) return;
+        if (pnl != null && !isNaN(pnl)) {
+            pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+            pnlEl.className = pnl >= 0 ? 'price-up' : 'price-down';
+            const topPnl = document.getElementById('daily-pnl');
+            if (topPnl) {
+                topPnl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+                topPnl.classList.remove('balance-positive', 'balance-negative');
+                topPnl.classList.add(pnl >= 0 ? 'balance-positive' : 'balance-negative');
+            }
+        } else {
+            pnlEl.textContent = '-';
+            pnlEl.className = '';
+        }
+    }
+
     function updatePosition(position) {
         const badge = document.getElementById('position-badge');
         const details = document.getElementById('position-details');
@@ -2321,24 +2348,8 @@ function updateFilterStatus(elementId, passed, value) {
                 const entryZEl = document.getElementById('position-entry-z');
                 if (entryZEl) entryZEl.textContent = t.entry_zscore != null ? parseFloat(t.entry_zscore).toFixed(3) : '-';
 
-                const pnlEl = document.getElementById('position-pnl');
-                if (pnlEl) {
-                    const pnl = t.unrealized_pnl != null ? parseFloat(t.unrealized_pnl) : null;
-                    if (pnl != null) {
-                        pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
-                        pnlEl.className = pnl >= 0 ? 'price-up' : 'price-down';
-                        // Mirror fee-adjusted net P&L to top bar
-                        const topPnl = document.getElementById('daily-pnl');
-                        if (topPnl) {
-                            topPnl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
-                            topPnl.classList.remove('balance-positive', 'balance-negative');
-                            topPnl.classList.add(pnl >= 0 ? 'balance-positive' : 'balance-negative');
-                        }
-                    } else {
-                        pnlEl.textContent = '-';
-                        pnlEl.className = '';
-                    }
-                }
+                const pnl = t.unrealized_pnl != null ? parseFloat(t.unrealized_pnl) : null;
+                renderPositionPnl(pnl);
 
                 const spotEntryEl = document.getElementById('position-entry-spot');
                 if (spotEntryEl) spotEntryEl.textContent = t.entry_spot_price ? '$' + parseFloat(t.entry_spot_price).toFixed(2) : '-';
