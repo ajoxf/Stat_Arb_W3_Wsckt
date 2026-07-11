@@ -130,7 +130,7 @@
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Profit Target (% of capital)</label>
-                            <input type="number" class="form-control" id="profit_target_capital_pct" name="profit_target_capital_pct" value="{{ config.profit_target_capital_pct }}" step="0.1" min="0" max="5">
+                            <input type="number" class="form-control" id="profit_target_capital_pct" name="profit_target_capital_pct" value="{{ config.profit_target_capital_pct }}" step="0.01" min="0" max="5">
                             <small class="text-secondary"><strong>"Bank the win":</strong> close once net P&L (all fees paid) &ge; this % of capital-at-risk. Fires on <strong>P&L alone &mdash; no z-score condition</strong>, immune to rolling-mean drift. e.g. <strong>0.5</strong> = take profit at BE + 0.5% of capital. Used when &sigma;-fraction is 0; overrides the fixed USD field. Floored by the Cost Floor.</small>
                         </div>
                         <div class="col-md-4">
@@ -145,7 +145,7 @@
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Dollar Stop (% capital)</label>
-                            <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.1" min="0" max="20">
+                            <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.01" min="0" max="20">
                             <small class="text-secondary">% of capital-at-risk per trade &mdash; the hard <strong>catastrophe ceiling</strong>. Effective stop = the <em>tighter</em> of this and (target &divide; R:R). <strong>1.0&ndash;1.5</strong> at $100k+; at small size this is dollar-tiny, so set <strong>0</strong> and let R:R set the stop until you scale.</small>
                         </div>
                         <div class="col-md-4">
@@ -220,7 +220,7 @@
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Exit Profit Gate (% of capital)</label>
-                            <input type="number" class="form-control" id="exit_profit_gate_pct" name="exit_profit_gate_pct" value="{{ config.exit_profit_gate_pct }}" step="0.1" min="0" max="5">
+                            <input type="number" class="form-control" id="exit_profit_gate_pct" name="exit_profit_gate_pct" value="{{ config.exit_profit_gate_pct }}" step="0.01" min="0" max="5">
                             <small class="text-secondary">Scale-invariant form — <b>overrides the USD field when &gt; 0</b>. Required net profit past break-even as % of capital-at-risk (same denominator as the Dollar Stop %-capital). e.g. <b>0.5</b> = a reversion EXIT waits until net ≥ 0.5% of capital. The position card shows the resolved release level as the <b>EX</b> chip.</small>
                         </div>
                     </div>
