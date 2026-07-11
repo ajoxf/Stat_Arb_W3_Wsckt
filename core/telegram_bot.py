@@ -30,6 +30,7 @@ BOT_COMMAND_MENU = [
     ("positions", "Open positions: live P&L + exit levels"),
     ("trades",    "Recent closed trades"),
     ("pnl",       "P&L summary"),
+    ("shadow",    "What-if-held: did the exits revert?"),
     ("balance",   "Account balance"),
     ("pause",     "Algo OFF — halt new entries"),
     ("resume",    "Algo ON — allow new entries"),
@@ -151,6 +152,9 @@ class TelegramNotifier:
         # Update a single config field from Telegram.
         # Signature: set_config_cb(key: str, value) -> Dict with 'ok', 'message'.
         self.set_config_cb: Optional[Callable[[str, Any], Dict[str, Any]]] = None
+        # Shadow "what-if-held" summary (same shape as /api/shadow-summary):
+        # aggregate + 'tracking' (live watches) + 'recent' (completed verdicts).
+        self.shadow_cb: Optional[Callable[[], Dict[str, Any]]] = None
 
         # Pending /set input: key waiting for a value message.
         self._pending_set_key: Optional[str] = None
@@ -704,6 +708,7 @@ class TelegramNotifier:
             f"{'/trades':<{C}}recent closed trades",
             f"{'/balance':<{C}}account balance",
             f"{'/pnl':<{C}}P&amp;L summary",
+            f"{'/shadow':<{C}}what-if-held: did exits revert?",
             f"{'/eod':<{C}}end-of-day report",
             f"{'/closeall':<{C}}emergency: close all",
         ]
@@ -834,6 +839,7 @@ class TelegramNotifier:
             "/trades": self._cmd_trades,
             "/balance": self._cmd_balance,
             "/pnl": self._cmd_pnl,
+            "/shadow": self._cmd_shadow,
             "/eod": self._cmd_eod,
             "/closeall": self._cmd_closeall,
             "/optimize": self._cmd_optimize,
@@ -905,6 +911,7 @@ class TelegramNotifier:
             f"{'/trades':<{C}}recent closed trades",
             f"{'/balance':<{C}}account balance",
             f"{'/pnl':<{C}}P&amp;L summary",
+            f"{'/shadow':<{C}}what-if-held: did exits revert?",
             f"{'/eod':<{C}}end-of-day report",
             f"{'/optimize':<{C}}run parameter grid search",
             f"{'/settings':<{C}}show all tunable settings",
@@ -1489,6 +1496,82 @@ class TelegramNotifier:
         self._send(
             f"<b>P&amp;L SUMMARY  ·  {ts}</b>\n" + "\n".join(rows)
         )
+
+    def _cmd_shadow(self) -> None:
+        """Handle /shadow — the 'what-if-held' scenarios: of the trades we
+        exited, would they have reverted if held? Live in-progress watches
+        (their current held P&L) plus recent finished verdicts, and the
+        aggregate revert rates (with a small-sample caveat)."""
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        s = self.shadow_cb() if self.shadow_cb else None
+        if not s:
+            self._send(f"<b>SHADOW &middot; {ts}</b>\nWhat-if data not available.")
+            return
+
+        def _money(v):
+            if v is None:
+                return "&mdash;"
+            return ("+$" if v >= 0 else "&minus;$") + f"{abs(v):.2f}"
+
+        def _mins(v):
+            return f"{round(v)}m" if v is not None else "&mdash;"
+
+        done     = s.get("count", 0) or 0
+        tracking = s.get("tracking", []) or []
+        recent   = s.get("recent", []) or []
+        active   = s.get("active", len(tracking))
+
+        lines = [
+            f"<b>SHADOW &ldquo;WHAT-IF-HELD&rdquo;  &middot;  {ts}</b>",
+            "<i>If we&rsquo;d held the exits, did they revert?</i>",
+            f"<b>{done}</b> completed &middot; <b>{active}</b> live",
+        ]
+
+        # Live in-progress watches — current held P&L, marked to the latest mids.
+        if tracking:
+            lines.append("\n<b>&#9656; Tracking now</b>")
+            for t in tracking[:8]:
+                flags = ("BE&#10003;" if t.get("hit_be") else "BE&middot;") + " " + \
+                        ("TP&#10003;" if t.get("hit_target") else "TP&middot;")
+                lines.append(
+                    f"<code>#{t.get('trade_id')}</code> {html.escape(str(t.get('exit_reason') or ''))} "
+                    f"exit {_money(t.get('exit_net_usd'))} &rarr; now "
+                    f"<b>{_money(t.get('current_net_usd'))}</b> ({_mins(t.get('mins_since_entry'))}) "
+                    f"peak {_money(t.get('peak_net_usd'))} &middot; {flags}")
+
+        # Recent finished verdicts.
+        if recent:
+            lines.append("\n<b>&#9656; Recent verdicts</b>")
+            for r in recent[:6]:
+                tail = ""
+                if r.get("hit_target"):
+                    tail = f" &middot; TP {_mins(r.get('hit_target_min'))}"
+                elif r.get("hit_break_even"):
+                    tail = f" &middot; BE {_mins(r.get('hit_be_min'))}"
+                lines.append(
+                    f"<code>#{r.get('trade_id')}</code> {html.escape(str(r.get('verdict') or '&mdash;'))} "
+                    f"&middot; peak {_money(r.get('peak_net_usd'))}{tail}")
+
+        # Aggregate — only quote a rate once there are enough completed watches.
+        lines.append("")
+        if done == 0:
+            lines.append("<i>No completed watches yet &mdash; live rows finalize on "
+                         "target-hit or after 8&nbsp;h.</i>")
+        elif done < 5:
+            lines.append(f"<i>Only {done} completed &mdash; too few to read as a rate; "
+                         f"judge the rows above. Avg peak if held "
+                         f"{_money(s.get('avg_peak_usd'))}.</i>")
+        else:
+            pct_t = round((s.get("revert_target_rate", 0) or 0) * 100)
+            pct_b = round((s.get("revert_be_rate", 0) or 0) * 100)
+            lines.append(
+                f"Across <b>{done}</b>: {s.get('reverted_target', 0)} to target "
+                f"({pct_t}%, med {_mins(s.get('median_target_min'))}), "
+                f"{s.get('reverted_be', 0)} back to BE "
+                f"({pct_b}%, med {_mins(s.get('median_be_min'))}). "
+                f"Avg peak {_money(s.get('avg_peak_usd'))}.")
+
+        self._send("\n".join(lines))
 
     def _cmd_eod(self) -> None:
         """Handle /eod command - end-of-day summary."""

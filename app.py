@@ -497,6 +497,25 @@ def start_engine_loop():
             return {"ok": False, "message": str(e)}
 
     _telegram.set_config_cb = _set_config_from_telegram
+
+    def _shadow_for_telegram() -> dict:
+        """What-if-held summary for the /shadow command — same shape as
+        /api/shadow-summary: aggregate + live 'tracking' + completed 'recent'."""
+        try:
+            summary = db.get_shadow_summary(limit=50)
+        except Exception:
+            summary = {}
+        try:
+            summary['tracking'] = engine.shadow_live_rows()
+        except Exception:
+            summary['tracking'] = []
+        summary['active'] = len(summary.get('tracking') or [])
+        try:
+            summary['recent'] = db.get_shadow_holds(limit=8)
+        except Exception:
+            summary['recent'] = []
+        return summary
+    _telegram.shadow_cb = _shadow_for_telegram
     # Start command polling in a background daemon thread
     _telegram.start_polling()
 
