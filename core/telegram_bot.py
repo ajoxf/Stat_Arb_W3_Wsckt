@@ -1674,6 +1674,11 @@ class TelegramNotifier:
         "trailing_stop_pct":     ("Trailing Stop",       float, "%"),
         "trailing_stop_floor_pct": ("Trailing Floor",    float, "%"),
         "exit_profit_gate_pct":  ("Exit Profit Gate",    float, "%"),
+        # Profit target: the %-of-capital form is what actually governs TP
+        # (it takes precedence over profit_target_usd). The cost floor RAISES TP
+        # to N× the round-trip cost when > 0 — set 0 to keep TP at the %-target.
+        "profit_target_capital_pct": ("Profit Target %cap", float, "%"),
+        "profit_target_min_cost_mult": ("Profit Cost Floor", float, "×"),
         "exit_signal_mode":      ("Exit Mode",           _parse_exit_mode, ""),
         "z_stop_exit_enabled":   ("Z-Stop Exit",         _parse_onoff, ""),
     }
