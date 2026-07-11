@@ -100,6 +100,26 @@ class ShadowHold:
     # persisted (in-memory only).
     pending_key: Optional[str] = None
 
+    def __post_init__(self):
+        # Seed the accumulators with the EXIT sample. At the exit moment the
+        # held position is worth exit_net, so the peak/trough/break-even are
+        # known from t=0. Without this, peak starts at the first post-exit tick
+        # and can read LOWER than what we actually banked (live #97 showed a
+        # $0.71 peak on a $2.00 exit) — and because accumulators aren't
+        # persisted, a mid-window restart resets it to nothing and it
+        # re-accumulates from the restart forward. Seeding from exit_net (which
+        # IS persisted) makes the peak the true high-water mark since the trade
+        # ran, stable across restarts. Guarded on peak_net is None so a future
+        # persisted-accumulator restore is never clobbered.
+        if self.peak_net is None:
+            seed = round(self.exit_net, 2)
+            seed_min = (round((self.exit_time - self.entry_time).total_seconds() / 60.0, 1)
+                        if (self.entry_time and self.exit_time) else 0.0)
+            self.peak_net, self.peak_min = seed, seed_min
+            self.trough_net, self.trough_min = seed, seed_min
+            if seed >= 0:
+                self.hit_be, self.hit_be_min = True, seed_min
+
     def persist_dict(self) -> Dict[str, Any]:
         """The immutable params needed to resume this watch after a restart.
         Accumulators are NOT stored — on resume they re-accumulate from the

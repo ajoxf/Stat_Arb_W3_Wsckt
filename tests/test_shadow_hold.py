@@ -87,6 +87,23 @@ def test_short_direction_uses_real_leg_pnl():
     assert h.hit_be is True
 
 
+def test_peak_seeded_from_exit_value_never_reads_lower():
+    # The peak must reflect the position from the exit point, so it can never
+    # read LOWER than what we banked, and BE is already crossed at t=0 for a
+    # winning exit (live #97: a $2.00 exit was showing a $0.71 peak).
+    h = _hold(exit_net=2.0)
+    assert h.peak_net == pytest.approx(2.0)      # seeded, not None
+    assert h.trough_net == pytest.approx(2.0)
+    assert h.hit_be is True                       # +2 >= 0 at the exit
+    # If the held position only drifts DOWN after exit, the exit value stays peak.
+    eng = _bare_engine()
+    eng._shadow_holds = [h]
+    eng.spot_tick, eng.futures_tick = _tick(100.5), _tick(100.0)   # LONG held net +0.5
+    eng._update_shadow_holds()
+    assert h.final_net == pytest.approx(0.5)
+    assert h.peak_net == pytest.approx(2.0)       # exit value remains the high-water mark
+
+
 # ── finalize ────────────────────────────────────────────────────────────────
 
 def test_finalize_emits_record_when_window_elapsed():
