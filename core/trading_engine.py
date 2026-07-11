@@ -325,7 +325,15 @@ class TradingEngine:
         self._last_exit_postonly_rejected: bool = False
         self._exit_postonly_reject_count: int = 0
         self._EXIT_POSTONLY_RETRY_SEC = 10       # retry quickly — no exchange cooldown needed
-        self._EXIT_POSTONLY_MARKET_AFTER = 1     # fall back to MARKET after just 1 rejection
+        # Non-urgent exits (reversion EXIT / PROFIT_TARGET / MAX_HOLD) probe MAKER
+        # this many times before falling back to MARKET. These exits are in profit
+        # and fully protected (the gate/target only fire above break-even, the
+        # dollar stop caps the downside), so there's no urgency — spend a few maker
+        # retries to save the taker fee. Live #97 banked $2.00 gross $5.56 − fees
+        # $3.56: the exit went taker after just ONE post-only rejection and the fee
+        # ate 64% of the gross. Urgent loss stops are unaffected (straight to
+        # MARKET); DOLLAR_STOP/TRAILING_STOP use their own maker-probe counter.
+        self._EXIT_POSTONLY_MARKET_AFTER = 3
         # DOLLAR_STOP only: fire ONE quick maker probe (saves the taker fee IF the book
         # is momentarily calm), then MARKET to guarantee the close. Live evidence showed
         # that on a real stop the spread is diverging — exactly when a maker exit crosses
@@ -3279,8 +3287,9 @@ class TradingEngine:
         try:
             # Mirror the entry sizing: spot leg scaled by the hedge ratio.
             beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
-            # After a POST_ONLY rejection fall back to MARKET to guarantee the close.
-            # One rejection is enough — staying on limit just leaves the position open longer.
+            # Non-urgent exits probe MAKER up to _EXIT_POSTONLY_MARKET_AFTER times
+            # before MARKET — they're in profit and protected, so a few maker
+            # retries to save the taker fee are worth the small extra hold.
             # Urgent (stop) exits — STOP_LOSS / DOLLAR_STOP / DAILY_LOSS, i.e. any
             # reason that isn't a clean profit/normal/time exit — must close NOW:
             #   • straight to MARKET. A POST_ONLY limit can be cancelSource=31
