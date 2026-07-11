@@ -3263,6 +3263,14 @@ class TradingEngine:
                        getattr(cfg, 'exit_signal_mode', 'zscore'),
                        cfg.exit_threshold, gate_desc,
                        "ON" if getattr(cfg, 'z_stop_exit_enabled', False) else "off")
+            # Cost floor decides whether TP is your intended %-of-capital target
+            # or gets shoved up to N× the round-trip cost (which can make TP
+            # unreachable). Log it so a stale non-zero value is visible.
+            tp_cap_pct = getattr(cfg, 'profit_target_capital_pct', 0.0) or 0.0
+            cost_mult = getattr(cfg, 'profit_target_min_cost_mult', 0.0) or 0.0
+            logger.info("PROFIT TARGET: %.2f%% of capital, cost_floor=%s",
+                       tp_cap_pct,
+                       f"{cost_mult:g}x round-trip cost (RAISES TP)" if cost_mult > 0 else "OFF")
             logger.info("=" * 60)
 
             # Also log to CSV for easy reference
