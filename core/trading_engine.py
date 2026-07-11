@@ -3227,8 +3227,18 @@ class TradingEngine:
                           f"{trail_pct:.0f}% pullback"
                           + (f" (arms at {trail_floor:.0f}% of target)" if trail_floor > 0
                              else " (arms from first profit)"))
-            logger.info("POST-ENTRY OVERRIDES: trailing_stop=%s, hurst_exit=%s, velocity_exit=%s",
-                       trail_desc,
+            mh_mult = getattr(cfg, 'max_hold_halflife_mult', 0.0) or 0.0
+            mh_min = getattr(cfg, 'max_hold_minutes', 0.0) or 0.0
+            if mh_mult > 0:
+                mh_desc = f"{mh_mult:g}×half-life"
+                if mh_min > 0:
+                    mh_desc += f" (or {mh_min:g}min fallback)"
+            elif mh_min > 0:
+                mh_desc = f"{mh_min:g}min"
+            else:
+                mh_desc = "OFF"
+            logger.info("POST-ENTRY OVERRIDES: max_hold=%s, trailing_stop=%s, hurst_exit=%s, velocity_exit=%s",
+                       mh_desc, trail_desc,
                        "ON" if getattr(cfg, 'hurst_exit_enabled', False) else "off",
                        "ON" if getattr(cfg, 'velocity_exit_enabled', False) else "off")
             # Exit-signal mode + gate decide whether a reversion EXIT can close a
