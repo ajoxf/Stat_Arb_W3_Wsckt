@@ -1535,10 +1535,18 @@ class TradingEngine:
             if net_pnl <= gross_stop_threshold:
                 exit_type, reason_tag = "STOP_LOSS", "DOLLAR_STOP"
                 reason_detail = f"gross ${net_pnl + fee_hole:.2f} <= -${stop_usd:.2f} (net ${net_pnl:.2f})"
-        elif target_usd > 0 and net_pnl >= target_usd:
+        # PROFIT_TARGET and MAX_HOLD are checked INDEPENDENTLY of the dollar
+        # stop — NOT chained as `elif` to `if stop_usd > 0`. Arming a dollar
+        # stop makes stop_usd > 0, which used to take the first branch and skip
+        # these two entirely, so once a stop was set a trade sitting above its
+        # target never booked (live: P&L +$9.66 vs TP +$8.97, stuck open). The
+        # dollar stop still wins when both would fire: it runs first above and
+        # sets exit_type, and the `not exit_type` guard keeps these from
+        # overriding it.
+        if not exit_type and target_usd > 0 and net_pnl >= target_usd:
             exit_type, reason_tag = "EXIT", "PROFIT_TARGET"
             reason_detail = f"net ${net_pnl:.2f} >= ${target_usd:.2f}"
-        elif net_pnl > 0:
+        elif not exit_type and net_pnl > 0:
             # Max hold fires when already profitable AND the trade is not
             # actively reverting. The Z-progress gate suppresses the exit
             # while Z is more than halfway home — those trades should be left
