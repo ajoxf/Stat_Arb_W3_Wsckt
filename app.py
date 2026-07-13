@@ -1064,13 +1064,19 @@ def save_config():
                 logger.warning("Rejected hedge_ratio change via web: %s", _blk)
                 return jsonify({'success': False, 'error': _blk}), 409
 
-        telegram_fields = (
-            'telegram_enabled', 'telegram_bot_token', 'telegram_chat_id',
-            'telegram_notify_trades', 'telegram_notify_signals', 'telegram_notify_errors',
-        )
-        for field in telegram_fields:
-            if field not in data or data.get(field) == '***':
+        # Preserve every config field the form did NOT send. from_dict() below
+        # rebuilds the config from `data` alone, so any field missing from the
+        # payload resets to its dataclass default (0 / False). That is exactly
+        # how a live dollar stop (stop_loss_capital_pct) — and anything set via
+        # Telegram /set but not carried in this particular save — kept silently
+        # reverting to 0. Previously ONLY telegram_* was protected; protect ALL
+        # fields so an omitting/partial save can never zero a setting.
+        for field in TradingConfig.__dataclass_fields__:
+            if field not in data:
                 data[field] = getattr(existing, field)
+        # '***' from the Telegram panel means "keep the saved bot token".
+        if data.get('telegram_bot_token') == '***':
+            data['telegram_bot_token'] = existing.telegram_bot_token
 
         # Validate leverage bounds. OKX BTC/ETH perpetual SWAPs support up to 50x.
         for lev_key in ('spot_leverage', 'futures_leverage'):
