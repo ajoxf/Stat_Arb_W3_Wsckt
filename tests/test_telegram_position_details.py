@@ -43,7 +43,9 @@ def test_entry_notification_includes_geometry():
     msg = captured[0]
     assert "Levels" in msg and "BE -88.08" in msg and "SL -228.90" in msg
     assert "EX -47.76" in msg                      # gate active -> EX chip shown
-    assert "Level P&L" in msg and "TP +$1.78" in msg and "SL -$3.63 gross" in msg
+    # "Level P&L" renders as "Level P&amp;L" — _R HTML-escapes the '&' so Telegram
+    # accepts the message (it still displays as "Level P&L" to the user).
+    assert "Level P&amp;L" in msg and "TP +$1.78" in msg and "SL -$3.63 gross" in msg
     assert "Capital" in msg and "$484.00 at risk" in msg
     assert "Leg A Lots" in msg and "1.100000" in msg
     assert "Exec Ratio" in msg and "36.67" in msg
@@ -84,10 +86,10 @@ def test_positions_command_renders_live_snapshot():
     n._cmd_positions()
     assert len(captured) == 1
     msg = captured[0]
-    assert "Net P&L" in msg and "$-2.69" in msg
+    assert "Net P&amp;L" in msg and "$-2.69" in msg   # '&' HTML-escaped by _R
     assert "Δ Spread" in msg and "-80.25" in msg and "against" in msg
     assert "Levels" in msg and "BE -88.08" in msg
-    assert "Level P&L" in msg and "BE $0.00" in msg
+    assert "Level P&amp;L" in msg and "BE $0.00" in msg   # '&' HTML-escaped by _R
     assert "+0.12%" in msg                          # spot leg change since entry
     assert "EXPIRED" in msg                         # held 23m > max 18.6m
     assert "Leg A Lots" in msg and "ratio 36.67" in msg

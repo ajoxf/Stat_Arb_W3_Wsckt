@@ -569,8 +569,10 @@ class TelegramNotifier:
             # ── NUMBERS FIRST (exact scorecard) ──
             rows = [f"<b>🔬 AI Trade Review · #{trade_id}</b>", SEP]
             for item in scorecard:
-                rows.append(R(esc(str(item.get("label", ""))),
-                              esc(str(item.get("value", "")))))
+                # _R now HTML-escapes label and value itself, so pass raw text
+                # (double-escaping here would turn '&' into '&amp;amp;').
+                rows.append(R(str(item.get("label", "")),
+                              str(item.get("value", ""))))
             rows.append(R("Health", f"{health_icon} {health}/100  ·  conf {conf}/10"))
 
             # ── SETTINGS & LOGIC AUDIT (deterministic — the bug/misconfig catcher) ──
@@ -1847,8 +1849,23 @@ class TelegramNotifier:
 
     @staticmethod
     def _R(label: str, value: str) -> str:
-        """Bold label + inline-code value — renders larger than plain <pre> text."""
-        return f"<b>{label}</b>  <code>{value}</code>"
+        """Bold label + inline-code value — renders larger than plain <pre> text.
+
+        Both label and value are HTML-escaped here. They carry dynamic content —
+        engine error strings, block reasons, exit reasons, _outcome_tag prose,
+        even static labels like "Level P&L" — that can contain '<', '>' or '&'.
+        Unescaped, a single stray '<' (e.g. a Python exception message such as
+        "'<' not supported between instances of 'NoneType' and 'float'" landing
+        in status['error']) makes Telegram reject the ENTIRE message with 400
+        "Unsupported start tag", so it only survives via the plain-text fallback
+        in send_telegram_message. Escaping at this single choke point — every
+        label/value row goes through _R — fixes it for all callers at once.
+
+        quote=False: label/value are tag text / <code> content, never attribute
+        values, so quotes need no escaping — and leaving apostrophes intact keeps
+        error text like "'<' not supported" and "can't" readable."""
+        return (f"<b>{html.escape(str(label), quote=False)}</b>  "
+                f"<code>{html.escape(str(value), quote=False)}</code>")
 
     def _send(self, text: str) -> None:
         """Send a message in a background thread to avoid blocking the caller."""
