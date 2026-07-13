@@ -377,9 +377,15 @@ class TradingEngine:
         self._velocity_exit_count: int = 0
         # Rolling window of recent spreads for velocity calc (maxlen=120 = 60s at 0.5s/tick)
         self._spread_velocity_window: deque = deque(maxlen=120)
-        # Peak P&L (net, USD) observed since the trade was opened — used by the
-        # trailing stop to measure how far the trade has pulled back from its high.
+        # Peak P&L (net, USD) observed since the trade was opened — the true
+        # lifecycle high-water, recorded as trade.peak_net_usd for the drawdown /
+        # MAE analysis. NOT the trailing-stop reference (see _trail_peak below).
         self._peak_pnl: float = 0.0
+        # Trailing-stop anchor: the peak the trailing stop measures pullback from.
+        # Seeded the FIRST tick the stop is active (not at trade open), so enabling
+        # a trailing stop mid-trade re-anchors to the current P&L instead of firing
+        # on a stale pre-enable high. None = not yet anchored / stop disabled.
+        self._trail_peak = None
         # Trade lifecycle telemetry (reset on open): trough net P&L (MAE), the
         # z-score extremes seen during the hold, and how often/long the exit
         # profit gate held a reversion exit. Feeds the crisp post-trade
@@ -1655,22 +1661,38 @@ class TradingEngine:
         if not exit_type:
             trail_pct   = getattr(self.config, 'trailing_stop_pct', 0.0) or 0.0
             floor_pct   = getattr(self.config, 'trailing_stop_floor_pct', 0.0) or 0.0
-            if trail_pct > 0 and self._peak_pnl > 0:
-                # Floor gate: if floor_pct > 0 the trailing stop only arms once
-                # P&L has reached that fraction of the profit target.  This keeps
-                # the trailing stop from triggering on tiny early-trade wiggles.
-                floor_armed = True
-                if floor_pct > 0 and target_usd > 0:
-                    floor_armed = self._peak_pnl >= floor_pct / 100.0 * target_usd
-                if floor_armed:
-                    trail_trigger = self._peak_pnl * (1.0 - trail_pct / 100.0)
-                    if net_pnl < trail_trigger:
-                        exit_type   = "EXIT"
-                        reason_tag  = "TRAILING_STOP"
-                        reason_detail = (
-                            f"P&L ${net_pnl:.2f} pulled back {trail_pct:.0f}% from peak "
-                            f"${self._peak_pnl:.2f} (trigger=${trail_trigger:.2f})"
-                        )
+            if trail_pct > 0:
+                # Anchor to the CURRENT net the first tick the stop is active, then
+                # track the high-water forward from there — deliberately NOT the
+                # trade's all-time high (_peak_pnl). Enabling a trailing stop
+                # mid-trade (or re-enabling it) must not instantly fire on a peak
+                # reached earlier while the feature was off: live #103 was turned
+                # on at −$31 with a stale +$7.38 high and force-closed the loss.
+                # Seeding from the current net makes the stop start trailing "from
+                # here" — it only arms once a NEW peak clears the floor, so an
+                # underwater trade is never force-closed just by switching it on.
+                if self._trail_peak is None or net_pnl > self._trail_peak:
+                    self._trail_peak = net_pnl
+                if self._trail_peak > 0:
+                    # Floor gate: if floor_pct > 0 the trailing stop only arms once
+                    # P&L has reached that fraction of the profit target.  This keeps
+                    # the trailing stop from triggering on tiny early-trade wiggles.
+                    floor_armed = True
+                    if floor_pct > 0 and target_usd > 0:
+                        floor_armed = self._trail_peak >= floor_pct / 100.0 * target_usd
+                    if floor_armed:
+                        trail_trigger = self._trail_peak * (1.0 - trail_pct / 100.0)
+                        if net_pnl < trail_trigger:
+                            exit_type   = "EXIT"
+                            reason_tag  = "TRAILING_STOP"
+                            reason_detail = (
+                                f"P&L ${net_pnl:.2f} pulled back {trail_pct:.0f}% from peak "
+                                f"${self._trail_peak:.2f} (trigger=${trail_trigger:.2f})"
+                            )
+            else:
+                # Disabled — drop the anchor so a later re-enable re-anchors fresh
+                # from the P&L at that moment, not a stale pre-disable peak.
+                self._trail_peak = None
 
         # ── 4. Hurst regime-change exit ────────────────────────────────────
         # H rising above threshold for N consecutive ticks means the spread has
@@ -2092,6 +2114,7 @@ class TradingEngine:
         self._velocity_exit_count = 0
         self._spread_velocity_window.clear()
         self._peak_pnl = 0.0
+        self._trail_peak = None
         self._trough_pnl = 0.0
         self._peak_at = None
         self._trough_at = None
@@ -2417,6 +2440,7 @@ class TradingEngine:
         self._velocity_exit_count = 0
         self._spread_velocity_window.clear()
         self._peak_pnl = 0.0
+        self._trail_peak = None
 
         # Apply post-stop-loss cooldown to prevent immediate re-entry
         if signal.signal_type == "STOP_LOSS":
