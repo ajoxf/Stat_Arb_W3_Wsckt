@@ -2446,10 +2446,18 @@ def close_current_position():
     if not engine.spot_tick or not engine.futures_tick:
         return jsonify({'success': False, 'error': 'No price data available'}), 400
 
-    # Build a manual signal using current market state.  signal_type="MANUAL"
-    # is stored directly as trade.exit_reason by _close_position.
+    # Two close modes from the dashboard:
+    #   'market' (default) → reason MANUAL → instant MARKET close (taker fee),
+    #   'limit'            → reason MANUAL_LIMIT → maker-first close (saves the
+    #                        taker fee; falls back to MARKET after N rejections).
+    # The reason string IS the routing signal in _execute_exit_orders.
+    mode = str((request.get_json(silent=True) or {}).get('mode', 'market')).lower()
+    reason = "MANUAL_LIMIT" if mode == 'limit' else "MANUAL"
+
+    # Build a manual signal using current market state.  signal_type is stored
+    # directly as trade.exit_reason by _close_position.
     manual_signal = Signal(
-        signal_type="MANUAL",
+        signal_type=reason,
         zscore=engine.signal_generator.current_zscore,
         spread=engine.signal_generator.current_spread,
         spread_mean=engine.signal_generator.current_mean,

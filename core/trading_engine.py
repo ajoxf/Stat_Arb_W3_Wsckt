@@ -3336,7 +3336,9 @@ class TradingEngine:
             #   • never via RFQ — the request→quote→execute cycle is seconds, far
             #     too slow when the spread is moving against us.
             # Non-stop exits keep the maker-first (LIMIT/POST_ONLY) path to save fees.
-            _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD")
+            # MANUAL_LIMIT is the dashboard's "close as maker" button — the user
+            # chose the fee-saving path over the instant MARKET close (MANUAL).
+            _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD", "MANUAL_LIMIT")
             exit_reason_u = (trade.exit_reason or "").upper()
             is_stop_exit = exit_reason_u not in _NON_URGENT_EXITS   # keeps RFQ off for all stops
             is_maker_probe = exit_reason_u in MAKER_PROBE_EXIT_REASONS

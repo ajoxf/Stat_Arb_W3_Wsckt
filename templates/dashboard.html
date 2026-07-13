@@ -333,9 +333,16 @@
         <div class="card mb-3">
             <div class="card-header py-2 d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-lightning me-2"></i>Signal & Position</span>
-                <button class="btn btn-sm btn-outline-warning py-0" id="close-position-btn" onclick="closePosition()" style="display: none; font-size: 0.75rem;">
-                    <i class="bi bi-x-circle"></i> Close
-                </button>
+                <span id="close-btn-group" style="display: none;">
+                    <button class="btn btn-sm btn-danger py-0" id="close-market-btn" onclick="closePosition('market')" style="font-size: 0.75rem;"
+                            title="Close NOW at market price — guaranteed instant fill, pays the taker fee. Use when it's urgent.">
+                        <i class="bi bi-lightning-charge"></i> Market
+                    </button>
+                    <button class="btn btn-sm btn-outline-success py-0 ms-1" id="close-limit-btn" onclick="closePosition('limit')" style="font-size: 0.75rem;"
+                            title="Close as maker (limit) — saves the taker fee, may take a bit longer; falls back to market if it can't fill. Use when not urgent.">
+                        <i class="bi bi-cash-coin"></i> Limit
+                    </button>
+                </span>
             </div>
             <div class="card-body py-2">
                 <div class="row align-items-center">
@@ -2315,7 +2322,7 @@ function updateFilterStatus(elementId, passed, value) {
     function updatePosition(position) {
         const badge = document.getElementById('position-badge');
         const details = document.getElementById('position-details');
-        const closeBtn = document.getElementById('close-position-btn');
+        const closeBtn = document.getElementById('close-btn-group');
 
         if (position === 'NONE' || !position) {
             badge.textContent = 'FLAT';
@@ -3185,13 +3192,27 @@ function updateFilterStatus(elementId, passed, value) {
     updateActiveOrders();
     setInterval(updateActiveOrders, 1000);
 
-    function closePosition() {
-        if (!confirm('Close the current position manually?')) return;
-        const btn = document.getElementById('close-position-btn');
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Closing...'; }
+    function closePosition(mode) {
+        // Two ways to close by hand, user picks by urgency:
+        //   'market' — instant fill, pays the taker fee (use when it's urgent)
+        //   'limit'  — maker order, saves the fee, may take longer / falls back
+        //              to market if it can't fill (use when not urgent)
+        mode = (mode === 'limit') ? 'limit' : 'market';
+        const prompt = (mode === 'limit')
+            ? 'Close as a LIMIT (maker) order? Saves the taker fee but may take longer to fill.'
+            : 'Close NOW at MARKET? Instant fill, but pays the taker fee.';
+        if (!confirm(prompt)) return;
+        const mktBtn = document.getElementById('close-market-btn');
+        const limBtn = document.getElementById('close-limit-btn');
+        const clicked = (mode === 'limit') ? limBtn : mktBtn;
+        // Disable both so the user can't fire market and limit at once.
+        if (mktBtn) mktBtn.disabled = true;
+        if (limBtn) limBtn.disabled = true;
+        if (clicked) clicked.innerHTML = '<i class="bi bi-hourglass-split"></i> Closing...';
         fetch('/api/engine/close-position', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode })
         })
         .then(response => response.json())
         .then(data => {
@@ -3208,7 +3229,8 @@ function updateFilterStatus(elementId, passed, value) {
         })
         .catch(err => showToast('Error: ' + err, 'danger'))
         .finally(() => {
-            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-x-circle"></i> Close'; }
+            if (mktBtn) { mktBtn.disabled = false; mktBtn.innerHTML = '<i class="bi bi-lightning-charge"></i> Market'; }
+            if (limBtn) { limBtn.disabled = false; limBtn.innerHTML = '<i class="bi bi-cash-coin"></i> Limit'; }
         });
     }
 
