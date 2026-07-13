@@ -216,8 +216,16 @@ class TelegramNotifier:
         spot_exit   = self._spot_maker_bps    if self._exit_mode  == "LIMIT" else self._spot_taker_bps
         fut_exit    = self._futures_maker_bps if self._exit_mode  == "LIMIT" else self._futures_taker_bps
         total_bps = spot_entry + fut_entry + spot_exit + fut_exit
-        fee_usd = notional_usd * total_bps / 10000.0
-        return fee_usd, total_bps
+        # notional_usd is the COMBINED two-leg notional, and total_bps sums all
+        # four per-leg fills. Each leg's fee applies to ~half that combined
+        # notional (the legs are ~equal, delta-neutral), so divide by 2 — else
+        # the four per-leg rates get charged on the full two-leg notional and the
+        # estimate DOUBLES (live #104: a real +$1.77 win was shown as -$0.18 net).
+        fee_usd = notional_usd * total_bps / 10000.0 / 2.0
+        # Report the round-trip cost as bps of the full notional so the $ and the
+        # bps label reconcile: fee_usd == notional_usd * fee_bps_roundtrip / 1e4.
+        fee_bps_roundtrip = total_bps / 2.0
+        return fee_usd, fee_bps_roundtrip
 
     # ------------------------------------------------------------------
     # Notifications
@@ -1507,16 +1515,16 @@ class TelegramNotifier:
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         s = self.shadow_cb() if self.shadow_cb else None
         if not s:
-            self._send(f"<b>SHADOW &middot; {ts}</b>\nWhat-if data not available.")
+            self._send(f"<b>SHADOW · {ts}</b>\nWhat-if data not available.")
             return
 
         def _money(v):
             if v is None:
-                return "&mdash;"
-            return ("+$" if v >= 0 else "&minus;$") + f"{abs(v):.2f}"
+                return "—"
+            return ("+$" if v >= 0 else "−$") + f"{abs(v):.2f}"
 
         def _mins(v):
-            return f"{round(v)}m" if v is not None else "&mdash;"
+            return f"{round(v)}m" if v is not None else "—"
 
         done     = s.get("count", 0) or 0
         tracking = s.get("tracking", []) or []
@@ -1524,43 +1532,43 @@ class TelegramNotifier:
         active   = s.get("active", len(tracking))
 
         lines = [
-            f"<b>SHADOW &ldquo;WHAT-IF-HELD&rdquo;  &middot;  {ts}</b>",
-            "<i>If we&rsquo;d held the exits, did they revert?</i>",
-            f"<b>{done}</b> completed &middot; <b>{active}</b> live",
+            f"<b>SHADOW “WHAT-IF-HELD”  ·  {ts}</b>",
+            "<i>If we’d held the exits, did they revert?</i>",
+            f"<b>{done}</b> completed · <b>{active}</b> live",
         ]
 
         # Live in-progress watches — current held P&L, marked to the latest mids.
         if tracking:
-            lines.append("\n<b>&#9656; Tracking now</b>")
+            lines.append("\n<b>▸ Tracking now</b>")
             for t in tracking[:8]:
-                flags = ("BE&#10003;" if t.get("hit_be") else "BE&middot;") + " " + \
-                        ("TP&#10003;" if t.get("hit_target") else "TP&middot;")
+                flags = ("BE✓" if t.get("hit_be") else "BE·") + " " + \
+                        ("TP✓" if t.get("hit_target") else "TP·")
                 lines.append(
                     f"<code>#{t.get('trade_id')}</code> {html.escape(str(t.get('exit_reason') or ''))} "
-                    f"exit {_money(t.get('exit_net_usd'))} &rarr; now "
+                    f"exit {_money(t.get('exit_net_usd'))} → now "
                     f"<b>{_money(t.get('current_net_usd'))}</b> ({_mins(t.get('mins_since_entry'))}) "
-                    f"peak {_money(t.get('peak_net_usd'))} &middot; {flags}")
+                    f"peak {_money(t.get('peak_net_usd'))} · {flags}")
 
         # Recent finished verdicts.
         if recent:
-            lines.append("\n<b>&#9656; Recent verdicts</b>")
+            lines.append("\n<b>▸ Recent verdicts</b>")
             for r in recent[:6]:
                 tail = ""
                 if r.get("hit_target"):
-                    tail = f" &middot; TP {_mins(r.get('hit_target_min'))}"
+                    tail = f" · TP {_mins(r.get('hit_target_min'))}"
                 elif r.get("hit_break_even"):
-                    tail = f" &middot; BE {_mins(r.get('hit_be_min'))}"
+                    tail = f" · BE {_mins(r.get('hit_be_min'))}"
                 lines.append(
-                    f"<code>#{r.get('trade_id')}</code> {html.escape(str(r.get('verdict') or '&mdash;'))} "
-                    f"&middot; peak {_money(r.get('peak_net_usd'))}{tail}")
+                    f"<code>#{r.get('trade_id')}</code> {html.escape(str(r.get('verdict') or '—'))} "
+                    f"· peak {_money(r.get('peak_net_usd'))}{tail}")
 
         # Aggregate — only quote a rate once there are enough completed watches.
         lines.append("")
         if done == 0:
-            lines.append("<i>No completed watches yet &mdash; live rows finalize on "
-                         "target-hit or after 8&nbsp;h.</i>")
+            lines.append("<i>No completed watches yet — live rows finalize on "
+                         "target-hit or after 8 h.</i>")
         elif done < 5:
-            lines.append(f"<i>Only {done} completed &mdash; too few to read as a rate; "
+            lines.append(f"<i>Only {done} completed — too few to read as a rate; "
                          f"judge the rows above. Avg peak if held "
                          f"{_money(s.get('avg_peak_usd'))}.</i>")
         else:
@@ -1683,7 +1691,7 @@ class TelegramNotifier:
         # to be replaced — the reply won't go out afterwards.
         self._send(
             f"<b>♻️ RESTART  ·  {ts}</b>\n"
-            "Re-launching now — back in ~15&ndash;30s.\n"
+            "Re-launching now — back in ~15–30s.\n"
             "Any open position stays on the exchange and is re-adopted on "
             "startup (stop &amp; target resume).\n"
             "Send <code>/ping</code> in a minute — if it answers, we're back. "
