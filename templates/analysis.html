@@ -132,6 +132,26 @@
             <div class="metric-note">EV per trade in risk units.</div>
         </div></div>
     </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Max Drawdown — the largest peak-to-trough drop in your cumulative realised P&L (your worst booked losing streak). Shown in $ and as a % of total account equity. This is the capital-level downside, not a single trade.">
+            <div class="metric-value price-down">-${{ '%.2f' % drawdown.max_usd }}</div>
+            <div class="metric-label">Max Drawdown</div>
+            <div class="metric-note">
+                {% if drawdown.max_pct is not none %}{{ '%.2f' % drawdown.max_pct }}% of capital{% else %}on total capital{% endif %}
+            </div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card h-100"><div class="card-body metric-card"
+             title="Current Drawdown — how far cumulative realised P&L sits below its all-time peak right now. $0 = you're at a fresh equity high.">
+            <div class="metric-value {% if drawdown.current_usd > 0 %}price-down{% else %}price-up{% endif %}">-${{ '%.2f' % drawdown.current_usd }}</div>
+            <div class="metric-label">Current Drawdown</div>
+            <div class="metric-note">
+                {% if drawdown.current_pct is not none %}{{ '%.2f' % drawdown.current_pct }}% of capital{% else %}peak ${{ '%.2f' % drawdown.peak_equity_usd }}{% endif %}
+            </div>
+        </div></div>
+    </div>
 </div>
 
 <!-- Shadow "what-if-held" summary -->
@@ -144,6 +164,57 @@
             </div>
             <div class="card-body" id="shadow-panel-body">
                 <div class="text-secondary small">Loading shadow watches&hellip;</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Per-trade Max Drawdown (adverse excursion) -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span title="For every closed trade: MAE (Maximum Adverse Excursion) = the worst net-$ point the trade reached before it closed — i.e. how far it went against you. Compare that to the Final P&L to see whether trades that went underwater recovered or not.">
+                    <i class="bi bi-graph-down-arrow me-2"></i>Max Drawdown by Trade &mdash; how far each trade went against you
+                    <i class="bi bi-question-circle small text-secondary ms-1"></i>
+                </span>
+                <span class="badge bg-secondary">{{ dd_trades|length }} trades</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
+                    <table class="table table-striped table-hover mb-0 small">
+                        <thead style="position: sticky; top: 0; background: var(--bg-secondary);">
+                            <tr>
+                                <th>#</th>
+                                <th>Side</th>
+                                <th>Exit</th>
+                                <th class="text-end" title="Maximum Adverse Excursion — worst net-$ the trade reached (how far it went against you).">MAE (against)</th>
+                                <th class="text-end" title="MAE as a % of the capital locked in that trade.">MAE %</th>
+                                <th class="text-end" title="Maximum Favourable Excursion — best net-$ the trade reached.">MFE (best)</th>
+                                <th class="text-end">Final P&L</th>
+                                <th class="text-center" title="Trade went underwater but still closed positive.">Recovered?</th>
+                                <th class="text-end" title="Minutes after entry when the worst point hit.">Trough&nbsp;@</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for t in dd_trades %}
+                            <tr>
+                                <td>{{ t.id }}</td>
+                                <td><span class="badge {% if t.position_type == 'LONG' %}bg-success{% else %}bg-danger{% endif %}">{{ t.position_type }}</span></td>
+                                <td class="text-secondary">{{ t.exit_reason or '—' }}</td>
+                                <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">-${{ '%.2f' % t.mae_usd }}</td>
+                                <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">{{ ('%.2f' % t.mae_pct) ~ '%' if t.mae_pct is not none else '—' }}</td>
+                                <td class="text-end price-up">${{ '%.2f' % t.mfe_usd }}</td>
+                                <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ '%+.2f' % t.pnl_usd }}</td>
+                                <td class="text-center">{% if t.recovered %}<span class="price-up" title="Dipped to -${{ '%.2f' % t.mae_usd }} then closed +${{ '%.2f' % t.pnl_usd }}">✓ yes</span>{% elif t.mae_usd > 0 %}<span class="text-secondary">no</span>{% else %}<span class="text-secondary">—</span>{% endif %}</td>
+                                <td class="text-end text-secondary">{{ ('%.0f' % t.trough_minutes) ~ 'm' if t.trough_minutes is not none else '—' }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="9" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>

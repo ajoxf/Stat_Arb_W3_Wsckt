@@ -1226,6 +1226,17 @@ class DatabaseManager:
         trades = self.get_trades(limit=1, open_only=True)
         return trades[0] if trades else None
 
+    def get_closed_trades(self, limit: int = 500) -> List[Trade]:
+        """Closed, real (non-paper) trades, newest exit first — the set the
+        drawdown/excursion analysis reads. Kept separate from get_trades so the
+        filter (is_open=0 AND is_paper=0) lives in SQL, not the caller."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM trades WHERE is_open = 0 AND is_paper = 0 "
+                "ORDER BY exit_time DESC, id DESC LIMIT ?", (limit,))
+            return [self._row_to_trade(row) for row in cursor.fetchall()]
+
     def _row_to_trade(self, row) -> Trade:
         """Convert database row to Trade object."""
         return Trade(
@@ -1554,6 +1565,16 @@ class DatabaseManager:
             # Expectancy in R units (EV per trade ÷ 1R). >0 = +EV.
             expectancy_r = (avg_pnl / avg_loss) if avg_loss > 0 else None
 
+            # Max drawdown of the realised-P&L equity curve. Order by exit_time
+            # (the moment each trade's P&L lands), id as a stable tiebreaker.
+            # NULL exit_time (shouldn't happen for closed trades) sorts last.
+            from core.analytics import max_drawdown
+            cursor.execute(
+                "SELECT pnl_usd FROM trades WHERE is_open=0 AND is_paper=0 "
+                "ORDER BY exit_time ASC, id ASC")
+            pnl_series = [r[0] or 0.0 for r in cursor.fetchall()]
+            dd = max_drawdown(pnl_series)
+
             return {
                 "total_trades": total_trades,
                 "winning_trades": winning_trades,
@@ -1571,6 +1592,11 @@ class DatabaseManager:
                 "profit_factor": round(profit_factor, 2) if profit_factor is not None else None,
                 "breakeven_win_rate": round(breakeven_wr, 1) if breakeven_wr is not None else None,
                 "expectancy_r": round(expectancy_r, 3) if expectancy_r is not None else None,
+                # Realised-P&L drawdown (USD). % of total capital is layered on in
+                # the analysis route where the account equity is available.
+                "max_drawdown_usd": round(dd["max_drawdown_usd"], 2),
+                "current_drawdown_usd": round(dd["current_drawdown_usd"], 2),
+                "peak_equity_usd": round(dd["peak_equity_usd"], 2),
             }
 
     # Spread History Methods (for persistence/recovery)

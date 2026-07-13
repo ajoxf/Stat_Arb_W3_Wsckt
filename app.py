@@ -928,6 +928,37 @@ def analysis():
         shadow = db.get_shadow_summary(limit=50)
     except Exception:
         shadow = {"count": 0}
+
+    # ── Drawdown analysis (read-only; never touches signals/orders) ───────
+    # Portfolio max drawdown $ comes from stats (realised-P&L equity curve);
+    # its % is layered on here where the account equity is available. Per-trade
+    # rows expose how far each trade went AGAINST us (MAE) vs its best point
+    # (MFE) — the "what happens when the trade is against you" view.
+    from core.analytics import trade_excursions, drawdown_pct
+    dd_trades = []
+    try:
+        for t in db.get_closed_trades(limit=500):
+            ex = trade_excursions(t)
+            ex.update({
+                'id': t.id,
+                'position_type': t.position_type,
+                'exit_reason': t.exit_reason,
+                'exit_time': t.exit_time.isoformat() if t.exit_time else None,
+                'trough_minutes': t.trough_minutes,
+            })
+            dd_trades.append(ex)
+    except Exception as e:
+        app.logger.debug("drawdown per-trade build failed: %s", e)
+    equity = _best_effort_equity()
+    drawdown = {
+        'max_usd': stats.get('max_drawdown_usd', 0.0),
+        'max_pct': drawdown_pct(stats.get('max_drawdown_usd', 0.0), equity),
+        'current_usd': stats.get('current_drawdown_usd', 0.0),
+        'current_pct': drawdown_pct(stats.get('current_drawdown_usd', 0.0), equity),
+        'peak_equity_usd': stats.get('peak_equity_usd', 0.0),
+        'capital_base': equity,
+    }
+
     is_demo = os.getenv('OKX_DEMO_MODE', 'false').lower() == 'true'
     return render_template('analysis.html',
                            config=config,
@@ -935,7 +966,28 @@ def analysis():
                            sd_touches=[t.to_dict() for t in sd_touches],
                            stats=stats,
                            shadow=shadow,
+                           drawdown=drawdown,
+                           dd_trades=dd_trades,
                            assets=CRYPTO_ASSETS)
+
+
+def _best_effort_equity():
+    """Account total equity for the drawdown %, best-effort. Returns None on any
+    failure (paper mode, no adapter, timeout) so the page shows '—' rather than
+    a wrong denominator. Never raises into the page render."""
+    try:
+        if engine.state.paper_trading:
+            return None
+        adapter = engine.futures_adapter or engine.spot_adapter
+        if not adapter or not hasattr(adapter, 'get_account_info') or not loop:
+            return None
+        fut = asyncio.run_coroutine_threadsafe(adapter.get_account_info(), loop)
+        account = fut.result(timeout=5)
+        eq = float(getattr(account, 'total_equity', 0.0) or 0.0) if account else 0.0
+        return eq if eq > 0 else None
+    except Exception as e:
+        app.logger.debug("best-effort equity fetch failed: %s", e)
+        return None
 
 
 # API Routes
