@@ -981,22 +981,38 @@ class TradingEngine:
             trade.entry_spot_price, trade.entry_futures_price,
             cur_spot, cur_fut,
         )
-        # If the exit will definitely be MARKET (already had a POST_ONLY rejection
-        # that exhausted the retry budget), use taker fee for the exit estimate.
-        exit_override = "MARKET" if self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER else None
-        fees_usd = self._round_trip_fees(trade, cur_spot, cur_fut, exit_mode_override=exit_override)
+        # Taker-fee the estimate whenever the exit will actually be taker-priced:
+        #  • the POST_ONLY retry budget is exhausted → forced MARKET exit, or
+        #  • the trade routes via RFQ (block-trade taker on BOTH legs).
+        # RFQ also makes the ENTRY leg taker, so override both sides — otherwise
+        # the maker assumption under-states the fee hole and the profit target
+        # fires early. No-op when RFQ is off/below threshold (see
+        # _trade_routes_via_rfq). Kept consistent with _round_trip_cost_usd so
+        # the PROFIT_TARGET decision (net vs target) uses one fee basis.
+        via_rfq = self._trade_routes_via_rfq(trade)
+        postonly_market = self._exit_postonly_reject_count >= self._EXIT_POSTONLY_MARKET_AFTER
+        exit_override = "MARKET" if (via_rfq or postonly_market) else None
+        entry_override = "RFQ" if via_rfq else None
+        fees_usd = self._round_trip_fees(trade, cur_spot, cur_fut,
+                                         exit_mode_override=exit_override,
+                                         entry_mode_override=entry_override)
         return pnl_gross - fees_usd
 
     def _round_trip_fees(self, trade: Trade,
                          exit_spot: Optional[float] = None,
                          exit_fut: Optional[float] = None,
-                         exit_mode_override: Optional[str] = None) -> float:
+                         exit_mode_override: Optional[str] = None,
+                         entry_mode_override: Optional[str] = None) -> float:
         """Total entry+exit fees (USD) for the trade's full round trip, using
         current mids for the exit legs by default.
 
         exit_mode_override: pass "MARKET" when the next exit is known to use
         taker (e.g. after a POST_ONLY rejection that will trigger MARKET retry)
         so live P&L reflects the actual fee that will be charged.
+        entry_mode_override: same, for the entry legs — pass a taker mode
+        ("MARKET"/"RFQ") when the entry filled via RFQ (block-trade taker), so
+        the round-trip cost isn't under-stated by assuming a maker entry.
+        Any mode string other than "LIMIT" maps to the taker fee (see _bps).
         """
         beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
         if exit_spot is None:
@@ -1007,7 +1023,7 @@ class TradingEngine:
         spot_taker = getattr(self.config, 'spot_taker_fee_bps', self.config.taker_fee_bps)
         fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
         fut_taker  = getattr(self.config, 'futures_taker_fee_bps', self.config.taker_fee_bps)
-        entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
+        entry_mode = entry_mode_override or getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
         exit_mode  = exit_mode_override or getattr(self.config, 'exit_execution_mode', self.config.order_execution_mode)
         leg_a_deriv = is_derivative(self.config.spot_symbol)
         leg_b_deriv = is_derivative(self.config.futures_symbol)
@@ -1024,6 +1040,37 @@ class TradingEngine:
             a_exit  / 10000.0 * spot_qty       * exit_spot +
             b_exit  / 10000.0 * trade.quantity * exit_fut
         )
+
+    def _trade_routes_via_rfq(self, trade: Trade) -> bool:
+        """True when this trade's per-leg notional is at/above the RFQ threshold,
+        so its entry AND exit route through RFQ (an atomic block trade) where WE
+        are the quote taker and pay the TAKER fee on both legs.
+
+        Why it matters for fee accounting: an RFQ fill returns a block trade_id,
+        not per-leg order_ids, so the actual-fee capture in _execute_exit_orders
+        is skipped and fees fall back to the maker/taker ESTIMATE. Without this
+        signal that estimate assumes a maker exit (config exit_execution_mode),
+        under-stating cost by the maker→taker spread — which sets the profit
+        target's cost floor too low and lets a marginally-negative RFQ exit book
+        as a phantom profit. Callers use this to force taker costing.
+
+        Safe by construction: when RFQ is disabled (rfq_notional_threshold_usd
+        == 0, the default) or the position is below the threshold, this is False
+        and every fee estimate is byte-for-byte unchanged. Notional uses current
+        mids (real fills aren't known until close), mirroring the router's own
+        decision in OrderExecutor._execute_spread. Over-costing on the rare
+        RFQ-fail→order-book fallback is the safe direction (a hair more cost,
+        never a phantom profit)."""
+        threshold = getattr(self.config, 'rfq_notional_threshold_usd', 0.0) or 0.0
+        if threshold <= 0:
+            return False
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
+        spot_px = (self.spot_tick.mid if self.spot_tick else 0.0) or trade.entry_spot_price
+        fut_px = (self.futures_tick.mid if self.futures_tick else 0.0) or trade.entry_futures_price
+        per_leg_notional = max(spot_qty * (spot_px or 0.0),
+                               trade.quantity * (fut_px or 0.0))
+        return per_leg_notional >= threshold
 
     # ── Shadow "what-if-held" tracker ──────────────────────────────────────
     # All three methods are pure observation: bounded, best-effort, and they
@@ -1385,7 +1432,13 @@ class TradingEngine:
             exit_spot = self.spot_tick.mid if self.spot_tick else trade.entry_spot_price
         if exit_fut is None:
             exit_fut = self.futures_tick.mid if self.futures_tick else trade.entry_futures_price
-        fees = self._round_trip_fees(trade, exit_spot, exit_fut)
+        # An RFQ-routed trade is taker on both legs — cost the floor at taker so
+        # the profit target actually clears the fee it will pay. No-op when RFQ
+        # is off/below threshold. Matches _live_net_pnl's basis exactly.
+        rfq_ovr = "RFQ" if self._trade_routes_via_rfq(trade) else None
+        fees = self._round_trip_fees(trade, exit_spot, exit_fut,
+                                     exit_mode_override=rfq_ovr,
+                                     entry_mode_override=rfq_ovr)
         slip_bps = getattr(self.config, 'slippage_bps', 0.0) or 0.0
         spot_qty = trade.spot_qty if getattr(trade, 'spot_qty', 0) > 0 else trade.quantity * beta
         slippage = slip_bps / 10000.0 * (
@@ -2216,10 +2269,22 @@ class TradingEngine:
         spot_taker = getattr(self.config, 'spot_taker_fee_bps', self.config.taker_fee_bps)
         fut_maker  = getattr(self.config, 'futures_maker_fee_bps', self.config.maker_fee_bps)
         fut_taker  = getattr(self.config, 'futures_taker_fee_bps', self.config.taker_fee_bps)
-        entry_mode = getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
-        # Use actual exit execution mode: MARKET (taker) when the exit was forced
-        # to MARKET after a POST_ONLY rejection — not the config default.
-        exit_mode  = "MARKET" if self._last_exit_was_market else getattr(self.config, 'exit_execution_mode', self.config.order_execution_mode)
+        # An RFQ-routed trade fills as a block-trade taker on BOTH legs, and its
+        # fee isn't captured per-leg (no order_id → estimate path), so cost both
+        # sides at taker. Labelled "RFQ" for the audit trail; _bps maps any
+        # non-"LIMIT" mode to the taker fee. No-op when RFQ is off/below
+        # threshold (see _trade_routes_via_rfq).
+        via_rfq = self._trade_routes_via_rfq(trade)
+        entry_mode = "RFQ" if via_rfq else getattr(self.config, 'entry_execution_mode', self.config.order_execution_mode)
+        # Use actual exit execution mode: taker when RFQ-routed, or MARKET when
+        # the exit was forced to MARKET after a POST_ONLY rejection — not the
+        # config default.
+        if via_rfq:
+            exit_mode = "RFQ"
+        elif self._last_exit_was_market:
+            exit_mode = "MARKET"
+        else:
+            exit_mode = getattr(self.config, 'exit_execution_mode', self.config.order_execution_mode)
         leg_a_deriv = is_derivative(self.config.spot_symbol)
         leg_b_deriv = is_derivative(self.config.futures_symbol)
         def _bps(deriv, mode):
