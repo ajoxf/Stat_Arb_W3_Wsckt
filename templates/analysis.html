@@ -195,7 +195,8 @@
                                 <th class="text-end" title="MFE as a % of the capital locked in that trade.">MFE (%)</th>
                                 <th class="text-end">Final P&L</th>
                                 <th class="text-end" title="Realised net P&L as a % of the capital locked in that trade — the trade's return on capital.">Profit (%)</th>
-                                <th class="text-end" title="Minutes after entry when the worst point hit.">Trough&nbsp;@</th>
+                                <th class="text-end" title="Minutes after entry when the worst point (MAE) hit.">Trough&nbsp;@</th>
+                                <th class="text-end" title="Minutes after entry when the best point (MFE) hit.">Peak&nbsp;@</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -212,9 +213,10 @@
                                 <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ '%+.2f' % t.pnl_usd }}</td>
                                 <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ ('%+.2f' % t.pnl_pct) ~ '%' if t.pnl_pct is not none else '—' }}</td>
                                 <td class="text-end text-secondary">{{ ('%.0f' % t.trough_minutes) ~ 'm' if t.trough_minutes is not none else '—' }}</td>
+                                <td class="text-end text-secondary">{{ ('%.0f' % t.peak_minutes) ~ 'm' if t.peak_minutes is not none else '—' }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="11" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
+                            <tr><td colspan="12" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>

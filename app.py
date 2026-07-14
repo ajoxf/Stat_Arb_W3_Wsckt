@@ -946,6 +946,7 @@ def analysis():
                 'exit_reason': t.exit_reason,
                 'exit_time': t.exit_time.isoformat() if t.exit_time else None,
                 'trough_minutes': t.trough_minutes,
+                'peak_minutes': t.peak_minutes,
             })
             dd_trades.append(ex)
     except Exception as e:
