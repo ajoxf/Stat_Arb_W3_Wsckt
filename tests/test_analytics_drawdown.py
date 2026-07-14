@@ -121,3 +121,15 @@ def test_verdict_round_tripped():
 def test_verdict_loss():
     # Never in profit, closed red
     assert trade_excursions(_trade(trough=-10.0, peak=0.0, pnl=-4.0, cap=100.0))["verdict"] == "loss"
+
+
+def test_mae_eq_pct_uses_account_equity_not_trade_capital():
+    ex = trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=100.0), equity=1000.0)
+    assert ex["mae_usd"] == pytest.approx(5.0)
+    assert ex["mae_pct"] == pytest.approx(5.0)       # 5 / 100 (trade's locked capital)
+    assert ex["mae_eq_pct"] == pytest.approx(0.5)    # 5 / 1000 (whole account)
+
+
+def test_mae_eq_pct_none_without_equity():
+    ex = trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=100.0))
+    assert ex["mae_eq_pct"] is None

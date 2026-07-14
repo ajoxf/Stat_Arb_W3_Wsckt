@@ -936,9 +936,10 @@ def analysis():
     # (MFE) — the "what happens when the trade is against you" view.
     from core.analytics import trade_excursions, drawdown_pct
     dd_trades = []
+    equity = _best_effort_equity()
     try:
         for t in db.get_closed_trades(limit=500):
-            ex = trade_excursions(t)
+            ex = trade_excursions(t, equity=equity)   # equity -> mae_eq_pct
             ex.update({
                 'id': t.id,
                 'position_type': t.position_type,
@@ -949,7 +950,6 @@ def analysis():
             dd_trades.append(ex)
     except Exception as e:
         app.logger.debug("drawdown per-trade build failed: %s", e)
-    equity = _best_effort_equity()
     drawdown = {
         'max_usd': stats.get('max_drawdown_usd', 0.0),
         'max_pct': drawdown_pct(stats.get('max_drawdown_usd', 0.0), equity),
