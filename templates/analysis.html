@@ -192,8 +192,9 @@
                                 <th class="text-end" title="MAE as a % of the capital locked in that trade.">MAE %</th>
                                 <th class="text-end" title="MAE as a % of your CURRENT account equity — each trade's worst dip against the WHOLE account (vs MAE %, which is against that trade's own locked capital). Uses current equity for all trades, so it's comparable across the table.">MAE % eq</th>
                                 <th class="text-end" title="Maximum Favourable Excursion — best net-$ the trade reached.">MFE (best)</th>
+                                <th class="text-end" title="MFE as a % of the capital locked in that trade.">MFE (%)</th>
                                 <th class="text-end">Final P&L</th>
-                                <th class="text-center" title="Outcome path — Clean win (never underwater) · Recovered (dipped then closed green) · Round-tripped (reached profit, gave it all back) · Loss (never in profit).">Outcome</th>
+                                <th class="text-end" title="Realised net P&L as a % of the capital locked in that trade — the trade's return on capital.">Profit (%)</th>
                                 <th class="text-end" title="Minutes after entry when the worst point hit.">Trough&nbsp;@</th>
                             </tr>
                         </thead>
@@ -207,12 +208,13 @@
                                 <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">{{ ('%.2f' % t.mae_pct) ~ '%' if t.mae_pct is not none else '—' }}</td>
                                 <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">{{ ('%.2f' % t.mae_eq_pct) ~ '%' if t.mae_eq_pct is not none else '—' }}</td>
                                 <td class="text-end price-up">${{ '%.2f' % t.mfe_usd }}</td>
+                                <td class="text-end price-up">{{ ('%.2f' % t.mfe_pct) ~ '%' if t.mfe_pct is not none else '—' }}</td>
                                 <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ '%+.2f' % t.pnl_usd }}</td>
-                                <td class="text-center">{% if t.verdict == 'clean' %}<span class="price-up" title="Won without ever going underwater">🟢 Clean win</span>{% elif t.verdict == 'recovered' %}<span style="color:#0d6efd;" title="Dipped to -${{ '%.2f' % t.mae_usd }}, still closed +${{ '%.2f' % t.pnl_usd }} — holding paid off">🔵 Recovered</span>{% elif t.verdict == 'round_tripped' %}<span class="text-warning" title="Reached +${{ '%.2f' % t.mfe_usd }} unrealised, gave it back, closed ${{ '%+.2f' % t.pnl_usd }}">🟠 Round-tripped</span>{% else %}<span class="price-down" title="Never in profit — trend ran it over">🔴 Loss</span>{% endif %}</td>
+                                <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ ('%+.2f' % t.pnl_pct) ~ '%' if t.pnl_pct is not none else '—' }}</td>
                                 <td class="text-end text-secondary">{{ ('%.0f' % t.trough_minutes) ~ 'm' if t.trough_minutes is not none else '—' }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="10" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
+                            <tr><td colspan="11" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>

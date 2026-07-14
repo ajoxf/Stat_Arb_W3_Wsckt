@@ -133,3 +133,15 @@ def test_mae_eq_pct_uses_account_equity_not_trade_capital():
 def test_mae_eq_pct_none_without_equity():
     ex = trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=100.0))
     assert ex["mae_eq_pct"] is None
+
+
+def test_mfe_pct_and_pnl_pct_on_trade_capital():
+    ex = trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=100.0))
+    assert ex["mfe_pct"] == pytest.approx(8.0)    # 8 / 100 locked capital
+    assert ex["pnl_pct"] == pytest.approx(3.0)    # 3 / 100 locked capital
+
+
+def test_pnl_pct_negative_for_a_loss():
+    ex = trade_excursions(_trade(trough=-10.0, peak=1.0, pnl=-4.0, cap=100.0))
+    assert ex["pnl_pct"] == pytest.approx(-4.0)
+    assert ex["mfe_pct"] == pytest.approx(1.0)

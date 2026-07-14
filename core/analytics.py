@@ -103,9 +103,13 @@ def trade_excursions(trade, equity: Optional[float] = None) -> Dict[str, Optiona
         "mae_pct": (mae_usd / cap * 100.0) if cap > 0 else None,
         "mae_eq_pct": (mae_usd / equity * 100.0) if (equity and equity > 0) else None,
         "mfe_usd": peak if peak > 0 else 0.0,
+        # MFE and final P&L as % of the trade's locked capital (same denominator
+        # as mae_pct) — the favourable-excursion and realised-return counterparts.
+        "mfe_pct": ((peak if peak > 0 else 0.0) / cap * 100.0) if cap > 0 else None,
         "trough_net_usd": trough,
         "peak_net_usd": peak,
         "pnl_usd": pnl,
+        "pnl_pct": (pnl / cap * 100.0) if cap > 0 else None,
         "capital_locked_usd": cap,
         "recovered": bool(trough < 0 and pnl > 0),
         "verdict": verdict,
