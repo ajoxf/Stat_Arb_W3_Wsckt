@@ -1255,6 +1255,31 @@ class DatabaseManager:
                 "ORDER BY exit_time DESC, id DESC LIMIT ?", (limit,))
             return [self._row_to_trade(row) for row in cursor.fetchall()]
 
+    def get_month_volume_usd(self, month_prefix: str) -> float:
+        """This bot's executed notional (USD) for the calendar month — an
+        approximation of OKX's 30-day VIP trading volume built from our own fills.
+
+        ``notional_usd`` is the BOTH-legs opening notional of a trade, and OKX
+        counts every fill, so each trade contributes its notional once when
+        OPENED and again when CLOSED. We therefore sum notional over trades
+        ENTERED in the month (opening executions) plus trades EXITED in the month
+        (closing executions) — attributing each side to when it actually traded,
+        so an open position counts its entry now and its exit whenever it closes.
+        Non-paper only. ``month_prefix`` is 'YYYY-MM' (matched against the ISO
+        entry_time/exit_time strings)."""
+        like = f"{month_prefix}%"
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COALESCE(SUM(notional_usd), 0) FROM trades "
+                "WHERE is_paper = 0 AND entry_time LIKE ?", (like,))
+            opened = cursor.fetchone()[0] or 0.0
+            cursor.execute(
+                "SELECT COALESCE(SUM(notional_usd), 0) FROM trades "
+                "WHERE is_paper = 0 AND is_open = 0 AND exit_time LIKE ?", (like,))
+            closed = cursor.fetchone()[0] or 0.0
+            return float(opened) + float(closed)
+
     def _row_to_trade(self, row) -> Trade:
         """Convert database row to Trade object."""
         return Trade(

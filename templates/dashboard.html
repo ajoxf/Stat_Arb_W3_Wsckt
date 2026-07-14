@@ -899,11 +899,25 @@
             </div>
         </div>
 
-        <!-- VIP Level Badge -->
+        <!-- VIP Level Badge + monthly trading-volume progress -->
         <div class="card mb-3">
             <div class="card-body py-2 text-center">
                 <small class="text-secondary">VIP Level</small>
                 <div id="account-level" class="badge bg-info mt-1">-</div>
+                <!-- This month's traded volume vs the tier's 30-day volume floor.
+                     OKX gives no per-account volume via API, so this is our own
+                     fills for the month + a hand-entered seed for the current
+                     month (see core/vip.py). USD. -->
+                <div id="vip-volume-wrap" class="mt-2" style="display:none;">
+                    <div class="progress" style="height: 6px;"
+                         title="Trading volume this calendar month vs the 30-day volume needed to hold your VIP tier. Estimated from this bot's fills plus a manual seed for the current month (OKX exposes no per-account volume). USD.">
+                        <div id="vip-volume-bar" class="progress-bar bg-info" role="progressbar" style="width: 0%;"></div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-1" style="font-size: 0.62rem; line-height: 1.2;">
+                        <span class="text-secondary" id="vip-volume-label">—</span>
+                        <span class="text-secondary" id="vip-volume-next">—</span>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -2994,6 +3008,16 @@ function updateFilterStatus(elementId, passed, value) {
         document.getElementById('exchange-position-warning').classList.add('d-none');
     }
 
+    // Compact USD formatter for large figures: $1.09M, $196.05M, $1.47B.
+    function fmtUsdShort(v) {
+        if (v == null || isNaN(v)) return '—';
+        const a = Math.abs(v);
+        if (a >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
+        if (a >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
+        if (a >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K';
+        return '$' + v.toFixed(0);
+    }
+
     function updateAccountInfo() {
         fetch('/api/account-info')
             .then(response => response.json())
@@ -3032,6 +3056,30 @@ function updateFilterStatus(elementId, passed, value) {
                     const level = data.account_level || '-';
                     levelEl.textContent = level || '-';
                     levelEl.className = 'badge ' + (level ? 'bg-info' : 'bg-secondary');
+                }
+
+                // Monthly trading-volume progress toward the tier's 30-day floor.
+                const volWrap = document.getElementById('vip-volume-wrap');
+                if (volWrap) {
+                    const vol = data.month_volume_usd;
+                    const floor = data.vip_maintain_floor_usd;
+                    if (vol != null && floor && floor > 0) {
+                        const pct = Math.min(100, (vol / floor) * 100);
+                        const bar = document.getElementById('vip-volume-bar');
+                        // Keep a sliver visible for tiny-but-nonzero progress.
+                        bar.style.width = (vol > 0 ? Math.max(pct, 1.5) : 0) + '%';
+                        bar.className = 'progress-bar ' + (pct >= 100 ? 'bg-success' : 'bg-info');
+                        document.getElementById('vip-volume-label').textContent =
+                            fmtUsdShort(vol) + ' / ' + fmtUsdShort(floor)
+                            + ' (' + (pct < 10 ? pct.toFixed(1) : pct.toFixed(0)) + '%)';
+                        const nextEl = document.getElementById('vip-volume-next');
+                        nextEl.textContent = (data.vip_next_tier_num && data.vip_next_floor_usd)
+                            ? 'VIP ' + data.vip_next_tier_num + ' @ ' + fmtUsdShort(data.vip_next_floor_usd)
+                            : '';
+                        volWrap.style.display = '';
+                    } else {
+                        volWrap.style.display = 'none';
+                    }
                 }
 
                 const balanceEl = document.getElementById('account-balance');

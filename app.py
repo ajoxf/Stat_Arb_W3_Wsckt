@@ -2343,6 +2343,26 @@ def get_account_info():
         account_data['capital_required'] = None
     account_data['capital_buffer_pct'] = getattr(config, 'm2m_buffer_pct', 0.0)
 
+    # VIP tier progress — this calendar month's traded volume vs the 30-day
+    # volume floor for the tier, for the dashboard progress bar under the VIP
+    # badge. OKX exposes no per-account volume via API, so this sums THIS bot's
+    # own fills for the month (database.get_month_volume_usd) plus a hand-entered
+    # seed for the current partial month (core.vip). All USD; read-only display.
+    try:
+        from core import vip
+        from datetime import datetime as _dt
+        month = _dt.utcnow().strftime('%Y-%m')
+        bot_vol = db.get_month_volume_usd(month)
+        tier = vip.parse_vip_tier(account_data.get('account_level'))
+        nxt_tier, nxt_floor = vip.next_tier_floor_usd(tier)
+        account_data['month_volume_usd'] = round(bot_vol + vip.month_baseline_usd(month), 2)
+        account_data['vip_tier_num'] = tier
+        account_data['vip_maintain_floor_usd'] = vip.maintain_floor_usd(tier)
+        account_data['vip_next_tier_num'] = nxt_tier
+        account_data['vip_next_floor_usd'] = nxt_floor
+    except Exception as _vip_err:
+        logger.debug("VIP volume block failed: %s", _vip_err)
+
     # Set actual leverage — prefer exchange data, use sensible defaults that
     # respect the LEG'S instrument shape (not a blanket 'spot = cash' assumption).
     # Leg A can be a derivative too (e.g. ETH-USDT-260626), in which case it uses
