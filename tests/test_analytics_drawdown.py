@@ -145,3 +145,14 @@ def test_pnl_pct_negative_for_a_loss():
     ex = trade_excursions(_trade(trough=-10.0, peak=1.0, pnl=-4.0, cap=100.0))
     assert ex["pnl_pct"] == pytest.approx(-4.0)
     assert ex["mfe_pct"] == pytest.approx(1.0)
+
+
+def test_utilization_pct_is_trade_capital_over_equity():
+    ex = trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=800.0), equity=1600.0)
+    assert ex["utilization_pct"] == pytest.approx(50.0)   # 800 capital / 1600 equity
+
+
+def test_utilization_pct_none_without_equity_or_capital():
+    assert trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=800.0))["utilization_pct"] is None
+    assert trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=0.0),
+                            equity=1600.0)["utilization_pct"] is None

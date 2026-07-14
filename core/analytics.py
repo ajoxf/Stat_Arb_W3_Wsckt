@@ -102,6 +102,9 @@ def trade_excursions(trade, equity: Optional[float] = None) -> Dict[str, Optiona
         "mae_usd": mae_usd,
         "mae_pct": (mae_usd / cap * 100.0) if cap > 0 else None,
         "mae_eq_pct": (mae_usd / equity * 100.0) if (equity and equity > 0) else None,
+        # Utilization: capital the trade tied up (margin + M2M buffer) as a % of
+        # account equity — how big a bite of the account this position was.
+        "utilization_pct": (cap / equity * 100.0) if (equity and equity > 0 and cap > 0) else None,
         "mfe_usd": peak if peak > 0 else 0.0,
         # MFE and final P&L as % of the trade's locked capital (same denominator
         # as mae_pct) — the favourable-excursion and realised-return counterparts.
