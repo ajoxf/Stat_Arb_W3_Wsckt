@@ -1473,6 +1473,25 @@ class TradingEngine:
         buf = getattr(self.config, 'm2m_buffer_pct', 0.0) or 0.0
         return margin * (1 + buf / 100.0)
 
+    def _capital_required_live(self) -> Optional[float]:
+        """Capital the NEXT trade at the configured position size would lock up,
+        priced at the CURRENT mids — the same figure the pre-trade balance guard
+        (_check_sufficient_balance) enforces: per-leg margin (notional/leverage)
+        + M2M buffer. Read-only, for the dashboard's utilization display. Returns
+        None until both legs have a live price."""
+        spot = self.spot_tick.mid if self.spot_tick else 0.0
+        fut = self.futures_tick.mid if self.futures_tick else 0.0
+        if not (spot and spot > 0 and fut and fut > 0):
+            return None
+        beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
+        notional_a = self.config.position_size_usd
+        notional_b = self.config.position_size_usd * (fut / (beta * spot))
+        leg_a_lev = max(self.config.spot_leverage    if is_derivative(self.config.spot_symbol)    else 1, 1)
+        leg_b_lev = max(self.config.futures_leverage if is_derivative(self.config.futures_symbol) else 1, 1)
+        margin = notional_a / leg_a_lev + notional_b / leg_b_lev
+        buf = max(getattr(self.config, 'm2m_buffer_pct', 10.0) or 0.0, 0.0)
+        return margin * (1 + buf / 100.0)
+
     def _effective_exit_targets(self, trade: Trade) -> Dict[str, Any]:
         """Resolve the active profit-target $, dollar-stop $, and max-hold
         periods for the open trade, preferring the scale-invariant config form

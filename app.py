@@ -2315,6 +2315,16 @@ def get_account_info():
     account_data['configured_spot_leverage'] = config.spot_leverage
     account_data['configured_futures_leverage'] = config.futures_leverage
 
+    # Capital the NEXT trade at the configured size would lock up at live mids
+    # (per-leg margin + M2M buffer) — the same figure the pre-trade balance guard
+    # enforces. Surfaced so the dashboard shows utilization (required vs available)
+    # and the operator can see the sizing stays within capital.
+    try:
+        account_data['capital_required'] = engine._capital_required_live()
+    except Exception:
+        account_data['capital_required'] = None
+    account_data['capital_buffer_pct'] = getattr(config, 'm2m_buffer_pct', 0.0)
+
     # Set actual leverage — prefer exchange data, use sensible defaults that
     # respect the LEG'S instrument shape (not a blanket 'spot = cash' assumption).
     # Leg A can be a derivative too (e.g. ETH-USDT-260626), in which case it uses

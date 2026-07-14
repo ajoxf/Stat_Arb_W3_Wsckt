@@ -776,6 +776,17 @@
                         </div>
                     </div>
                 </div>
+                <!-- Capital the next trade at the configured size would lock up at
+                     live prices (per-leg margin + M2M buffer) — the same figure the
+                     pre-trade guard enforces. The util badge shows required ÷ available
+                     so you can see sizing stays within capital (red = over budget,
+                     which the guard would block). -->
+                <div id="capital-req-row" class="d-flex justify-content-between align-items-center mb-2 px-2 py-1"
+                     style="background: var(--bg-tertiary); border-radius: 4px; display: none !important;"
+                     title="Per-leg margin (notional ÷ leverage) + M2M buffer, priced at live mids — exactly what the pre-trade balance guard requires before it will enter. 'util' = Capital required ÷ Available.">
+                    <span class="text-secondary">Capital req <span id="capital-req-buffer" class="text-muted" style="font-size:0.65rem;"></span></span>
+                    <span><span id="capital-req-value" class="fw-bold">—</span> <span id="capital-req-util" class="ms-1"></span></span>
+                </div>
                 <div class="d-flex justify-content-between mb-1">
                     <span class="text-secondary">IMR:</span>
                     <span id="margin-imr">$0.00</span>
@@ -3042,6 +3053,35 @@ function updateFilterStatus(elementId, passed, value) {
 
                 updateElement('account-equity', '$' + (data.total_equity || data.balance || 0).toFixed(2));
                 updateElement('account-available', '$' + (data.available || 0).toFixed(2));
+
+                // Capital required (live) for the next trade + utilization vs available.
+                const capRow = document.getElementById('capital-req-row');
+                if (capRow) {
+                    const capReq = data.capital_required;
+                    if (capReq != null && capReq > 0) {
+                        document.getElementById('capital-req-value').textContent = '$' + capReq.toFixed(2);
+                        const buf = data.capital_buffer_pct;
+                        document.getElementById('capital-req-buffer').textContent =
+                            (buf != null) ? '(' + buf + '% M2M)' : '';
+                        const avail = data.available || 0;
+                        const utilEl = document.getElementById('capital-req-util');
+                        if (avail > 0) {
+                            const util = capReq / avail * 100;
+                            utilEl.textContent = util.toFixed(0) + '% util';
+                            // green well within, amber getting tight, red over budget
+                            // (the pre-trade guard would block an entry above available).
+                            utilEl.className = 'ms-1 badge ' +
+                                (util > 100 ? 'bg-danger' : (util > 70 ? 'bg-warning text-dark' : 'bg-success'));
+                            utilEl.title = '$' + capReq.toFixed(2) + ' required ÷ $' + avail.toFixed(2) + ' available';
+                        } else {
+                            utilEl.textContent = '';
+                            utilEl.className = 'ms-1';
+                        }
+                        capRow.style.setProperty('display', 'flex', 'important');
+                    } else {
+                        capRow.style.setProperty('display', 'none', 'important');
+                    }
+                }
 
                 // IMR/MMR/Margin Ratio/Mark/Liq are PER-POSITION metrics — they
                 // only have meaningful values when you actually hold a position.
