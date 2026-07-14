@@ -985,6 +985,7 @@ def analysis():
                            shadow=shadow,
                            drawdown=drawdown,
                            dd_trades=dd_trades,
+                           equity=equity,
                            assets=CRYPTO_ASSETS)
 
 

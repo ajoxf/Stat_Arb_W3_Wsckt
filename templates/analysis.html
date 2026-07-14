@@ -202,6 +202,7 @@
                                 <th class="text-end" title="MFE as a % of the capital locked in that trade.">MFE (%)</th>
                                 <th class="text-end">Final P&L</th>
                                 <th class="text-end" title="Realised net P&L as a % of the capital locked in that trade — the trade's return on capital.">Profit (%)</th>
+                                <th class="text-end" title="Realised net P&L as a % of your CURRENT account equity (the capital available) — the trade's return on the WHOLE account, vs Profit (%) which is against that trade's own locked capital. Uses current equity for all trades, so it's comparable across the table.">P&L&nbsp;% eq</th>
                                 <th class="text-end" title="Minutes after entry when the worst point (MAE) hit.">Trough&nbsp;@</th>
                                 <th class="text-end" title="Minutes after entry when the best point (MFE) hit.">Peak&nbsp;@</th>
                             </tr>
@@ -220,11 +221,12 @@
                                 <td class="text-end price-up">{{ ('%.2f' % t.mfe_pct) ~ '%' if t.mfe_pct is not none else '—' }}</td>
                                 <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ '%+.2f' % t.pnl_usd }}</td>
                                 <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ ('%+.2f' % t.pnl_pct) ~ '%' if t.pnl_pct is not none else '—' }}</td>
+                                <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ ('%+.2f' % t.pnl_eq_pct) ~ '%' if t.pnl_eq_pct is not none else '—' }}</td>
                                 <td class="text-end text-secondary">{{ ('%.0f' % t.trough_minutes) ~ 'm' if t.trough_minutes is not none else '—' }}</td>
                                 <td class="text-end text-secondary">{{ ('%.0f' % t.peak_minutes) ~ 'm' if t.peak_minutes is not none else '—' }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="13" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
+                            <tr><td colspan="14" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -334,12 +336,13 @@
                                 <th title="Leg A notional = position size (sizing anchor). Total exposure across both legs is ~2× this.">Notional</th>
                                 <th title="Net P&L in dollars after all fees — the realized take-home for the round trip.">P&L</th>
                                 <th title="Return on actually-locked capital: per-leg margin (notional ÷ leverage) + M2M buffer — the honest 'return on what you put up'.">P&L %</th>
+                                <th title="Net P&L as a % of your CURRENT account equity (the capital available) — return on the whole account, vs P&L % which is against just this trade's locked capital. Uses current equity for all trades.">P&L % eq</th>
                                 <th title="Why the trade closed: PROFIT_TARGET, DOLLAR_STOP (%-capital), STOP_LOSS (z), MAX_HOLD (time), EXIT (reversion), or a manual/cleanup close.">Exit Reason</th>
                             </tr>
                         </thead>
                         <tbody id="trade-journal-table">
                             <tr>
-                                <td colspan="17" class="text-center text-secondary">Loading...</td>
+                                <td colspan="18" class="text-center text-secondary">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -360,6 +363,11 @@
     // raw numbers (not the $/% formatted cells) for clean analysis.
     const DD_TRADES = {{ dd_trades | tojson }};
 
+    // Current best-effort account equity (null if it couldn't be fetched) — the
+    // denominator for the Trade Journal's "P&L % eq" column (P&L ÷ capital
+    // available). Same value the Max-Drawdown table uses server-side.
+    const EQUITY = {{ equity | tojson }};
+
     function downloadDrawdownCsv() {
         const cols = [   // [csv column label, row key]
             ['trade', 'id'], ['side', 'position_type'], ['exit', 'exit_reason'],
@@ -367,6 +375,7 @@
             ['mae_usd', 'mae_usd'], ['mae_pct', 'mae_pct'], ['mae_eq_pct', 'mae_eq_pct'],
             ['mfe_usd', 'mfe_usd'], ['mfe_pct', 'mfe_pct'],
             ['final_pnl_usd', 'pnl_usd'], ['profit_pct', 'pnl_pct'],
+            ['pnl_eq_pct', 'pnl_eq_pct'],
             ['trough_min', 'trough_minutes'], ['peak_min', 'peak_minutes'],
         ];
         const cell = (v) => {
@@ -475,6 +484,7 @@
                     <td>$${(trade.notional_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">$${(trade.pnl_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}" title="${trade.capital_locked_usd ? 'On $' + trade.capital_locked_usd.toFixed(0) + ' locked (margin + buffer)' : 'Capital not recorded'}">${trade.capital_locked_usd ? (trade.pnl_pct_on_capital || 0).toFixed(2) + '%' : '—'}</td>
+                    <td class="${pnlClass}" title="${(EQUITY && EQUITY > 0) ? 'On $' + EQUITY.toFixed(0) + ' account equity' : 'Account equity not available'}">${(EQUITY && EQUITY > 0) ? ((trade.pnl_usd || 0) / EQUITY * 100).toFixed(2) + '%' : '—'}</td>
                     <td><span class="badge ${trade.is_open ? 'bg-warning' : 'bg-secondary'}">${trade.exit_reason || (trade.is_open ? 'OPEN' : '-')}</span></td>
                 `;
                 tbody.appendChild(row);

@@ -68,9 +68,11 @@ def trade_excursions(trade, equity: Optional[float] = None) -> Dict[str, Optiona
     already recorded at close (trough_net_usd / peak_net_usd, net USD after
     fees).
 
-    equity, when given, adds mae_eq_pct = MAE$ as a % of ACCOUNT equity — each
-    trade's worst dip measured against the whole account (vs mae_pct, which is
-    against that trade's own locked capital). None when equity isn't known.
+    equity, when given, adds two "% of ACCOUNT equity" figures measured against
+    the whole account (vs the *_pct fields, which are against that trade's own
+    locked capital): mae_eq_pct = MAE$ ÷ equity (worst dip vs the account) and
+    pnl_eq_pct = final P&L ÷ equity (realised return on capital available).
+    Both are None when equity isn't known.
 
     MAE (maximum adverse excursion) = how far the trade went AGAINST you: the
     magnitude of the worst net-USD point, or 0 if it never went negative.
@@ -113,6 +115,9 @@ def trade_excursions(trade, equity: Optional[float] = None) -> Dict[str, Optiona
         "peak_net_usd": peak,
         "pnl_usd": pnl,
         "pnl_pct": (pnl / cap * 100.0) if cap > 0 else None,
+        # Final P&L as a % of ACCOUNT equity (capital available) — the honest
+        # "return on the whole account", same denominator as mae_eq_pct.
+        "pnl_eq_pct": (pnl / equity * 100.0) if (equity and equity > 0) else None,
         "capital_locked_usd": cap,
         "recovered": bool(trough < 0 and pnl > 0),
         "verdict": verdict,
