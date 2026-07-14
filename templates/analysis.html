@@ -333,14 +333,13 @@
                                 <th class="text-nowrap" title="SL Spread — the spread value at which the dollar stop fires (gross move = −stop). Blank if no dollar stop was armed.">SL Sprd</th>
                                 <th title="Leg A notional = position size (sizing anchor). Total exposure across both legs is ~2× this.">Notional</th>
                                 <th title="Net P&L in dollars after all fees — the realized take-home for the round trip.">P&L</th>
-                                <th title="Return on Leg A notional — strategy edge metric.">P&L %</th>
-                                <th title="Return on actually-locked capital: per-leg margin (notional ÷ leverage) + M2M buffer. The honest 'return on what I couldn't deploy elsewhere'.">Cap %</th>
+                                <th title="Return on actually-locked capital: per-leg margin (notional ÷ leverage) + M2M buffer — the honest 'return on what you put up'.">P&L %</th>
                                 <th title="Why the trade closed: PROFIT_TARGET, DOLLAR_STOP (%-capital), STOP_LOSS (z), MAX_HOLD (time), EXIT (reversion), or a manual/cleanup close.">Exit Reason</th>
                             </tr>
                         </thead>
                         <tbody id="trade-journal-table">
                             <tr>
-                                <td colspan="18" class="text-center text-secondary">Loading...</td>
+                                <td colspan="17" class="text-center text-secondary">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -475,8 +474,7 @@
                     <td class="text-secondary">${fmtSpread(trade.sl_spread)}</td>
                     <td>$${(trade.notional_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}">$${(trade.pnl_usd || 0).toFixed(2)}</td>
-                    <td class="${pnlClass}">${(trade.pnl_percent || 0).toFixed(2)}%</td>
-                    <td class="${pnlClass}" title="${trade.capital_locked_usd ? 'On $' + trade.capital_locked_usd.toFixed(0) + ' locked' : 'Capital not recorded'}">${trade.capital_locked_usd ? (trade.pnl_pct_on_capital || 0).toFixed(2) + '%' : '—'}</td>
+                    <td class="${pnlClass}" title="${trade.capital_locked_usd ? 'On $' + trade.capital_locked_usd.toFixed(0) + ' locked (margin + buffer)' : 'Capital not recorded'}">${trade.capital_locked_usd ? (trade.pnl_pct_on_capital || 0).toFixed(2) + '%' : '—'}</td>
                     <td><span class="badge ${trade.is_open ? 'bg-warning' : 'bg-secondary'}">${trade.exit_reason || (trade.is_open ? 'OPEN' : '-')}</span></td>
                 `;
                 tbody.appendChild(row);
