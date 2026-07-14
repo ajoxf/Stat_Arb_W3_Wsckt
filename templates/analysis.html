@@ -207,7 +207,7 @@
                                 <th class="text-end" title="Minutes after entry when the best point (MFE) hit.">Peak&nbsp;@</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="dd-tbody">
                             {% for t in dd_trades %}
                             <tr>
                                 <td>{{ t.id }}</td>
@@ -226,7 +226,7 @@
                                 <td class="text-end text-secondary">{{ ('%.0f' % t.peak_minutes) ~ 'm' if t.peak_minutes is not none else '—' }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="14" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
+                            <tr id="dd-empty-row"><td colspan="14" class="text-center text-secondary py-3">No closed trades yet.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -565,6 +565,22 @@
         const active = (s.active != null) ? s.active : tracking.length;
         badge.textContent = done + ' completed' + (active ? ' · ' + active + ' live' : '');
 
+        // The position you're ACTUALLY in right now (live) — the shadow rows below
+        // are post-exit "what-if-held" reversion only, so without this the panel
+        // looked blank while a trade was open.
+        let openLine = '';
+        if (s.open_live) {
+            const ol = s.open_live;
+            openLine =
+                '<div class="mb-2 p-2" style="background: rgba(13,110,253,0.10); border-radius:4px;">'
+              + '<span class="badge bg-primary me-1">OPEN · LIVE</span>'
+              + '#' + ol.id + ' ' + (ol.position_type || '')
+              + ' · now <strong>' + _shMoney(ol.pnl_usd) + '</strong>'
+              + ' · peak ' + _shMoney(ol.peak_net_usd)
+              + ' · trough ' + _shMoney(ol.trough_net_usd)
+              + ' <span class="text-secondary small">— being held; not a what-if</span></div>';
+        }
+
         let rows = '';
         // Live in-progress watches — updated on every 30 s poll to the CURRENT
         // held P&L on the real filled legs (immune to z / β drift).
@@ -602,7 +618,7 @@
         });
 
         if (!rows) {
-            body.innerHTML = '<div class="text-secondary small">No shadow watches yet. After any early exit ' +
+            body.innerHTML = openLine + '<div class="text-secondary small">No shadow watches yet. After any early exit ' +
                 '(stop, trailing stop, sub-target reversion) the real held P&amp;L is tracked here until it ' +
                 'reverts to target or up to 8&nbsp;h &mdash; so you can see whether &ldquo;just hold&rdquo; would ' +
                 'actually have paid.</div>';
@@ -631,7 +647,7 @@
                      '. High target-revert rate &rarr; exits are too early; low &rarr; the exits were right.';
         }
 
-        body.innerHTML = `
+        body.innerHTML = openLine + `
           <div class="table-responsive">
             <table class="table table-striped table-hover mb-2">
               <thead><tr>
@@ -647,6 +663,60 @@
         fetch('/api/shadow-summary').then(r => r.json()).then(renderShadowPanel).catch(() => {});
     }
     pollShadowPanel();
+
+    // ── Live open-position row in the Max-Drawdown table ──────────────────────
+    // The table shows booked (closed) trades; this injects the CURRENT open trade
+    // as a live top row with its running MAE/MFE/P&L (same columns), refreshed on
+    // a poll. Display-only — it is NOT added to the CSV export (booked history).
+    function _ddNum(v, dp, suf, signed) {
+        if (v === null || v === undefined) return '—';
+        return (signed && v >= 0 ? '+' : '') + Number(v).toFixed(dp) + (suf || '');
+    }
+    function renderDdLiveRow(row) {
+        const tbody = document.getElementById('dd-tbody');
+        if (!tbody) return;
+        let tr = document.getElementById('dd-live-row');
+        const emptyRow = document.getElementById('dd-empty-row');
+        if (!row) {                       // flat → drop the live row, restore empty state
+            if (tr) tr.remove();
+            if (emptyRow) emptyRow.style.display = '';
+            return;
+        }
+        if (emptyRow) emptyRow.style.display = 'none';
+        if (!tr) {
+            tr = document.createElement('tr');
+            tr.id = 'dd-live-row';
+            tr.style.background = 'rgba(13,110,253,0.10)';   // subtle live highlight
+            tbody.insertBefore(tr, tbody.firstChild);
+        }
+        const sideCls = row.position_type === 'LONG' ? 'bg-success' : 'bg-danger';
+        const maeCls = (row.mae_usd > 0) ? 'price-down' : '';
+        const pnlCls = (row.pnl_usd >= 0) ? 'price-up' : 'price-down';
+        const mins = (v) => (v === null || v === undefined) ? '—' : Math.round(v) + 'm';
+        tr.innerHTML =
+            '<td>' + row.id + '</td>'
+          + '<td><span class="badge ' + sideCls + '">' + row.position_type + '</span> '
+          + '<span class="badge bg-primary" title="Currently open — live, updates on a poll">LIVE</span></td>'
+          + '<td class="text-secondary">OPEN</td>'
+          + '<td class="text-end">' + _ddNum(row.utilization_pct, 1, '%') + '</td>'
+          + '<td class="text-end ' + maeCls + '">-$' + Number(row.mae_usd || 0).toFixed(2) + '</td>'
+          + '<td class="text-end ' + maeCls + '">' + _ddNum(row.mae_pct, 2, '%') + '</td>'
+          + '<td class="text-end ' + maeCls + '">' + _ddNum(row.mae_eq_pct, 2, '%') + '</td>'
+          + '<td class="text-end price-up">$' + Number(row.mfe_usd || 0).toFixed(2) + '</td>'
+          + '<td class="text-end price-up">' + _ddNum(row.mfe_pct, 2, '%') + '</td>'
+          + '<td class="text-end ' + pnlCls + '">' + _ddNum(row.pnl_usd, 2, '', true) + '</td>'
+          + '<td class="text-end ' + pnlCls + '">' + _ddNum(row.pnl_pct, 2, '%', true) + '</td>'
+          + '<td class="text-end ' + pnlCls + '">' + _ddNum(row.pnl_eq_pct, 2, '%', true) + '</td>'
+          + '<td class="text-end text-secondary">' + mins(row.trough_minutes) + '</td>'
+          + '<td class="text-end text-secondary">' + mins(row.peak_minutes) + '</td>';
+    }
+    function pollOpenPosition() {
+        fetch('/api/open-position-live').then(r => r.json())
+            .then(d => renderDdLiveRow(d && d.open ? d.row : null))
+            .catch(() => {});
+    }
+    pollOpenPosition();
+    setInterval(pollOpenPosition, 15000);
     setInterval(pollShadowPanel, 30000);
 </script>
 {% endblock %}

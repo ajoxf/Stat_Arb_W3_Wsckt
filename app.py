@@ -1008,6 +1008,51 @@ def _best_effort_equity():
         return None
 
 
+def _open_trade_dd_row():
+    """Live per-trade excursion for the CURRENTLY OPEN real trade, shaped like a
+    dd_trades row (see core.analytics.trade_excursions) so the Max-Drawdown table
+    can show it as a live 'OPEN' row and the shadow panel can show a live line.
+
+    Uses the engine's running high-/low-water trackers (_peak_pnl / _trough_pnl,
+    updated every tick), the live net P&L and the live capital-at-risk — the same
+    numbers the trade will be stamped with at close, just read mid-flight. Returns
+    None when flat / paper / unavailable. Read-only; never touches orders."""
+    ot = getattr(engine, 'open_trade', None)
+    if ot is None or getattr(engine.state, 'paper_trading', False):
+        return None
+    try:
+        from types import SimpleNamespace
+        from core.analytics import trade_excursions
+        net = engine._live_net_pnl(ot)
+        if net is None:
+            net = 0.0
+        peak = getattr(engine, '_peak_pnl', 0.0) or 0.0
+        trough = getattr(engine, '_trough_pnl', 0.0) or 0.0
+        cap = engine._capital_at_risk(ot)
+        ex = trade_excursions(
+            SimpleNamespace(peak_net_usd=peak, trough_net_usd=trough,
+                            pnl_usd=net, capital_locked_usd=cap),
+            equity=_best_effort_equity())
+
+        def _mins(dt):
+            if not dt or not ot.entry_time:
+                return None
+            return round((dt - ot.entry_time).total_seconds() / 60.0, 1)
+
+        ex.update({
+            'id': ot.id,
+            'position_type': ot.position_type,
+            'exit_reason': 'OPEN',
+            'is_live': True,
+            'trough_minutes': _mins(getattr(engine, '_trough_at', None)),
+            'peak_minutes': _mins(getattr(engine, '_peak_at', None)),
+        })
+        return ex
+    except Exception as e:
+        app.logger.debug("open-trade dd row build failed: %s", e)
+        return None
+
+
 # API Routes
 @app.route('/api/config', methods=['GET'])
 def get_config():
@@ -1071,10 +1116,24 @@ def api_shadow_summary():
             summary['recent'] = db.get_shadow_holds(limit=8)
         except Exception:
             summary['recent'] = []
+        # The CURRENTLY OPEN trade (live), so the panel reflects the position you
+        # are actually in — the shadow watches above are post-exit reversion only.
+        try:
+            summary['open_live'] = _open_trade_dd_row()
+        except Exception:
+            summary['open_live'] = None
         return jsonify(summary)
     except Exception as e:
         app.logger.debug("shadow-summary endpoint error: %s", e)
         return jsonify({'count': 0, 'active': 0, 'tracking': [], 'recent': [], 'error': str(e)})
+
+
+@app.route('/api/open-position-live', methods=['GET'])
+def api_open_position_live():
+    """Live per-trade excursion for the currently open trade, for the analysis
+    page's Max-Drawdown table live row. {'open': False} when flat. Read-only."""
+    row = _open_trade_dd_row()
+    return jsonify({'open': row is not None, 'row': row})
 
 
 def _hedge_ratio_change_blocked(new_beta):
