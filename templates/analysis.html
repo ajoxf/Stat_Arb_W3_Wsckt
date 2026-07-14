@@ -192,12 +192,12 @@
                         <thead style="position: sticky; top: 0; background: var(--bg-secondary);">
                             <tr>
                                 <th>#</th>
+                                <th class="text-end" title="Utilization — capital this trade tied up (per-leg margin × (1 + M2M buffer), i.e. margin AND buffer) ÷ current account equity. How big a bite of the account the position was.">Util %</th>
                                 <th>Side</th>
                                 <th>Exit</th>
                                 <th class="text-end" title="Maximum Adverse Excursion — worst net-$ the trade reached (how far it went against you).">MAE (against)</th>
                                 <th class="text-end" title="MAE as a % of the capital locked in that trade.">MAE %</th>
                                 <th class="text-end" title="MAE as a % of your CURRENT account equity — each trade's worst dip against the WHOLE account (vs MAE %, which is against that trade's own locked capital). Uses current equity for all trades, so it's comparable across the table.">MAE % eq</th>
-                                <th class="text-end" title="Utilization — capital this trade tied up (per-leg margin + M2M buffer) ÷ current account equity. How big a bite of the account the position was.">Util %</th>
                                 <th class="text-end" title="Maximum Favourable Excursion — best net-$ the trade reached.">MFE (best)</th>
                                 <th class="text-end" title="MFE as a % of the capital locked in that trade.">MFE (%)</th>
                                 <th class="text-end">Final P&L</th>
@@ -210,12 +210,12 @@
                             {% for t in dd_trades %}
                             <tr>
                                 <td>{{ t.id }}</td>
+                                <td class="text-end">{{ ('%.1f' % t.utilization_pct) ~ '%' if t.utilization_pct is not none else '—' }}</td>
                                 <td><span class="badge {% if t.position_type == 'LONG' %}bg-success{% else %}bg-danger{% endif %}">{{ t.position_type }}</span></td>
                                 <td class="text-secondary">{{ t.exit_reason or '—' }}</td>
                                 <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">-${{ '%.2f' % t.mae_usd }}</td>
                                 <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">{{ ('%.2f' % t.mae_pct) ~ '%' if t.mae_pct is not none else '—' }}</td>
                                 <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">{{ ('%.2f' % t.mae_eq_pct) ~ '%' if t.mae_eq_pct is not none else '—' }}</td>
-                                <td class="text-end">{{ ('%.1f' % t.utilization_pct) ~ '%' if t.utilization_pct is not none else '—' }}</td>
                                 <td class="text-end price-up">${{ '%.2f' % t.mfe_usd }}</td>
                                 <td class="text-end price-up">{{ ('%.2f' % t.mfe_pct) ~ '%' if t.mfe_pct is not none else '—' }}</td>
                                 <td class="text-end {% if t.pnl_usd >= 0 %}price-up{% else %}price-down{% endif %}">{{ '%+.2f' % t.pnl_usd }}</td>
@@ -363,10 +363,10 @@
 
     function downloadDrawdownCsv() {
         const cols = [   // [csv column label, row key]
-            ['trade', 'id'], ['side', 'position_type'], ['exit', 'exit_reason'],
+            ['trade', 'id'], ['utilization_pct', 'utilization_pct'],
+            ['side', 'position_type'], ['exit', 'exit_reason'],
             ['exit_time', 'exit_time'],
             ['mae_usd', 'mae_usd'], ['mae_pct', 'mae_pct'], ['mae_eq_pct', 'mae_eq_pct'],
-            ['utilization_pct', 'utilization_pct'],
             ['mfe_usd', 'mfe_usd'], ['mfe_pct', 'mfe_pct'],
             ['final_pnl_usd', 'pnl_usd'], ['profit_pct', 'pnl_pct'],
             ['trough_min', 'trough_minutes'], ['peak_min', 'peak_minutes'],
