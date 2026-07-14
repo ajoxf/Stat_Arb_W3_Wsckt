@@ -516,6 +516,22 @@ def start_engine_loop():
             summary['recent'] = []
         return summary
     _telegram.shadow_cb = _shadow_for_telegram
+
+    def _stats_for_telegram() -> dict:
+        """Full analysis stats for /stats — the web Analysis page's numbers
+        (win rate, reward:risk, profit factor, expectancy) plus the portfolio
+        max/current drawdown as a % of best-effort account equity."""
+        from core.analytics import drawdown_pct
+        try:
+            s = dict(db.get_trade_statistics())
+        except Exception:
+            return {}
+        eq = _best_effort_equity()
+        s['max_drawdown_pct'] = drawdown_pct(s.get('max_drawdown_usd', 0.0), eq)
+        s['current_drawdown_pct'] = drawdown_pct(s.get('current_drawdown_usd', 0.0), eq)
+        s['equity'] = eq
+        return s
+    _telegram.stats_cb = _stats_for_telegram
     # Start command polling in a background daemon thread
     _telegram.start_polling()
 

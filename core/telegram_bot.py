@@ -30,6 +30,7 @@ BOT_COMMAND_MENU = [
     ("positions", "Open positions: live P&L + exit levels"),
     ("trades",    "Recent closed trades"),
     ("pnl",       "P&L summary"),
+    ("stats",     "Edge stats + max drawdown"),
     ("shadow",    "What-if-held: did the exits revert?"),
     ("balance",   "Account balance"),
     ("pause",     "Algo OFF — halt new entries"),
@@ -155,6 +156,10 @@ class TelegramNotifier:
         # Shadow "what-if-held" summary (same shape as /api/shadow-summary):
         # aggregate + 'tracking' (live watches) + 'recent' (completed verdicts).
         self.shadow_cb: Optional[Callable[[], Dict[str, Any]]] = None
+        # Full analysis stats for /stats — get_trade_statistics() (win rate,
+        # reward:risk, profit factor, expectancy, edge quality) plus the
+        # portfolio max/current drawdown ($ and % of equity).
+        self.stats_cb: Optional[Callable[[], Dict[str, Any]]] = None
 
         # Pending /set input: key waiting for a value message.
         self._pending_set_key: Optional[str] = None
@@ -718,6 +723,7 @@ class TelegramNotifier:
             f"{'/trades':<{C}}recent closed trades",
             f"{'/balance':<{C}}account balance",
             f"{'/pnl':<{C}}P&amp;L summary",
+            f"{'/stats':<{C}}edge stats + max drawdown",
             f"{'/shadow':<{C}}what-if-held: did exits revert?",
             f"{'/eod':<{C}}end-of-day report",
             f"{'/closeall':<{C}}emergency: close all",
@@ -849,6 +855,7 @@ class TelegramNotifier:
             "/trades": self._cmd_trades,
             "/balance": self._cmd_balance,
             "/pnl": self._cmd_pnl,
+            "/stats": self._cmd_stats,
             "/shadow": self._cmd_shadow,
             "/eod": self._cmd_eod,
             "/closeall": self._cmd_closeall,
@@ -921,6 +928,7 @@ class TelegramNotifier:
             f"{'/trades':<{C}}recent closed trades",
             f"{'/balance':<{C}}account balance",
             f"{'/pnl':<{C}}P&amp;L summary",
+            f"{'/stats':<{C}}edge stats + max drawdown",
             f"{'/shadow':<{C}}what-if-held: did exits revert?",
             f"{'/eod':<{C}}end-of-day report",
             f"{'/optimize':<{C}}run parameter grid search",
@@ -1506,6 +1514,49 @@ class TelegramNotifier:
         self._send(
             f"<b>P&amp;L SUMMARY  ·  {ts}</b>\n" + "\n".join(rows)
         )
+
+    def _cmd_stats(self) -> None:
+        """Handle /stats — the full edge-and-drawdown analysis, the same numbers
+        as the web Analysis page: win rate vs break-even, reward:risk, profit
+        factor, expectancy, and the portfolio max/current drawdown."""
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        s = self.stats_cb() if self.stats_cb else None
+        if not s:
+            self._send(f"<b>ANALYSIS  ·  {ts}</b>\nStats not available.")
+            return
+
+        wr = s.get("win_rate", 0) or 0.0
+        be_wr = s.get("breakeven_win_rate")
+        wr_tag = "  (need >%.0f%%%s)" % (be_wr, " ✓" if wr >= be_wr else " ✗") if be_wr is not None else ""
+
+        dd_usd = abs(s.get("max_drawdown_usd", 0) or 0.0)
+        dd_pct = s.get("max_drawdown_pct")
+        dd_tail = f"  ({dd_pct:.1f}% of equity)" if dd_pct is not None else ""
+        cur_dd = abs(s.get("current_drawdown_usd", 0) or 0.0)
+
+        exp_r = s.get("expectancy_r")
+        pf = s.get("profit_factor")
+        rr = s.get("reward_risk")
+        aw = s.get("avg_win", 0) or 0.0
+        al = s.get("avg_loss", 0) or 0.0     # stored as positive magnitude
+        mw = s.get("max_win", 0) or 0.0
+        ml = s.get("max_loss", 0) or 0.0     # negative
+
+        R = self._R
+        rows = [
+            R("Trades", f"{s.get('total_trades', 0)}  ({s.get('winning_trades', 0)}W / {s.get('losing_trades', 0)}L)"),
+            R("Win Rate", f"{wr:.1f}%{wr_tag}"),
+            R("Expectancy", f"{exp_r:+.2f} R" if exp_r is not None else "—"),
+            R("Profit Factor", f"{pf:.2f}" if pf is not None else "—"),
+            R("Reward:Risk", f"{rr:.2f}" if rr is not None else "—"),
+            R("Avg W / L", f"${aw:.2f} / -${al:.2f}"),
+            R("Best / Worst", f"${mw:.2f} / -${abs(ml):.2f}"),
+            "",
+            R("Max Drawdown", f"-${dd_usd:.2f}{dd_tail}"),
+            R("Current DD", f"-${cur_dd:.2f}"),
+            R("All-time Net", f"${s.get('total_pnl', 0) or 0.0:+.2f}"),
+        ]
+        self._send(f"<b>📊 ANALYSIS  ·  {ts}</b>\n" + "\n".join(rows))
 
     def _cmd_shadow(self) -> None:
         """Handle /shadow — the 'what-if-held' scenarios: of the trades we
