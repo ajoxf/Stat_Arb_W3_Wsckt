@@ -75,18 +75,22 @@ def test_trade_lifecycle_extremes_roundtrip(tmp_path):
 
 # ── engine emission ───────────────────────────────────────────────────────────
 
-def _make_engine(captured):
+def _make_engine(captured, contract_val=0.01):
     eng = TradingEngine.__new__(TradingEngine)
     eng.config = TradingConfig(futures_taker_fee_bps=5.0)
     eng._daily_loss_usd = 0.0
     eng.on_untracked_close = captured.append
     eng.futures_adapter = SimpleNamespace(
-        close_position=AsyncMock(return_value=SimpleNamespace(success=True, error=None)))
+        close_position=AsyncMock(return_value=SimpleNamespace(success=True, error=None)),
+        # ctVal is what converts OKX 'pos' (CONTRACTS) to base coin for the fee.
+        get_symbol_info=AsyncMock(return_value={"contract_val": contract_val}))
     return eng
 
 
-def _orphan(symbol="BTC-USDT-SWAP", side="LONG", qty=0.03,
+def _orphan(symbol="BTC-USDT-SWAP", side="LONG", qty=10.0,
             entry_price=63000.0, upl=-0.39):
+    # qty is CONTRACTS (OKX 'pos'), matching what get_positions() reports —
+    # 10 BTC-swap contracts × ctVal 0.01 = 0.1 BTC.
     return {"symbol": symbol, "side": side, "quantity": qty,
             "entry_price": entry_price, "unrealized_pnl": upl}
 
@@ -101,10 +105,23 @@ def test_auto_close_emits_ledger_entry_and_books_daily_loss():
     assert e["source"] == "ORPHAN_AUTO_CLOSE"
     assert e["symbol"] == "BTC-USDT-SWAP"
     assert e["pnl_usd"] == pytest.approx(-0.39)
-    # fee est = 5 bps × 0.03 BTC × $63,000 = $0.945
-    assert e["fee_est_usd"] == pytest.approx(0.945)
+    # fee est = 5 bps × (10 contracts × 0.01 ctVal = 0.1 BTC) × $63,000 = $3.15.
+    # Regression: without the ctVal factor this priced 10 *BTC*, giving $31.50
+    # (and live, a 10-contract orphan logged a $168 fee that was really $1.68).
+    assert e["fee_est_usd"] == pytest.approx(3.15)
     # daily tracker charged with pnl − fee
-    assert eng._daily_loss_usd == pytest.approx(-0.39 - 0.945)
+    assert eng._daily_loss_usd == pytest.approx(-0.39 - 3.15)
+
+
+def test_auto_close_fee_zero_when_ctval_unavailable():
+    # If ctVal can't be fetched, book a 0 fee rather than inject a 10-100x
+    # phantom (contracts priced as coin) into the daily tracker.
+    captured = []
+    eng = _make_engine(captured)
+    eng.futures_adapter.get_symbol_info = AsyncMock(return_value=None)
+    asyncio.run(eng._auto_close_orphan_positions([_orphan()]))
+    assert captured[0]["fee_est_usd"] == 0.0
+    assert eng._daily_loss_usd == pytest.approx(-0.39)
 
 
 def test_failed_close_books_nothing():

@@ -2807,7 +2807,7 @@ class TradingEngine:
         for pos in orphan_positions:
             symbol = pos['symbol']
             side = pos['side']    # "LONG" or "SHORT"
-            qty = pos['quantity'] # base coin (BTC) as reported by OKX; for logging only
+            qty = pos['quantity'] # OKX 'pos' = CONTRACTS (not base coin); needs ×ctVal for notional
 
             # Safety: only auto-close SWAP / dated FUTURES positions.
             # Spot margin positions on the account are not bot-managed and
@@ -2849,8 +2849,24 @@ class TradingEngine:
                     taker_bps = getattr(self.config, 'futures_taker_fee_bps',
                                         self.config.taker_fee_bps)
                     entry_px = float(pos.get('entry_price') or 0.0)
-                    if entry_px > 0:
-                        fee_est = taker_bps / 10000.0 * qty * entry_px
+                    # qty is CONTRACTS (OKX 'pos'), so the fee must price the real
+                    # notional = contracts × ctVal × price. Without the ctVal factor
+                    # a 10-contract BTC orphan (ctVal 0.01) overstates the fee 100×
+                    # and a 35-contract ETH orphan (ctVal 0.1) 10× — live: a ~$1.68
+                    # taker fee got logged as $168 and dumped a phantom loss into the
+                    # daily-P&L tracker. ctVal is cached (every order placement uses it).
+                    ct_val = 0.0
+                    try:
+                        _info = await self.futures_adapter.get_symbol_info(symbol)
+                        ct_val = float((_info or {}).get('contract_val') or 0.0)
+                    except Exception:
+                        ct_val = 0.0
+                    if entry_px > 0 and ct_val > 0:
+                        fee_est = taker_bps / 10000.0 * qty * ct_val * entry_px
+                    elif entry_px > 0:
+                        # ctVal unavailable — under-book (0) rather than inject a
+                        # 10-100× phantom fee into the daily tracker.
+                        logger.warning("AUTO-CLOSE fee est skipped for %s: ctVal unavailable", symbol)
                 except Exception:
                     fee_est = 0.0
                 self._daily_loss_usd += upl - fee_est
