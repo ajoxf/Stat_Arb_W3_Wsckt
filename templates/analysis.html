@@ -178,7 +178,13 @@
                     <i class="bi bi-graph-down-arrow me-2"></i>Max Drawdown by Trade &mdash; how far each trade went against you
                     <i class="bi bi-question-circle small text-secondary ms-1"></i>
                 </span>
-                <span class="badge bg-secondary">{{ dd_trades|length }} trades</span>
+                <span class="d-flex align-items-center">
+                    <span class="badge bg-secondary">{{ dd_trades|length }} trades</span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-0 ms-2"
+                            onclick="downloadDrawdownCsv()" title="Download this table as CSV">
+                        <i class="bi bi-download"></i> CSV
+                    </button>
+                </span>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
@@ -349,6 +355,40 @@
 <script>
     // SD Touch Distribution Chart
     const sdTouchData = {{ sd_touches | tojson }};
+
+    // Max-Drawdown-by-trade rows, exported to CSV by the header button. Built
+    // from the same data the table renders, so the file matches the view — with
+    // raw numbers (not the $/% formatted cells) for clean analysis.
+    const DD_TRADES = {{ dd_trades | tojson }};
+
+    function downloadDrawdownCsv() {
+        const cols = [   // [csv column label, row key]
+            ['trade', 'id'], ['side', 'position_type'], ['exit', 'exit_reason'],
+            ['exit_time', 'exit_time'],
+            ['mae_usd', 'mae_usd'], ['mae_pct', 'mae_pct'], ['mae_eq_pct', 'mae_eq_pct'],
+            ['utilization_pct', 'utilization_pct'],
+            ['mfe_usd', 'mfe_usd'], ['mfe_pct', 'mfe_pct'],
+            ['final_pnl_usd', 'pnl_usd'], ['profit_pct', 'pnl_pct'],
+            ['trough_min', 'trough_minutes'], ['peak_min', 'peak_minutes'],
+        ];
+        const cell = (v) => {
+            if (v === null || v === undefined) return '';
+            if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(4);
+            v = String(v);
+            return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+        };
+        const lines = [cols.map(c => c[0]).join(',')];
+        (DD_TRADES || []).forEach(t => lines.push(cols.map(c => cell(t[c[1]])).join(',')));
+        const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'max_drawdown_by_trade.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
 
     // Count SD touches by level
     const sdCounts = {};
