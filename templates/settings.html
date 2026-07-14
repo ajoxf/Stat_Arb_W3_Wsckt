@@ -145,7 +145,7 @@
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Dollar Stop (% capital)</label>
-                            <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.01" min="0" max="20">
+                            <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.01" min="0" max="50">
                             <small class="text-secondary">% of capital-at-risk per trade &mdash; the hard <strong>catastrophe ceiling</strong>. Effective stop = the <em>tighter</em> of this and (target &divide; R:R). <strong>1.0&ndash;1.5</strong> at $100k+; at small size this is dollar-tiny, so set <strong>0</strong> and let R:R set the stop until you scale.</small>
                         </div>
                         <div class="col-md-4">
