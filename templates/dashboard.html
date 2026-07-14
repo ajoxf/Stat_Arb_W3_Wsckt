@@ -799,13 +799,15 @@
                     <span class="text-secondary">Margin Ratio:</span>
                     <span id="margin-ratio">0%</span>
                 </div>
-                <div class="d-flex justify-content-between mb-1">
-                    <span class="text-secondary">Mark Price:</span>
-                    <span id="mark-price">-</span>
+                <div class="d-flex justify-content-between mb-1" id="leg-a-liq-row"
+                     title="Leg A liquidation price, shown with its current mark (mark → liq). A hedged pair's two legs liquidate in OPPOSITE directions — the short leg above its mark, the long leg below.">
+                    <span class="text-secondary" id="leg-a-liq-label">Leg A Liq:</span>
+                    <span><span id="leg-a-mark-price" class="text-secondary" style="font-size:0.72rem;"></span> <span id="leg-a-liq-price" class="text-danger">-</span></span>
                 </div>
-                <div class="d-flex justify-content-between">
-                    <span class="text-secondary">Liq. Price:</span>
-                    <span id="liq-price" class="text-danger">-</span>
+                <div class="d-flex justify-content-between" id="leg-b-liq-row"
+                     title="Leg B liquidation price, shown with its current mark (mark → liq). A hedged pair's two legs liquidate in OPPOSITE directions — the short leg above its mark, the long leg below.">
+                    <span class="text-secondary" id="leg-b-liq-label">Leg B Liq:</span>
+                    <span><span id="leg-b-mark-price" class="text-secondary" style="font-size:0.72rem;"></span> <span id="leg-b-liq-price" class="text-danger">-</span></span>
                 </div>
                 <div class="text-secondary mt-2"
                      style="font-size: 0.65rem; border-top: 1px solid var(--border-color); padding-top: 4px;">
@@ -3171,10 +3173,25 @@ function updateFilterStatus(elementId, passed, value) {
                     else healthBadge.classList.add('bg-secondary');
                 }
 
-                updateElement('mark-price',
-                    _inPos && data.mark_price ? '$' + data.mark_price.toFixed(2) : _emptyShort);
-                updateElement('liq-price',
-                    _inPos && data.liquidation_price ? '$' + data.liquidation_price.toFixed(2) : _emptyShort);
+                // Per-leg liquidation prices, each shown as "mark → liq". The two
+                // legs of a hedged pair liquidate in opposite directions, so a single
+                // liq number was misleading — show both.
+                const _coin = (s) => (s || '').split('-')[0] || '';
+                const _legALbl = document.getElementById('leg-a-liq-label');
+                if (_legALbl) _legALbl.textContent =
+                    'Leg A' + (data.leg_a_symbol ? ' (' + _coin(data.leg_a_symbol) + ')' : '') + ' Liq:';
+                const _legBLbl = document.getElementById('leg-b-liq-label');
+                if (_legBLbl) _legBLbl.textContent =
+                    'Leg B' + (data.leg_b_symbol ? ' (' + _coin(data.leg_b_symbol) + ')' : '') + ' Liq:';
+
+                updateElement('leg-a-mark-price',
+                    _inPos && data.leg_a_mark_price ? '$' + data.leg_a_mark_price.toFixed(2) + ' →' : '');
+                updateElement('leg-a-liq-price',
+                    _inPos && data.leg_a_liq_price ? '$' + data.leg_a_liq_price.toFixed(2) : _emptyShort);
+                updateElement('leg-b-mark-price',
+                    _inPos && data.leg_b_mark_price ? '$' + data.leg_b_mark_price.toFixed(2) + ' →' : '');
+                updateElement('leg-b-liq-price',
+                    _inPos && data.leg_b_liq_price ? '$' + data.leg_b_liq_price.toFixed(2) : _emptyShort);
 
                 // Update actual leverage from exchange (for accurate margin calculations)
                 if (data.actual_spot_leverage !== undefined) {

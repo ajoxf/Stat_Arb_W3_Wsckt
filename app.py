@@ -2224,9 +2224,9 @@ def get_account_info():
                     return await adapter.get_account_info()
                 return None
 
-            async def fetch_position_margin():
+            async def fetch_position_margin(sym):
                 if hasattr(adapter, 'get_position_margin_info'):
-                    return await adapter.get_position_margin_info(config.futures_symbol)
+                    return await adapter.get_position_margin_info(sym)
                 return None
 
             async def fetch_account_config():
@@ -2262,8 +2262,13 @@ def get_account_info():
                     elif account.margin_ratio > 0:
                         account_data['margin_health'] = 'DANGER'
 
-                # Fetch position margin info
-                pos_future = asyncio.run_coroutine_threadsafe(fetch_position_margin(), loop)
+                # Fetch position margin info — Leg B (futures) drives margin health;
+                # Leg A (spot symbol) is fetched too so BOTH legs' liquidation prices
+                # show. A hedged pair liquidates in OPPOSITE directions (the short leg
+                # above its mark, the long leg below), so one number per leg is the
+                # honest picture.
+                pos_future = asyncio.run_coroutine_threadsafe(
+                    fetch_position_margin(config.futures_symbol), loop)
                 pos_margin = pos_future.result(timeout=10)
 
                 if pos_margin:
@@ -2271,6 +2276,21 @@ def get_account_info():
                     account_data['mark_price'] = pos_margin.get('mark_price')
                     account_data['futures_margin_used'] = pos_margin.get('imr', 0)
                     account_data['futures_unrealized_pnl'] = pos_margin.get('unrealized_pnl', 0)
+                    account_data['leg_b_liq_price'] = pos_margin.get('liquidation_price')
+                    account_data['leg_b_mark_price'] = pos_margin.get('mark_price')
+
+                # Leg A (spot symbol): only a derivative leg has a liquidation price;
+                # a genuine cash-spot leg can't be liquidated, so skip it there.
+                if is_derivative(config.spot_symbol):
+                    try:
+                        a_future = asyncio.run_coroutine_threadsafe(
+                            fetch_position_margin(config.spot_symbol), loop)
+                        pos_margin_a = a_future.result(timeout=10)
+                        if pos_margin_a:
+                            account_data['leg_a_liq_price'] = pos_margin_a.get('liquidation_price')
+                            account_data['leg_a_mark_price'] = pos_margin_a.get('mark_price')
+                    except Exception as _leg_a_err:
+                        logger.debug("Leg A margin fetch failed: %s", _leg_a_err)
 
                 # Fetch account config for UID — cached to avoid rate-limiting
                 import time as _time
@@ -2332,6 +2352,9 @@ def get_account_info():
     # Add configured leverage for comparison
     account_data['configured_spot_leverage'] = config.spot_leverage
     account_data['configured_futures_leverage'] = config.futures_leverage
+    # Leg symbols so the margin card can label the per-leg liquidation rows.
+    account_data['leg_a_symbol'] = config.spot_symbol
+    account_data['leg_b_symbol'] = config.futures_symbol
 
     # Capital the NEXT trade at the configured size would lock up at live mids
     # (per-leg margin + M2M buffer) — the same figure the pre-trade balance guard
