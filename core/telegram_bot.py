@@ -1569,6 +1569,8 @@ class TelegramNotifier:
             self._send(f"<b>SHADOW · {ts}</b>\nWhat-if data not available.")
             return
 
+        R = self._R
+
         def _money(v):
             if v is None:
                 return "—"
@@ -1577,72 +1579,104 @@ class TelegramNotifier:
         def _mins(v):
             return f"{round(v)}m" if v is not None else "—"
 
+        def _reason(v):
+            # "TRAILING_STOP" → "Trailing Stop" — readable, and escaped.
+            return html.escape(str(v or "—").replace("_", " ").title())
+
+        def _verdict(v):
+            # Compact, scannable label for the stored verdict string
+            # ("REVERTED TO TARGET" / "REVERTED TO BREAK-EVEN" / "KEPT BLEEDING").
+            u = (v or "").upper()
+            if "TARGET" in u:
+                return "✓ hit target"
+            if "BREAK" in u or "B/E" in u:
+                return "~ back to B/E"
+            if "BLEED" in u:
+                return "✗ kept bleeding"
+            return html.escape(str(v or "—"))
+
         done     = s.get("count", 0) or 0
         tracking = s.get("tracking", []) or []
         recent   = s.get("recent", []) or []
         active   = s.get("active", len(tracking))
 
         lines = [
-            f"<b>SHADOW “WHAT-IF-HELD”  ·  {ts}</b>",
-            "<i>If we’d held the exits, did they revert?</i>",
-            f"<b>{done}</b> completed · <b>{active}</b> live",
+            f"<b>🔮 SHADOW · WHAT-IF-HELD</b>  ·  {ts}",
+            "<i>Of the exits we took, would holding have reverted them?</i>",
+            "",
+            f"<b>{done}</b> completed  ·  <b>{active}</b> live",
         ]
 
-        # Live in-progress watches — current held P&L, marked to the latest mids.
-        if tracking:
-            lines.append("\n<b>▸ Tracking now</b>")
-            for t in tracking[:8]:
-                flags = ("BE✓" if t.get("hit_be") else "BE·") + " " + \
-                        ("TP✓" if t.get("hit_target") else "TP·")
-                lines.append(
-                    f"<code>#{t.get('trade_id')}</code> {html.escape(str(t.get('exit_reason') or ''))} "
-                    f"exit {_money(t.get('exit_net_usd'))} → now "
-                    f"<b>{_money(t.get('current_net_usd'))}</b> ({_mins(t.get('mins_since_entry'))}) "
-                    f"peak {_money(t.get('peak_net_usd'))} · {flags}")
-
-        # Recent finished verdicts.
-        if recent:
-            lines.append("\n<b>▸ Recent verdicts</b>")
-            for r in recent[:6]:
-                tail = ""
-                if r.get("hit_target"):
-                    tail = f" · TP {_mins(r.get('hit_target_min'))}"
-                elif r.get("hit_break_even"):
-                    tail = f" · BE {_mins(r.get('hit_be_min'))}"
-                lines.append(
-                    f"<code>#{r.get('trade_id')}</code> {html.escape(str(r.get('verdict') or '—'))} "
-                    f"· peak {_money(r.get('peak_net_usd'))}{tail}")
-
-        # Aggregate — only quote a rate once there are enough completed watches.
-        lines.append("")
+        # ── Scorecard — revert rates over the CUT trades (stops / sub-target
+        # exits); a target exit trivially "hits target" so those are excluded.
+        lines.append("\n<b>▸ Scorecard</b>")
         if done == 0:
-            lines.append("<i>No completed watches yet — live rows finalize on "
+            lines.append("<i>No completed watches yet — rows finalize on "
                          "target-hit or after 8 h.</i>")
-        elif done < 5:
-            lines.append(f"<i>Only {done} completed — too few to read as a rate; "
-                         f"judge the rows above. Avg peak if held "
-                         f"{_money(s.get('avg_peak_usd'))}.</i>")
         else:
             pct_t = round((s.get("revert_target_rate", 0) or 0) * 100)
             pct_b = round((s.get("revert_be_rate", 0) or 0) * 100)
-            lines.append(
-                f"Across <b>{done}</b>: {s.get('reverted_target', 0)} to target "
-                f"({pct_t}%, med {_mins(s.get('median_target_min'))}), "
-                f"{s.get('reverted_be', 0)} back to BE "
-                f"({pct_b}%, med {_mins(s.get('median_be_min'))}). "
-                f"Avg peak {_money(s.get('avg_peak_usd'))}.")
+            rt = s.get("reverted_target", 0) or 0
+            rb = s.get("reverted_be", 0) or 0
+            lines += [
+                R("Hit target if held", f"{rt}/{done}  ({pct_t}%)  med {_mins(s.get('median_target_min'))}"),
+                R("Back to B/E if held", f"{rb}/{done}  ({pct_b}%)  med {_mins(s.get('median_be_min'))}"),
+                R("Avg peak if held", _money(s.get("avg_peak_usd"))),
+            ]
+            if done < 5:
+                lines.append(f"<i>Only {done} completed — too few to read as a "
+                             "rate; judge the rows below.</i>")
+            elif pct_t >= 50:
+                lines.append(f"<i>{pct_t}% would have reached target — exits may "
+                             "be too early.</i>")
+            else:
+                lines.append(f"<i>{pct_t}% reached target — cutting looks "
+                             "justified.</i>")
 
-        # TP hits: did the spread keep running PAST the target after we booked it?
-        # (Kept out of the revert-rate above — a target exit trivially hits target.)
+        # ── TP overshoot — did the spread keep running PAST the target after we
+        # booked it? (Answers "is my TP set too low?".)
         tp_n = s.get("tp_count", 0) or 0
         if tp_n:
             ran = s.get("tp_ran_past", 0) or 0
             avg_x = s.get("tp_avg_extra_usd", 0.0) or 0.0
             max_x = s.get("tp_max_extra_usd", 0.0) or 0.0
-            lines.append(
-                f"\n<b>▸ TP hits</b> ({tp_n}): {ran} kept running past target "
-                f"— avg +${avg_x:.2f}, max +${max_x:.2f} beyond TP. "
-                f"<i>Big = your TP is too low.</i>")
+            lines += [
+                "\n<b>▸ TP overshoot</b>",
+                R("TP exits", f"{tp_n}"),
+                R("Ran past target", f"{ran} of {tp_n}"),
+                R("Avg beyond TP", f"+${avg_x:.2f}"),
+                R("Max beyond TP", f"+${max_x:.2f}"),
+            ]
+            if max_x > 0.01:
+                lines.append("<i>Large overshoot = your TP is set too low.</i>")
+
+        # ── Live in-progress watches — current held P&L, marked to latest mids.
+        if tracking:
+            lines.append(f"\n<b>▸ Tracking now</b>  ({len(tracking)})")
+            for t in tracking[:6]:
+                flags = ("BE✓" if t.get("hit_be") else "BE·") + " " + \
+                        ("TP✓" if t.get("hit_target") else "TP·")
+                lines.append(
+                    f"<code>#{t.get('trade_id')}</code> {_reason(t.get('exit_reason'))} "
+                    f"· {_mins(t.get('mins_since_entry'))}")
+                lines.append(
+                    f"   exit {_money(t.get('exit_net_usd'))} → now "
+                    f"<b>{_money(t.get('current_net_usd'))}</b> · "
+                    f"peak {_money(t.get('peak_net_usd'))} · {flags}")
+
+        # ── Recent finished verdicts — what actually happened if we'd held.
+        if recent:
+            lines.append("\n<b>▸ Recent verdicts</b>")
+            for r in recent[:6]:
+                tail = ""
+                if r.get("hit_target") and r.get("hit_target_min") is not None:
+                    tail = f" · in {_mins(r.get('hit_target_min'))}"
+                elif r.get("hit_break_even") and r.get("hit_be_min") is not None:
+                    tail = f" · in {_mins(r.get('hit_be_min'))}"
+                lines.append(
+                    f"<code>#{r.get('trade_id')}</code> {_verdict(r.get('verdict'))} · "
+                    f"held {_money(r.get('final_net_usd'))} · "
+                    f"peak {_money(r.get('peak_net_usd'))}{tail}")
 
         self._send("\n".join(lines))
 
