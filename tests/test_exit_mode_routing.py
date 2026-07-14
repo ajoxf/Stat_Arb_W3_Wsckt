@@ -100,12 +100,14 @@ def test_sub_target_reversion_win_is_tracked():
     assert len(eng._shadow_holds) == 1
 
 
-def test_clean_target_hit_is_not_tracked():
-    # A full PROFIT_TARGET capture got the intended profit — nothing to learn.
+def test_target_hit_is_tracked_for_overshoot():
+    # A PROFIT_TARGET capture IS now tracked — to answer "did the spread keep
+    # running PAST the target?" (a too-low TP leaving money on the table). It's
+    # kept out of the revert-rate in get_shadow_summary, not dropped at arm time.
     eng = _engine()
-    eng._override_exit_reason = "PROFIT_TARGET"
-    eng._open_shadow_hold(_trade(pnl=1.81, exit_reason="PROFIT_TARGET"), "STOP_LOSS")
-    assert eng._shadow_holds == []
+    eng._open_shadow_hold(_trade(pnl=1.81, exit_reason="PROFIT_TARGET"), "EXIT")
+    assert len(eng._shadow_holds) == 1
+    assert eng._shadow_holds[0].exit_reason == "PROFIT_TARGET"
 
 
 def test_loss_still_tracked():

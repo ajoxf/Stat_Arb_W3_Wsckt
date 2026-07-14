@@ -157,12 +157,16 @@ def _trade(pnl):
                  quantity=0.03, spot_qty=1.06, pnl_usd=pnl)
 
 
-def test_open_skips_clean_target_hit():
-    # A full PROFIT_TARGET capture got the intended profit — nothing to learn.
+def test_open_arms_target_hit_for_overshoot_watch():
+    # A PROFIT_TARGET capture IS now tracked — to see whether the spread kept
+    # running PAST the target after we booked it (a too-low TP leaves money on
+    # the table). It's kept out of the revert-rate in get_shadow_summary.
     eng = _armable_engine()
-    eng._override_exit_reason = "PROFIT_TARGET"
-    eng._open_shadow_hold(_trade(pnl=2.5), "STOP_LOSS")
-    assert eng._shadow_holds == []
+    tr = _trade(pnl=2.5)
+    tr.exit_reason = "PROFIT_TARGET"
+    eng._open_shadow_hold(tr, "EXIT")
+    assert len(eng._shadow_holds) == 1
+    assert eng._shadow_holds[0].exit_reason == "PROFIT_TARGET"
 
 
 def test_open_arms_early_win():
@@ -231,4 +235,37 @@ def test_empty_summary(tmp_path):
     assert db.get_shadow_summary() == {
         "count": 0, "reverted_be": 0, "reverted_target": 0, "kept_bleeding": 0,
         "revert_be_rate": 0.0, "revert_target_rate": 0.0, "median_be_min": None,
-        "median_target_min": None, "avg_peak_usd": 0.0}
+        "median_target_min": None, "avg_peak_usd": 0.0,
+        "tp_count": 0, "tp_ran_past": 0, "tp_avg_extra_usd": 0.0, "tp_max_extra_usd": 0.0}
+
+
+def test_summary_splits_tp_hits_out_of_revert_rate(tmp_path):
+    """PROFIT_TARGET holds are tracked but must NOT count in the revert-rate (they
+    trivially 'hit target'); they're summarised separately to show whether the
+    spread kept running PAST the target after we booked it."""
+    db = DatabaseManager(db_path=str(tmp_path / "tp.db"))
+    # Two CUT trades (the revert-rate population): one hit target, one bled.
+    db.save_shadow_hold({"trade_id": 1, "position_type": "SHORT", "exit_reason": "STOP_LOSS",
+                         "exit_net_usd": -10.0, "target_usd": 6.0, "peak_net_usd": 6.5,
+                         "hit_target": True, "hit_break_even": True, "hit_target_min": 40})
+    db.save_shadow_hold({"trade_id": 2, "position_type": "LONG", "exit_reason": "EXIT",
+                         "exit_net_usd": -5.0, "target_usd": 6.0, "peak_net_usd": -3.0,
+                         "hit_target": False, "hit_break_even": False})
+    # Two TP hits: #3 ran +2 past the booked target, #4 didn't run further.
+    db.save_shadow_hold({"trade_id": 3, "position_type": "SHORT", "exit_reason": "PROFIT_TARGET",
+                         "exit_net_usd": 6.0, "target_usd": 6.0, "peak_net_usd": 8.0,
+                         "hit_target": True, "hit_break_even": True})
+    db.save_shadow_hold({"trade_id": 4, "position_type": "LONG", "exit_reason": "PROFIT_TARGET",
+                         "exit_net_usd": 6.0, "target_usd": 6.0, "peak_net_usd": 6.0,
+                         "hit_target": True, "hit_break_even": True})
+
+    s = db.get_shadow_summary()
+    # Rate denominator = the 2 CUT trades, NOT all 4.
+    assert s["count"] == 2
+    assert s["reverted_target"] == 1
+    assert s["revert_target_rate"] == pytest.approx(0.5)
+    # TP hits summarised on their own.
+    assert s["tp_count"] == 2
+    assert s["tp_ran_past"] == 1
+    assert s["tp_avg_extra_usd"] == pytest.approx(1.0)   # (2.0 + 0.0) / 2
+    assert s["tp_max_extra_usd"] == pytest.approx(2.0)

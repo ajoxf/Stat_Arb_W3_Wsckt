@@ -101,3 +101,23 @@ def test_loser_that_stayed_down_is_not_recovered():
 def test_mae_pct_is_none_without_capital():
     ex = trade_excursions(_trade(trough=-10.0, peak=0.0, pnl=-4.0, cap=0.0))
     assert ex["mae_pct"] is None
+
+
+def test_verdict_clean_win():
+    # Won, never underwater
+    assert trade_excursions(_trade(trough=0.5, peak=8.0, pnl=6.0, cap=100.0))["verdict"] == "clean"
+
+
+def test_verdict_recovered():
+    # Dipped underwater, still closed green
+    assert trade_excursions(_trade(trough=-5.0, peak=8.0, pnl=3.0, cap=100.0))["verdict"] == "recovered"
+
+
+def test_verdict_round_tripped():
+    # Reached real unrealised profit, gave it all back to a loss
+    assert trade_excursions(_trade(trough=-6.0, peak=7.0, pnl=-4.0, cap=100.0))["verdict"] == "round_tripped"
+
+
+def test_verdict_loss():
+    # Never in profit, closed red
+    assert trade_excursions(_trade(trough=-10.0, peak=0.0, pnl=-4.0, cap=100.0))["verdict"] == "loss"

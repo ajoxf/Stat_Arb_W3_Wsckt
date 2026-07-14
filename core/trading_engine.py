@@ -1088,16 +1088,14 @@ class TradingEngine:
         the question only matters when we took a loss."""
         try:
             pnl = trade.pnl_usd if trade.pnl_usd is not None else 0.0
-            # Track every exit EXCEPT a clean profit-target hit. A PROFIT_TARGET
-            # exit already captured the full intended profit, so "should I have
-            # held?" doesn't apply. Everything else — stops, losses, AND small
-            # WINS that exited early (a trailing stop or a sub-target reversion)
-            # can leave money on the table: live #91 banked $0.15 via a trailing
-            # stop while the spread kept reverting to the TP level ($1.81). That
-            # under-capture is exactly what this watch is for.
-            reason = (trade.exit_reason or self._override_exit_reason or signal_type or "").upper()
-            if reason == "PROFIT_TARGET":
-                return
+            # Track EVERY exit. For stops / losses / sub-target reversions the
+            # question is "would it have reverted if held?" (live #91 banked $0.15
+            # via a trailing stop while the spread kept reverting to $1.81). For a
+            # PROFIT_TARGET hit it flips to "did the spread keep running PAST the
+            # target?" — how a too-low TP leaving money on the table shows up
+            # (#104 booked +$1.77 then ran to +$5.87). get_shadow_summary keeps TP
+            # hits OUT of the revert-rate (a target exit trivially "hit target")
+            # and reports them on a separate line.
             if not (self.spot_tick and self.futures_tick):
                 return
             beta = max(getattr(self.config, 'hedge_ratio', 1.0) or 1.0, 1e-9)
@@ -1115,7 +1113,11 @@ class TradingEngine:
                 fees_usd=self._round_trip_fees(trade),
                 target_usd=tg.get('target_usd', 0.0) or 0.0,
                 exit_net=round(pnl, 2),
-                exit_reason=(self._override_exit_reason or signal_type or ""),
+                # trade.exit_reason carries the SPECIFIC reason (PROFIT_TARGET,
+                # DOLLAR_STOP, …); _override_exit_reason was already cleared by
+                # _close_position, so prefer the stamped value — the summary needs
+                # "PROFIT_TARGET" to split TP hits out of the revert-rate.
+                exit_reason=(trade.exit_reason or self._override_exit_reason or signal_type or ""),
             )
             hold.pending_key = hold.exit_time.isoformat()
             self._shadow_holds.append(hold)

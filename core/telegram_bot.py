@@ -1581,6 +1581,18 @@ class TelegramNotifier:
                 f"({pct_b}%, med {_mins(s.get('median_be_min'))}). "
                 f"Avg peak {_money(s.get('avg_peak_usd'))}.")
 
+        # TP hits: did the spread keep running PAST the target after we booked it?
+        # (Kept out of the revert-rate above — a target exit trivially hits target.)
+        tp_n = s.get("tp_count", 0) or 0
+        if tp_n:
+            ran = s.get("tp_ran_past", 0) or 0
+            avg_x = s.get("tp_avg_extra_usd", 0.0) or 0.0
+            max_x = s.get("tp_max_extra_usd", 0.0) or 0.0
+            lines.append(
+                f"\n<b>▸ TP hits</b> ({tp_n}): {ran} kept running past target "
+                f"— avg +${avg_x:.2f}, max +${max_x:.2f} beyond TP. "
+                f"<i>Big = your TP is too low.</i>")
+
         self._send("\n".join(lines))
 
     def _cmd_eod(self) -> None:

@@ -79,6 +79,21 @@ def trade_excursions(trade) -> Dict[str, Optional[float]]:
     peak = getattr(trade, "peak_net_usd", 0.0) or 0.0
     pnl = getattr(trade, "pnl_usd", 0.0) or 0.0
     mae_usd = -trough if trough < 0 else 0.0
+    # One-word verdict that synthesises the MAE/MFE/final path into the outcome
+    # that actually matters — far more legible than a yes/no "recovered":
+    #   clean         won without ever going underwater
+    #   recovered     dipped underwater but still closed green (holding paid off)
+    #   round_tripped reached unrealised profit, then gave it ALL back (the leak
+    #                 the trailing-stop / TP tuning is chasing)
+    #   loss          never in profit, closed red (trend ran it over)
+    if pnl > 0 and trough >= 0:
+        verdict = "clean"
+    elif pnl > 0:
+        verdict = "recovered"
+    elif peak > 0:
+        verdict = "round_tripped"
+    else:
+        verdict = "loss"
     return {
         "mae_usd": mae_usd,
         "mae_pct": (mae_usd / cap * 100.0) if cap > 0 else None,
@@ -88,4 +103,5 @@ def trade_excursions(trade) -> Dict[str, Optional[float]]:
         "pnl_usd": pnl,
         "capital_locked_usd": cap,
         "recovered": bool(trough < 0 and pnl > 0),
+        "verdict": verdict,
     }

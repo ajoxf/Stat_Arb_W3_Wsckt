@@ -1177,12 +1177,6 @@ class DatabaseManager:
         there and the average peak. This is the read on whether 'just wait' is
         true for your pair — measured, not assumed."""
         rows = self.get_shadow_holds(limit=limit)
-        n = len(rows)
-        if n == 0:
-            return {"count": 0, "reverted_be": 0, "reverted_target": 0,
-                    "kept_bleeding": 0, "revert_be_rate": 0.0,
-                    "revert_target_rate": 0.0, "median_be_min": None,
-                    "median_target_min": None, "avg_peak_usd": 0.0}
 
         def _median(vals):
             vals = sorted(v for v in vals if v is not None)
@@ -1191,9 +1185,32 @@ class DatabaseManager:
             m = len(vals) // 2
             return round(vals[m] if len(vals) % 2 else (vals[m - 1] + vals[m]) / 2.0, 1)
 
-        be = [r for r in rows if r.get("hit_break_even")]
-        tg = [r for r in rows if r.get("hit_target")]
-        peaks = [r.get("peak_net_usd", 0.0) or 0.0 for r in rows]
+        # TP hits are tracked too, but a PROFIT_TARGET exit trivially "hit target",
+        # so they must NOT count in the revert-rate. The rate is over the trades we
+        # CUT (stops / losses / sub-target exits); TP hits are summarised separately
+        # to answer "did the spread keep running PAST the target after we booked it?".
+        def _is_tp(r):
+            return (r.get("exit_reason") or "").upper() == "PROFIT_TARGET"
+        cut = [r for r in rows if not _is_tp(r)]
+        tp = [r for r in rows if _is_tp(r)]
+        tp_extra = [(r.get("peak_net_usd") or 0.0) - (r.get("exit_net_usd") or 0.0) for r in tp]
+        tp_stats = {
+            "tp_count": len(tp),
+            "tp_ran_past": sum(1 for x in tp_extra if x > 0.01),
+            "tp_avg_extra_usd": round(sum(tp_extra) / len(tp_extra), 2) if tp_extra else 0.0,
+            "tp_max_extra_usd": round(max(tp_extra), 2) if tp_extra else 0.0,
+        }
+
+        n = len(cut)
+        if n == 0:
+            return {"count": 0, "reverted_be": 0, "reverted_target": 0,
+                    "kept_bleeding": 0, "revert_be_rate": 0.0,
+                    "revert_target_rate": 0.0, "median_be_min": None,
+                    "median_target_min": None, "avg_peak_usd": 0.0, **tp_stats}
+
+        be = [r for r in cut if r.get("hit_break_even")]
+        tg = [r for r in cut if r.get("hit_target")]
+        peaks = [r.get("peak_net_usd", 0.0) or 0.0 for r in cut]
         return {
             "count": n,
             "reverted_be": len(be),
@@ -1204,6 +1221,7 @@ class DatabaseManager:
             "median_be_min": _median([r.get("hit_be_min") for r in be]),
             "median_target_min": _median([r.get("hit_target_min") for r in tg]),
             "avg_peak_usd": round(sum(peaks) / n, 2),
+            **tp_stats,
         }
 
     def get_trades(self, limit: int = 100, open_only: bool = False) -> List[Trade]:
