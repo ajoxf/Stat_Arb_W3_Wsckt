@@ -34,9 +34,9 @@ def test_use_market_decision_matrix():
     # Reproduce the branch from _close_position's exit-mode selection.
     NON_URGENT = ("EXIT", "PROFIT_TARGET", "MAX_HOLD")
 
-    # MARKET_AFTER mirrors engine._EXIT_POSTONLY_MARKET_AFTER (3): non-urgent
-    # exits probe maker up to 3 times before MARKET, to save the taker fee.
-    def use_market(reason, maker_attempts, MAX_ATTEMPTS=1, postonly_rejects=0, MARKET_AFTER=3):
+    # MARKET_AFTER mirrors engine._EXIT_POSTONLY_MARKET_AFTER (2): non-urgent
+    # exits probe maker up to 2 times before MARKET, to save the taker fee.
+    def use_market(reason, maker_attempts, MAX_ATTEMPTS=1, postonly_rejects=0, MARKET_AFTER=2):
         r = reason.upper()
         is_stop = r not in NON_URGENT
         is_probe = r in MAKER_PROBE_EXIT_REASONS
@@ -54,12 +54,15 @@ def test_use_market_decision_matrix():
     assert use_market("DOLLAR_STOP", maker_attempts=1) is True
     # Loss stop: straight to market.
     assert use_market("STOP_LOSS", maker_attempts=0) is True
-    # Reversion / target / max-hold: maker-first, and now given more room —
-    # 1 or 2 rejections still retry maker; only the 3rd falls back to MARKET.
+    # Reversion / target / max-hold: maker-first, crossing to MARKET on the 2nd
+    # rejection (lowered from 3 after #109 — a HIT $5.98 target peaked at net
+    # $7.11 but decayed to $1.41 while the maker exit re-probed). A 1st rejection
+    # still retries maker; the 2nd falls back to MARKET.
     assert use_market("EXIT", maker_attempts=0, postonly_rejects=0) is False
     assert use_market("EXIT", maker_attempts=0, postonly_rejects=1) is False
-    assert use_market("EXIT", maker_attempts=0, postonly_rejects=2) is False
-    assert use_market("PROFIT_TARGET", maker_attempts=0, postonly_rejects=3) is True
+    assert use_market("EXIT", maker_attempts=0, postonly_rejects=2) is True
+    assert use_market("PROFIT_TARGET", maker_attempts=0, postonly_rejects=1) is False
+    assert use_market("PROFIT_TARGET", maker_attempts=0, postonly_rejects=2) is True
 
 
 # ── shadow-arm scope: winners that under-captured are now tracked ────────────

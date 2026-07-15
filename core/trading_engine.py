@@ -348,12 +348,18 @@ class TradingEngine:
         # Non-urgent exits (reversion EXIT / PROFIT_TARGET / MAX_HOLD) probe MAKER
         # this many times before falling back to MARKET. These exits are in profit
         # and fully protected (the gate/target only fire above break-even, the
-        # dollar stop caps the downside), so there's no urgency — spend a few maker
-        # retries to save the taker fee. Live #97 banked $2.00 gross $5.56 − fees
-        # $3.56: the exit went taker after just ONE post-only rejection and the fee
-        # ate 64% of the gross. Urgent loss stops are unaffected (straight to
-        # MARKET); DOLLAR_STOP/TRAILING_STOP use their own maker-probe counter.
-        self._EXIT_POSTONLY_MARKET_AFTER = 3
+        # dollar stop caps the downside), so a couple of maker retries to save the
+        # taker fee are usually worth it. Balanced between two live lessons:
+        #   • #97 went taker after just ONE post-only rejection and the fee ate 64%
+        #     of a tiny gross — too eager.
+        #   • #109 HIT its $5.98 target at net $7.11, but the maker exit was
+        #     post-only-rejected (cancelSource=31) in a fast revert and kept
+        #     re-probing; by the time it filled the profit had decayed to $1.41 —
+        #     too patient (3 probes + 10 s cooldowns bled ~$5 to save ~$2 of fee).
+        # Two probes keeps the fee saving on a calm book yet crosses to MARKET
+        # before a decaying profit evaporates. Urgent loss stops are unaffected
+        # (straight to MARKET); DOLLAR_STOP/TRAILING_STOP use their own counter.
+        self._EXIT_POSTONLY_MARKET_AFTER = 2
         # DOLLAR_STOP only: fire ONE quick maker probe (saves the taker fee IF the book
         # is momentarily calm), then MARKET to guarantee the close. Live evidence showed
         # that on a real stop the spread is diverging — exactly when a maker exit crosses
