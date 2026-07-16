@@ -454,6 +454,14 @@
                             <span id="position-max-hold-remaining" class="font-monospace text-warning">-</span>
                         </div>
                     </div>
+                    <div class="row" id="position-halflife-row" style="display:none;">
+                        <div class="col-12" style="font-size: 0.78rem;"
+                             title="Mean-reversion timescale (Ornstein-Uhlenbeck half-life) and how many half-lives this trade has been open. age ÷ half-life well above 1 while still losing = the expected reversion window has passed → likely a regime break, not a temporary stretch (be patient below ~2×, suspect a trend shift above ~3×). ∞ = the spread is not mean-reverting right now.">
+                            <span class="text-secondary">Half-life:</span>
+                            <span id="position-halflife" class="font-monospace">-</span>
+                            <span id="position-halflife-ratio" class="font-monospace"></span>
+                        </div>
+                    </div>
                     <div class="row mt-1 mb-1" id="position-targets-row" style="display:none;">
                         <div class="col-6">
                             <span class="text-secondary"
@@ -2362,6 +2370,9 @@ function updateFilterStatus(elementId, passed, value) {
             _maxHoldMs = 0;
             const mhRowClear = document.getElementById('position-max-hold-row');
             if (mhRowClear) mhRowClear.style.display = 'none';
+            _halfLifeMin = 0;
+            const hlRowClear = document.getElementById('position-halflife-row');
+            if (hlRowClear) hlRowClear.style.display = 'none';
             // Reset top-bar P&L to zero when flat
             const topPnlFlat = document.getElementById('daily-pnl');
             if (topPnlFlat) {
@@ -2490,12 +2501,35 @@ function updateFilterStatus(elementId, passed, value) {
                 _maxHoldMs = mhMin > 0 ? mhMin * 60 * 1000 : 0;
                 if (mhRow) mhRow.style.display = mhMin > 0 ? '' : 'none';
                 if (mhEl && mhMin > 0) mhEl.textContent = _formatAge(_maxHoldMs);
+
+                // Half-life (mean-reversion timescale). The age ÷ half-life ratio
+                // ticks live in the age setInterval below (using _halfLifeMin).
+                const hlRow = document.getElementById('position-halflife-row');
+                const hlEl  = document.getElementById('position-halflife');
+                const hlRatioEl = document.getElementById('position-halflife-ratio');
+                if (hlRow && hlEl) {
+                    if (!('half_life_minutes' in t)) {
+                        hlRow.style.display = 'none';
+                        _halfLifeMin = 0;
+                    } else if (t.half_life_minutes == null) {
+                        // half-life = ∞: no mean reversion currently detected
+                        hlEl.innerHTML = '<span class="text-danger">∞ (no mean reversion now)</span>';
+                        if (hlRatioEl) hlRatioEl.textContent = '';
+                        hlRow.style.display = '';
+                        _halfLifeMin = 0;
+                    } else {
+                        _halfLifeMin = parseFloat(t.half_life_minutes);
+                        hlEl.textContent = _formatAge(_halfLifeMin * 60 * 1000);
+                        hlRow.style.display = '';
+                    }
+                }
             }
         }
     }
 
     // Position age ticker state
     let _positionEntryTime = null;
+    let _halfLifeMin = 0;   // live OU half-life (minutes); 0 = none / ∞
     let _maxHoldMs = 0;
     function _formatAge(ms) {
         const s = Math.floor(ms / 1000);
@@ -2510,6 +2544,22 @@ function updateFilterStatus(elementId, passed, value) {
         if (ageEl && _positionEntryTime) {
             const elapsedMs = Date.now() - _positionEntryTime.getTime();
             ageEl.textContent = _formatAge(elapsedMs);
+            // age ÷ half-life, computed live from the ticking age so it crosses the
+            // 2×/3× thresholds in real time (green < 2× = patient, amber 2–3×, red
+            // ≥ 3× = reversion window passed, likely a regime break).
+            const hlRatioEl = document.getElementById('position-halflife-ratio');
+            if (hlRatioEl) {
+                if (_halfLifeMin > 0) {
+                    const ratio = (elapsedMs / 60000) / _halfLifeMin;
+                    let cls = 'price-up', note = '';
+                    if (ratio >= 3)      { cls = 'price-down';  note = ' · window passed'; }
+                    else if (ratio >= 2) { cls = 'text-warning'; note = ' · stretched'; }
+                    hlRatioEl.className = 'font-monospace ' + cls;
+                    hlRatioEl.textContent = '  ·  ' + ratio.toFixed(1) + '× age' + note;
+                } else {
+                    hlRatioEl.textContent = '';
+                }
+            }
             // Update remaining time
             const remEl = document.getElementById('position-max-hold-remaining');
             if (remEl && _maxHoldMs > 0) {

@@ -3602,6 +3602,25 @@ class TradingEngine:
                     open_trade_dict['max_hold_minutes'] = round(tg['max_hold_minutes'], 1)
             except Exception:
                 pass
+            # Mean-reversion timescale: the OU half-life in minutes and how many
+            # half-lives the trade has been open without reverting. age ÷ half-life
+            # well above 1 while still red = the expected reversion window has passed
+            # → likely a regime break, not a temporary stretch. half_life_minutes is
+            # None when the spread is NOT mean-reverting right now (half-life = ∞),
+            # which is itself a warning. Display only — nothing reads it to decide.
+            try:
+                hl_periods = self.signal_generator.current_half_life
+                if hl_periods and hl_periods != float('inf') and hl_periods > 0:
+                    hl_min = hl_periods * 0.5 / 60.0   # 0.5s per tick/period
+                    open_trade_dict['half_life_minutes'] = round(hl_min, 1)
+                    held = open_trade_dict.get('held_minutes')
+                    if held is not None and hl_min > 0:
+                        open_trade_dict['age_over_half_life'] = round(held / hl_min, 1)
+                else:
+                    open_trade_dict['half_life_minutes'] = None
+            except Exception:
+                pass
+
             # Absolute spread levels (BE/TP/SL) — the drift-free way to watch an
             # open trade: unlike the in-trade z-score, these don't move with the
             # rolling mean. Display only.
