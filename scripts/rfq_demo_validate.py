@@ -26,10 +26,15 @@ with your account manager whether demo makers quote, or run a single small LIVE 
 import argparse
 import asyncio
 import os
+import sys
 import time
 
-from adapters.okx_adapter import OKXAdapter
-from adapters.okx_rfq_adapter import OKXRFQAdapter
+# Make the repo root importable no matter where this is invoked from (e.g. from
+# inside scripts/), mirroring the other package-importing scripts in this dir.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from adapters.okx_adapter import OKXAdapter  # noqa: E402
+from adapters.okx_rfq_adapter import OKXRFQAdapter  # noqa: E402
 
 SPOT = "ETH-USDT-SWAP"   # leg A
 FUT = "BTC-USDT-SWAP"    # leg B
