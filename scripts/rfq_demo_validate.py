@@ -48,6 +48,12 @@ async def _to_contracts(rest: OKXAdapter, symbol: str, notional: float):
 
 
 async def main(notional: float, do_execute: bool, timeout: float, is_demo: bool) -> None:
+    # Load the same .env the bot uses so creds don't have to be exported by hand.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+    except Exception:
+        pass
     key = os.getenv("OKX_API_KEY")
     sec = os.getenv("OKX_SECRET_KEY")
     pw = os.getenv("OKX_PASSPHRASE")
