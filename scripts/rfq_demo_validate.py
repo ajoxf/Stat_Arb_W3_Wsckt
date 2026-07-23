@@ -82,8 +82,10 @@ async def main(notional: float, do_execute: bool, timeout: float, is_demo: bool)
     print(f"[1] counterparties: {len(cps)} available "
           f"-> {cps[:5]}{'...' if len(cps) > 5 else ''}")
     if not cps:
-        print("    ✗ FAIL: no counterparties. RFQ can't reach a maker. "
-              "Ask OKX to enable/whitelist makers for your account.\n")
+        print("    ✗ no counterparties returned. Check the [rfq_adapter] error logged just above — common causes:")
+        print("      • 70019 → accept the RFQ 'Broker Dealer Agreement' on okx.com (Trade → Block/RFQ). Self-service, one-time.")
+        print("      • 50101 → API key is for the other environment (live key with --demo, or a demo key without it). Demo needs a DEMO key.")
+        print("      • neither → ask OKX to enable block-trading / RFQ makers for the account.\n")
         await rfq.disconnect()
         await rest.disconnect()
         return
