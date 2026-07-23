@@ -110,6 +110,15 @@ class TradingConfig:
     # Recommended: 0.5 (suppress MAX_HOLD once Z is more than halfway home).
     max_hold_z_progress_min: float = 0.5
     #
+    # Hard max hold (loss-side time stop): fires REGARDLESS of P&L once the
+    # trade has been open longer than this many minutes. Unlike max_hold_minutes
+    # above (which is profit-gated), this cuts LOSERS — a mean-reverting trade
+    # that hasn't reverted in this long is in a broken regime. 0 = off. Backtest
+    # on live history: a ~90-min cap turned the worst trade (−$296, held 26h)
+    # into ~−$5 and recovered ~$494 across all trades. Runs as a non-urgent
+    # maker-first exit (a stale bleed is not a panic stop).
+    hard_max_hold_minutes: float = 0.0
+    #
     # Dollar stop:
     #   scale-invariant = percent of capital-at-risk (per-leg margin + buffer):
     #     stop$ = capital_pct/100 × capital_at_risk
@@ -328,6 +337,7 @@ class TradingConfig:
             'max_hold_halflife_mult': self.max_hold_halflife_mult,
             'max_hold_minutes': self.max_hold_minutes,
             'max_hold_z_progress_min': self.max_hold_z_progress_min,
+            'hard_max_hold_minutes': self.hard_max_hold_minutes,
             'stop_loss_capital_pct': self.stop_loss_capital_pct,
             'max_loss_usd': self.max_loss_usd,
             'exit_signal_mode': self.exit_signal_mode,

@@ -70,6 +70,7 @@ class DatabaseManager:
                     max_hold_halflife_mult REAL DEFAULT 0.0,
                     max_hold_minutes REAL DEFAULT 0.0,
                     max_hold_z_progress_min REAL DEFAULT 0.5,
+                    hard_max_hold_minutes REAL DEFAULT 0.0,
                     stop_loss_capital_pct REAL DEFAULT 0.0,
                     max_loss_usd REAL DEFAULT 0.0,
                     min_entry_rr_multiple REAL DEFAULT 0.0,
@@ -465,6 +466,8 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_minutes REAL DEFAULT 0.0")
             if 'max_hold_z_progress_min' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_hold_z_progress_min REAL DEFAULT 0.5")
+            if 'hard_max_hold_minutes' not in existing_columns:
+                cursor.execute("ALTER TABLE trading_config ADD COLUMN hard_max_hold_minutes REAL DEFAULT 0.0")
             if 'max_loss_usd' not in existing_columns:
                 cursor.execute("ALTER TABLE trading_config ADD COLUMN max_loss_usd REAL DEFAULT 0.0")
             if 'profit_target_sigma_frac' not in existing_columns:
@@ -648,6 +651,7 @@ class DatabaseManager:
                     max_hold_halflife_mult=row["max_hold_halflife_mult"] if "max_hold_halflife_mult" in row.keys() else 0.0,
                     max_hold_minutes=row["max_hold_minutes"] if "max_hold_minutes" in row.keys() else 0.0,
                     max_hold_z_progress_min=row["max_hold_z_progress_min"] if "max_hold_z_progress_min" in row.keys() else 0.5,
+                    hard_max_hold_minutes=row["hard_max_hold_minutes"] if "hard_max_hold_minutes" in row.keys() and row["hard_max_hold_minutes"] is not None else 0.0,
                     stop_loss_capital_pct=row["stop_loss_capital_pct"] if "stop_loss_capital_pct" in row.keys() else 0.0,
                     max_loss_usd=row["max_loss_usd"] if "max_loss_usd" in row.keys() else 0.0,
                     min_entry_rr_multiple=row["min_entry_rr_multiple"] if "min_entry_rr_multiple" in row.keys() else 0.0,
@@ -736,6 +740,7 @@ class DatabaseManager:
                     max_hold_halflife_mult = ?,
                     max_hold_minutes = ?,
                     max_hold_z_progress_min = ?,
+                    hard_max_hold_minutes = ?,
                     stop_loss_capital_pct = ?,
                     max_loss_usd = ?,
                     min_entry_rr_multiple = ?,
@@ -816,6 +821,7 @@ class DatabaseManager:
                 config.max_hold_halflife_mult,
                 config.max_hold_minutes,
                 config.max_hold_z_progress_min,
+                config.hard_max_hold_minutes,
                 config.stop_loss_capital_pct,
                 config.max_loss_usd,
                 config.min_entry_rr_multiple,

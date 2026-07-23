@@ -1850,6 +1850,7 @@ class TelegramNotifier:
         "exit_threshold":        ("Exit Z-score",        float, "σ"),
         "stop_loss_threshold":   ("Z-score Stop",        float, "σ"),
         "max_hold_minutes":      ("Max Hold",            float, "min"),
+        "hard_max_hold_minutes": ("Hard Max Hold",       float, "min"),
         "daily_max_loss_usd":    ("Daily Loss Limit",    float, "USD"),
         "lookback_period":       ("Lookback",            int,   "bars"),
         "hedge_ratio":           ("Hedge Ratio β",       float, ""),

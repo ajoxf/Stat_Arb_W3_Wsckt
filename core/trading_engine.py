@@ -1585,8 +1585,10 @@ class TradingEngine:
         stop_usd = t['stop_usd']
         max_hold_periods = t['max_hold_periods']
         max_hold_minutes = t['max_hold_minutes']
+        hard_max_hold_min = getattr(self.config, 'hard_max_hold_minutes', 0.0) or 0.0
         if (target_usd <= 0 and stop_usd <= 0
-                and max_hold_periods <= 0 and max_hold_minutes <= 0):
+                and max_hold_periods <= 0 and max_hold_minutes <= 0
+                and hard_max_hold_min <= 0):
             return None  # all overrides disabled — pure z-score behaviour
 
         net_pnl = self._live_net_pnl(trade)
@@ -1679,6 +1681,24 @@ class TradingEngine:
                     if not z_suppressed:
                         exit_type, reason_tag = "EXIT", "MAX_HOLD"
                         reason_detail = f"{held_min:.0f}m >= {max_hold_minutes:.0f}m, net +${net_pnl:.2f}"
+
+        # ── 2b. Hard max hold (loss-side time stop) ────────────────────────
+        # Unlike MAX_HOLD above (profit-gated), this fires REGARDLESS of P&L
+        # once the trade has been open longer than hard_max_hold_minutes. A
+        # mean-reverting trade that hasn't reverted in this long is in a broken
+        # regime — capping the hold caps the fat-tail loss (backtest: a 90-min
+        # cap turned the worst trade, −$296 held 26h, into ~−$5 and recovered
+        # ~$494 overall). Routed as a non-urgent maker-first exit — a stale
+        # bleed is not a panic stop. Bypasses the exit-profit-gate because it
+        # sets _override_exit_reason (see _signal_exit_gated).
+        if not exit_type:
+            hard_min = getattr(self.config, 'hard_max_hold_minutes', 0.0) or 0.0
+            if hard_min > 0 and trade.entry_time:
+                held_min = (datetime.utcnow() - trade.entry_time).total_seconds() / 60.0
+                if held_min >= hard_min:
+                    exit_type, reason_tag = "EXIT", "HARD_MAX_HOLD"
+                    reason_detail = (f"{held_min:.0f}m >= {hard_min:.0f}m hard cap, "
+                                     f"net ${net_pnl:.2f} (P&L-agnostic time stop)")
 
         # ── 3. Trailing stop ───────────────────────────────────────────────
         # Once P&L has reached trailing_stop_floor_pct % of the profit target,
@@ -3470,7 +3490,7 @@ class TradingEngine:
             # Non-stop exits keep the maker-first (LIMIT/POST_ONLY) path to save fees.
             # MANUAL_LIMIT is the dashboard's "close as maker" button — the user
             # chose the fee-saving path over the instant MARKET close (MANUAL).
-            _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD", "MANUAL_LIMIT")
+            _NON_URGENT_EXITS = ("EXIT", "PROFIT_TARGET", "MAX_HOLD", "MANUAL_LIMIT", "HARD_MAX_HOLD")
             exit_reason_u = (trade.exit_reason or "").upper()
             is_stop_exit = exit_reason_u not in _NON_URGENT_EXITS   # keeps RFQ off for all stops
             is_maker_probe = exit_reason_u in MAKER_PROBE_EXIT_REASONS

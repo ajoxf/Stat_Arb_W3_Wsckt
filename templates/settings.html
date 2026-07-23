@@ -179,6 +179,11 @@
                             <small class="text-secondary">Exit after N min <em>if</em> net P&L &gt; 0</small>
                         </div>
                         <div class="col-md-4">
+                            <label class="form-label">Hard Max Hold (minutes)</label>
+                            <input type="number" class="form-control" id="hard_max_hold_minutes" name="hard_max_hold_minutes" value="{{ config.hard_max_hold_minutes }}" step="1" min="0">
+                            <small class="text-secondary">Exit after N min <b>regardless of P&amp;L</b> &mdash; cuts losers a soft max-hold won't. 0 = off. <b>~90</b> suggested</small>
+                        </div>
+                        <div class="col-md-4">
                             <label class="form-label">Dollar Stop (USD)</label>
                             <input type="number" class="form-control" id="max_loss_usd" name="max_loss_usd" value="{{ config.max_loss_usd }}" step="0.5" min="0">
                             <small class="text-secondary">Exit when net P&L &le; &minus;this</small>
@@ -1537,6 +1542,7 @@
             profit_target_min_cost_mult: parseFloat(document.getElementById('profit_target_min_cost_mult').value) || 0,
             max_hold_halflife_mult: parseFloat(document.getElementById('max_hold_halflife_mult').value) || 0,
             max_hold_minutes: parseFloat(document.getElementById('max_hold_minutes').value) || 0,
+            hard_max_hold_minutes: parseFloat(document.getElementById('hard_max_hold_minutes').value) || 0,
             max_hold_z_progress_min: parseFloat(document.getElementById('max_hold_z_progress_min').value) || 0,
             stop_loss_capital_pct: parseFloat(document.getElementById('stop_loss_capital_pct').value) || 0,
             max_loss_usd: parseFloat(document.getElementById('max_loss_usd').value) || 0,
@@ -1693,6 +1699,7 @@
                 document.getElementById('profit_target_min_cost_mult').value = config.profit_target_min_cost_mult || 0;
                 document.getElementById('max_hold_halflife_mult').value = config.max_hold_halflife_mult || 0;
                 document.getElementById('max_hold_minutes').value = config.max_hold_minutes || 0;
+                document.getElementById('hard_max_hold_minutes').value = config.hard_max_hold_minutes || 0;
                 document.getElementById('max_hold_z_progress_min').value = config.max_hold_z_progress_min ?? 0.5;
                 document.getElementById('stop_loss_capital_pct').value = config.stop_loss_capital_pct || 0;
                 document.getElementById('max_loss_usd').value = config.max_loss_usd || 0;
