@@ -193,8 +193,8 @@
                     <div class="row mb-4">
                         <div class="col-md-6">
                             <label class="form-label">RFQ Min Notional (USD)</label>
-                            <input type="number" class="form-control" id="rfq_notional_threshold_usd" name="rfq_notional_threshold_usd" value="{{ config.rfq_notional_threshold_usd }}" step="10000" min="0">
-                            <small class="text-secondary">Route trades with per-leg notional &ge; this to atomic RFQ/Block. <strong>0 = off</strong> (order book always). OKX min ≈ $100k/leg at VIP4.</small>
+                            <input type="number" class="form-control" id="rfq_notional_threshold_usd" name="rfq_notional_threshold_usd" value="{{ config.rfq_notional_threshold_usd }}" step="1" min="0">
+                            <small class="text-secondary">Route trades with per-leg notional &ge; this to atomic RFQ/Block. <strong>0 = off</strong> (order book always). OKX block-trade min ≈ $1,000/leg; maker liquidity for a 2-perp structure is unverified &mdash; validate with <code>rfq_demo_validate.py</code> first.</small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">RFQ Max Markup (bps)</label>
@@ -457,7 +457,7 @@
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Position Size (USD)</label>
-                            <input type="number" class="form-control" id="position_size_usd" name="position_size_usd" value="{{ config.position_size_usd }}" step="100" min="100">
+                            <input type="number" class="form-control" id="position_size_usd" name="position_size_usd" value="{{ config.position_size_usd }}" step="1" min="100">
                             <small class="text-secondary mt-1 d-block" style="font-size: 0.7rem;"
                                    id="capital_preview"
                                    title="Live preview of the same math the runtime balance guard uses: (Leg A margin + Leg B margin) × 1.10 buffer. Updates as you change size, leverage, β, or legs.">
@@ -467,7 +467,7 @@
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Max Position Size (USD)</label>
-                            <input type="number" class="form-control" id="max_position_size_usd" name="max_position_size_usd" value="{{ config.max_position_size_usd }}" step="100" min="100">
+                            <input type="number" class="form-control" id="max_position_size_usd" name="max_position_size_usd" value="{{ config.max_position_size_usd }}" step="1" min="100">
                         </div>
                         <div class="col-md-6 mt-3">
                             <label class="form-label">M2M Buffer (%)</label>
