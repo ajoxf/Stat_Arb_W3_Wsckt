@@ -30,13 +30,36 @@ class DatabaseManager:
 
     def __init__(self, db_path: str = "trading.db"):
         self.db_path = db_path
+        self._enable_wal()
         self._init_database()
+
+    def _enable_wal(self) -> None:
+        """Switch the DB to WAL journalling (persistent in the file header).
+
+        In the default rollback-journal mode a single writer blocks ALL other
+        access, so the Flask dashboard/API reading while the trade loop writes
+        (or a watchdog restart briefly overlapping a slow shutdown) surfaces as
+        'database is locked'. WAL lets readers and the one writer proceed
+        concurrently. This does NOT fix a *second live instance* holding the DB
+        — only one bot may run; a hung duplicate must still be killed."""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.close()
+        except Exception as e:  # noqa: BLE001 — never let hardening block startup
+            logger.warning("Could not enable WAL mode (continuing): %s", e)
 
     @contextmanager
     def _get_connection(self):
-        """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
+        """Context manager for database connections.
+
+        timeout=30s is the SQLite busy-timeout: wait out a transient lock
+        instead of erroring immediately (the default is 5s). A permanently
+        hung *second* process still holds the lock forever — no timeout frees
+        that; kill the duplicate."""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
         try:
             yield conn
             conn.commit()
