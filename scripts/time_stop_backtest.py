@@ -40,7 +40,10 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta
 
-CUTOFFS_MIN = [30, 45, 60, 90, 120, 180, 240, 360]
+# Fine 5-min resolution across 60-120 (where the coarse run peaked) so the true
+# optimum isn't hidden between grid points; coarser in the tails.
+CUTOFFS_MIN = [15, 30, 45, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 120,
+               150, 180, 240, 360]
 MIN_MOVE_EPS = 1e-6          # |favourable spread move| below this => k undefined
 MAX_GAP_MIN = 10.0           # don't trust a cut spread pulled from a gap wider than this
 
@@ -91,7 +94,18 @@ def spread_at(path, cut_dt, entry_dt):
 
 
 def main():
-    db_path = sys.argv[1] if len(sys.argv) > 1 else os.getenv("DATABASE_PATH", "trading.db")
+    import argparse
+    ap = argparse.ArgumentParser(description="Time-stop backtest for the hard max-hold.")
+    ap.add_argument("db_path", nargs="?",
+                    default=os.getenv("DATABASE_PATH", "trading.db"),
+                    help="path to trading.db ($DATABASE_PATH or ./trading.db)")
+    ap.add_argument("--cutoffs", default=None,
+                    help="comma-separated minutes to test, e.g. 70,75,80,85,90 "
+                         "(default: a fine 15..360 grid)")
+    args = ap.parse_args()
+    db_path = args.db_path
+    cutoffs = ([float(x) for x in args.cutoffs.split(",") if x.strip()]
+               if args.cutoffs else CUTOFFS_MIN)
     if not os.path.exists(db_path):
         print(f"DB not found: {db_path}  (set DATABASE_PATH or pass a path)")
         sys.exit(1)
@@ -155,10 +169,10 @@ def main():
               f"(~{med_hl*0.5/60:.1f} min) — so cutoffs in half-lives ≈ min / {med_hl*0.5/60:.1f}")
     print(f"\nBASELINE (no time-stop): ${baseline:.2f}\n")
 
-    print(f"{'T(min)':>7} {'≈half-lives':>12} {'total P&L':>11} {'vs base':>9} "
-          f"{'#cut':>5} {'winners_lost':>13} {'losers_saved$':>14}")
-    best = (None, -1e18)
-    for T in CUTOFFS_MIN:
+    # Two passes: compute every cutoff, then print each one's gap from the
+    # optimum ('vs best') so the cost of going tighter reads off the table.
+    rows_out = []
+    for T in cutoffs:
         total = sum(pnl_under_stop(s, T) for s in sim)
         cut = [s for s in sim if s["dur"] > T and s["k"] is not None]
         # winners forgone: trades that realised >0 but get cut to a lower value
@@ -167,22 +181,28 @@ def main():
         # losers saved: reduction in loss on trades that realised <0
         ls = sum(max(0.0, pnl_under_stop(s, T) - s["realised"])
                  for s in cut if s["realised"] < 0)
-        hl_txt = f"{T/(med_hl*0.5/60):.0f}x" if med_hl else "-"
-        print(f"{T:>7} {hl_txt:>12} {total:>11.2f} {total-baseline:>+9.2f} "
-              f"{len(cut):>5} {wl:>13.2f} {ls:>14.2f}")
-        if total > best[1]:
-            best = (T, total)
+        rows_out.append({"T": T, "total": total, "ncut": len(cut), "wl": wl, "ls": ls})
+    best = max(rows_out, key=lambda r: r["total"])
 
-    print(f"\nBest cutoff by total P&L: T = {best[0]} min  ->  ${best[1]:.2f}  "
-          f"(baseline ${baseline:.2f}, gain ${best[1]-baseline:+.2f})")
+    print(f"{'T(min)':>7} {'≈half-lives':>12} {'total P&L':>11} {'vs base':>9} "
+          f"{'vs best':>9} {'#cut':>5} {'winners_lost':>13} {'losers_saved$':>14}")
+    for r in rows_out:
+        hl_txt = f"{r['T']/(med_hl*0.5/60):.0f}x" if med_hl else "-"
+        mark = "  <= best" if r is best else ""
+        print(f"{r['T']:>7.0f} {hl_txt:>12} {r['total']:>11.2f} {r['total']-baseline:>+9.2f} "
+              f"{r['total']-best['total']:>+9.2f} {r['ncut']:>5} {r['wl']:>13.2f} "
+              f"{r['ls']:>14.2f}{mark}")
 
-    # Per-big-loser detail at a few cutoffs
+    print(f"\nBest cutoff by total P&L: T = {best['T']:.0f} min  ->  ${best['total']:.2f}  "
+          f"(baseline ${baseline:.2f}, gain ${best['total']-baseline:+.2f})")
+
+    # Per-big-loser detail, bracketing the optimum so 'slightly lower' is visible
     big = sorted([s for s in sim if s["realised"] < -20 and s["k"] is not None],
                  key=lambda s: s["realised"])[:8]
     if big:
-        show_T = [60, 90, 120]
+        show_T = sorted({max(15.0, best['T'] - 15), best['T'], best['T'] + 15})
         print(f"\nBiggest losers — realised vs reconstructed if cut at T:")
-        hdr = "  ".join(f"@{T}m" for T in show_T)
+        hdr = "  ".join(f"@{T:.0f}m" for T in show_T)
         print(f"{'id':>5} {'type':<5} {'dur_m':>7} {'realised$':>10}   {hdr}")
         for s in big:
             vals = "  ".join(f"{pnl_under_stop(s, T):>6.1f}" for T in show_T)
