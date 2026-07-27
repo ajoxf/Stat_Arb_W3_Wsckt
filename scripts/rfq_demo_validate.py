@@ -121,7 +121,9 @@ async def main(notional: float, do_execute: bool, timeout: float, is_demo: bool)
         quotes = [q for q in await rfq.get_quotes(rfq_id) if q.is_active()]
         if quotes:
             break
-        await asyncio.sleep(0.5)
+        # 2s, not 0.5s: OKX rate-limits GET /rfq/quotes (0.5s trips 50011
+        # "Too Many Requests" → get_quotes returns [] → false "no quotes").
+        await asyncio.sleep(2.0)
     if not quotes:
         print(f"    ✗ NO QUOTES within {timeout:.0f}s. Either demo has no responding makers, or the")
         print("      whitelisted makers don't quote this structure. This is THE key unknown —")
@@ -182,7 +184,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Validate the OKX RFQ full loop (live by default).")
     ap.add_argument("--notional", type=float, default=100000.0, help="USD notional per leg (default 100k)")
     ap.add_argument("--execute", action="store_true", help="execute the best quote (REAL fill on --live)")
-    ap.add_argument("--timeout", type=float, default=15.0, help="seconds to wait for quotes")
+    ap.add_argument("--timeout", type=float, default=30.0, help="seconds to wait for quotes (2s poll cadence)")
     ap.add_argument("--demo", action="store_true", help="use OKX demo (x-simulated-trading) instead of live")
     args = ap.parse_args()
     asyncio.run(main(args.notional, args.execute, args.timeout, args.demo))

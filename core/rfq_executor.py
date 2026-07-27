@@ -295,7 +295,13 @@ class RFQExecutor:
 
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout_sec
-        poll_interval = 0.5
+        # OKX rate-limits GET /rfq/quotes hard: 0.5s polling trips 50011
+        # "Too Many Requests", which get_quotes() swallows to [] — the executor
+        # then reads it as "no quotes", fails the RFQ, and falls back to CLOB.
+        # So RFQ could never actually fill on the REST path. 2s stays under the
+        # limit; the WS quote channel (when connected) is the real low-latency
+        # path and bypasses this loop entirely.
+        poll_interval = 2.0
         while loop.time() < deadline:
             quotes = await self.rfq_adapter.get_quotes(rfq_id)
             active = [q for q in quotes if q.is_active()]
