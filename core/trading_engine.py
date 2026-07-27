@@ -3115,6 +3115,34 @@ class TradingEngine:
                     100.0 * min_fill_ratio,
                 )
                 self._last_entry_throttled = getattr(last_spread_order, 'throttled', False) if last_spread_order else False
+                # Slicing safety: only COMPLETE slices accumulate (both legs
+                # together), so spot_filled_qty/fut_filled_qty here is a REAL,
+                # balanced position on the exchange from the slices that did
+                # fill. Rejecting the entry would orphan it — the 60s orphan-
+                # guard would flatten both legs late, at a loss. Flatten it
+                # reduce-only NOW. Inert at entry_slices=1 (a single-slice
+                # reject never accumulates: an incomplete lone slice is handled
+                # by the executor's _flatten_residual_fills instead).
+                if last_spread_order and spot_filled_qty > 0 and fut_filled_qty > 0:
+                    try:
+                        from core.order_executor import SpreadOrder, LegOrder, LegStatus
+                        _sl, _fl = last_spread_order.spot_leg, last_spread_order.futures_leg
+                        _synth = SpreadOrder(
+                            spot_leg=LegOrder(symbol=_sl.symbol, side=_sl.side,
+                                              quantity=spot_filled_qty, filled_qty=spot_filled_qty,
+                                              status=LegStatus.FILLED, pos_side=_sl.pos_side),
+                            futures_leg=LegOrder(symbol=_fl.symbol, side=_fl.side,
+                                                 quantity=fut_filled_qty, filled_qty=fut_filled_qty,
+                                                 status=LegStatus.FILLED, pos_side=_fl.pos_side),
+                            is_entry=True,
+                        )
+                        logger.error(
+                            "Flattening %.4f/%.4f contracts from completed slices "
+                            "reduce-only to avoid orphaning them", spot_filled_qty, fut_filled_qty)
+                        await self.order_executor._flatten_residual_fills(_synth)
+                    except Exception as _fe:  # noqa: BLE001
+                        logger.error("CRITICAL: could not flatten accumulated slice "
+                                     "fills: %s — 60s orphan-guard is the backstop", _fe)
                 return False
             if spot_filled_qty == 0 or fut_filled_qty == 0:
                 logger.error("No fills received across all slices")

@@ -110,6 +110,22 @@ class SpreadOrder:
 
         return (spot_failed and futures_filled) or (futures_failed and spot_filled)
 
+    @property
+    def has_size_imbalance(self) -> bool:
+        """Both legs have fills but in mismatched SIZE — the hedge is broken.
+
+        has_partial_fill (XOR of 'any fill') and has_orphan_risk (which needs a
+        FAILED/CANCELLED leg) both MISS this: a leg FILLED while the other is
+        only PARTIAL reads as 'both filled', so neither fires. Left unhandled it
+        leaves a naked leg — live #136: spot FILLED (49), futures ~19% → −$18.57
+        when the 60s orphan-guard finally market-flattened. Compares fill
+        FRACTIONS so a normal complete fill (both ~100%) never trips it.
+        """
+        def _frac(leg) -> float:
+            return (leg.filled_qty / leg.quantity) if leg.quantity else 0.0
+        s, f = _frac(self.spot_leg), _frac(self.futures_leg)
+        return max(s, f) > 0.10 and abs(s - f) > 0.10
+
 
 class OrderExecutor:
     """
@@ -859,6 +875,28 @@ class OrderExecutor:
         if not spread_order.is_complete and not spread_order.is_failed:
             await self._refresh_partial_legs(spread_order)
 
+        # Size-imbalance guard: both legs have fills but mismatched (e.g. spot
+        # FILLED, futures only PARTIAL). has_partial_fill (XOR) and
+        # has_orphan_risk (needs a FAILED leg) both miss it, so _handle_leg_risk
+        # above never ran. Left as-is the filled leg is a naked position the
+        # engine rejects and the 60s orphan-guard market-flattens at a loss
+        # (#136). Flatten the residual to flat NOW — seconds, not a minute. The
+        # not-(partial/orphan) guard keeps this from double-acting on a case
+        # _handle_leg_risk already handled.
+        if (not spread_order.is_complete and not spread_order.is_failed
+                and not (spread_order.has_partial_fill or spread_order.has_orphan_risk)
+                and spread_order.has_size_imbalance):
+            sf = (spread_order.spot_leg.filled_qty / spread_order.spot_leg.quantity
+                  if spread_order.spot_leg.quantity else 0.0)
+            ff = (spread_order.futures_leg.filled_qty / spread_order.futures_leg.quantity
+                  if spread_order.futures_leg.quantity else 0.0)
+            logger.error(
+                "SIZE IMBALANCE at entry timeout — hedge broken (spot %.0f%%, "
+                "futures %.0f%% filled); flattening residual to flat to avoid a "
+                "naked-leg orphan", sf * 100, ff * 100,
+            )
+            await self._flatten_residual_fills(spread_order)
+
         if spread_order.is_complete and self.on_fill:
             self.on_fill(spread_order)
 
@@ -1389,26 +1427,23 @@ class OrderExecutor:
         """Handle timeout - cancel unfilled orders and close any partial fills."""
         logger.debug("Handling limit order timeout")
 
-        # Cancel any open orders
-        if spread_order.spot_leg.status == LegStatus.OPEN:
-            try:
-                await self.spot_adapter.cancel_order(
-                    spread_order.spot_leg.symbol,
-                    spread_order.spot_leg.order_id,
-                )
-                spread_order.spot_leg.status = LegStatus.CANCELLED
-            except Exception as e:
-                logger.error("Failed to cancel spot order: %s", e)
-
-        if spread_order.futures_leg.status == LegStatus.OPEN:
-            try:
-                await self.futures_adapter.cancel_order(
-                    spread_order.futures_leg.symbol,
-                    spread_order.futures_leg.order_id,
-                )
-                spread_order.futures_leg.status = LegStatus.CANCELLED
-            except Exception as e:
-                logger.error("Failed to cancel futures order: %s", e)
+        # Cancel any resting order. A PARTIAL leg still has an unfilled REMAINDER
+        # resting on the book — cancel that too, not just OPEN legs, or it keeps
+        # dribbling fills after timeout (live #136: the uncancelled futures
+        # remainder re-orphaned twice and blocked new entries for ~50 min). A
+        # PARTIAL leg keeps its status (its fills stand, remainder now cancelled);
+        # a zero-fill OPEN leg becomes CANCELLED.
+        for leg, adapter in (
+            (spread_order.spot_leg, self.spot_adapter),
+            (spread_order.futures_leg, self.futures_adapter),
+        ):
+            if leg.status in (LegStatus.OPEN, LegStatus.PARTIAL) and leg.order_id:
+                try:
+                    await adapter.cancel_order(leg.symbol, leg.order_id)
+                    if leg.status == LegStatus.OPEN:
+                        leg.status = LegStatus.CANCELLED
+                except Exception as e:
+                    logger.error("Failed to cancel %s order: %s", leg.symbol, e)
 
         # Handle partial fills
         if spread_order.has_partial_fill:
@@ -1445,6 +1480,58 @@ class OrderExecutor:
                     leg.filled_price = status["filled_price"]
             except Exception as e:
                 logger.warning("Re-poll for %s PARTIAL leg failed: %s", label, e)
+
+    async def _flatten_residual_fills(self, spread_order: SpreadOrder) -> None:
+        """Flatten any leg that ended with a real fill when the spread could not
+        complete — returns to flat immediately (reduce-only MARKET) instead of
+        leaving a naked leg for the 60s orphan-guard to market-flatten at a loss
+        (#136). Marks both legs FAILED so the engine rejects the entry cleanly.
+
+        Best-effort: if a flatten call fails we log CRITICAL and leave the 60s
+        orphan-guard as the backstop — this can only ever REDUCE exposure faster
+        than before, never make it worse.
+        """
+        for label, leg, adapter in (
+            ("spot", spread_order.spot_leg, self.spot_adapter),
+            ("futures", spread_order.futures_leg, self.futures_adapter),
+        ):
+            if leg.filled_qty <= 0:
+                continue
+            close_side = "SELL" if leg.side == "BUY" else "BUY"
+            is_deriv = is_derivative(leg.symbol)
+            kwargs = dict(symbol=leg.symbol, side=close_side,
+                          order_type="MARKET", quantity=leg.filled_qty)
+            if is_deriv:
+                # reduce_only clamps to the live position, so this can only CLOSE
+                # the fill — never flip a flat book into a fresh position.
+                kwargs["reduce_only"] = True
+                if leg.pos_side:
+                    kwargs["pos_side"] = leg.pos_side
+            elif close_side == "BUY":
+                # True-spot MARKET BUY sizes by USDT notional, not base qty.
+                try:
+                    tick = await adapter.get_tick(leg.symbol)
+                    if tick and tick.mid:
+                        kwargs["notional_usdt"] = round(leg.filled_qty * tick.mid, 2)
+                except Exception as e:
+                    logger.warning("residual-flatten: could not size %s notional: %s", label, e)
+            try:
+                result = await adapter.place_order(**kwargs)
+                if result and getattr(result, "success", False):
+                    logger.warning(
+                        "Residual %s leg flattened reduce-only (qty=%.6f) — "
+                        "entry hedge could not complete", label, leg.filled_qty)
+                else:
+                    logger.error(
+                        "CRITICAL: residual %s flatten failed: %s — 60s "
+                        "orphan-guard is the backstop", label,
+                        getattr(result, "error", "no result"))
+            except Exception as e:
+                logger.error(
+                    "CRITICAL: residual %s flatten exception: %s — 60s "
+                    "orphan-guard is the backstop", label, e)
+        spread_order.spot_leg.status = LegStatus.FAILED
+        spread_order.futures_leg.status = LegStatus.FAILED
 
     async def _handle_leg_risk(self, spread_order: SpreadOrder) -> None:
         """
