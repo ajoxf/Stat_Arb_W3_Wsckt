@@ -67,6 +67,25 @@ def main():
               "up to 8h to finalize.)")
         return
 
+    # Drop corrupt rows: a shadow finalized ACROSS a pair/symbol change computes
+    # P&L with mismatched prices and produces absurd values (live: #141 showed
+    # +$214,232 on a −$61 stop). No real trade at this size reaches |$10k|, so
+    # anything beyond that is a data-integrity artifact, not a recovery.
+    CORRUPT = 10_000.0
+    def _bad(r):
+        return any(abs(r.get(k) or 0) > CORRUPT
+                   for k in ("exit_net_usd", "peak_net_usd", "trough_net_usd", "final_net_usd"))
+    corrupt = [r for r in rows if _bad(r)]
+    rows = [r for r in rows if not _bad(r)]
+    if corrupt:
+        ids = ", ".join(f"#{r.get('trade_id','?')}" for r in corrupt)
+        print(f"⚠ Skipped {len(corrupt)} corrupt shadow row(s) (|P&L| > ${CORRUPT:,.0f} — "
+              f"finalized across a pair/symbol change): {ids}")
+        print("  Purge them from the DB so the dashboard badge is clean too (see script note).\n")
+    if not rows:
+        print("All shadow rows were corrupt — nothing to analyse.")
+        return
+
     for r in rows:
         r["_when"] = parse_ts(r.get("entry_time")) or parse_ts(r.get("timestamp"))
         r["_be"] = bool(r.get("hit_break_even"))
