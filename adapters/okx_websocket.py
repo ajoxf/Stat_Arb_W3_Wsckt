@@ -202,6 +202,33 @@ class OKXWebSocket:
             logger.error("Failed to unsubscribe: %s", e)
             return False
 
+    async def resubscribe_pair(self, instruments: List[str]) -> bool:
+        """Re-point the ticker feed at exactly ``instruments`` at runtime.
+
+        Unsubscribes anything no longer wanted, drops its cached tick (so a
+        stale price from the old symbol can never be read back via get_tick),
+        records the new set as the DESIRED subscription (so an auto-reconnect
+        resubscribes the NEW pair, not the old one), and subscribes whatever is
+        newly added. Idempotent: called with the current pair it does nothing.
+        """
+        want = list(dict.fromkeys(instruments))          # dedupe, preserve order
+        current = set(self._subscribed)
+        stale = [s for s in current if s not in want]
+        if stale and self.connected:
+            await self.unsubscribe(stale)
+        # Drop cached ticks for symbols we no longer track so a later get_tick()
+        # can't hand back a frozen price from the previous pair.
+        for sym in list(self._ticks):
+            if sym not in want:
+                self._ticks.pop(sym, None)
+        # Desired-state: _reconnect() resubscribes exactly this set, even if the
+        # subscribe below is skipped because we're momentarily disconnected.
+        self._subscribed = set(want)
+        new = [s for s in want if s not in current]
+        if self.connected and new:
+            return await self.subscribe(new)
+        return True
+
     def get_tick(self, instrument: str) -> Optional[MarketTick]:
         """
         Get the latest tick for an instrument.
@@ -402,6 +429,10 @@ class OKXWebSocketManager:
         # Subscribe to both symbols
         await self.ws.subscribe([spot_symbol, futures_symbol])
         return True
+
+    async def resubscribe(self, spot_symbol: str, futures_symbol: str) -> bool:
+        """Re-point the live feed at a new pair without tearing down the socket."""
+        return await self.ws.resubscribe_pair([spot_symbol, futures_symbol])
 
     async def stop(self) -> None:
         """Stop WebSocket connection."""

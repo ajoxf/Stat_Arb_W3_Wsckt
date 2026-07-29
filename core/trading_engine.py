@@ -268,6 +268,10 @@ class TradingEngine:
         self.ws_manager: Optional[OKXWebSocketManager] = None
         self._use_websocket: bool = False
         self._pending_leverage_setup: bool = False
+        # Event loop the engine runs on (captured in start()). Lets config
+        # saves arriving on the Flask thread schedule loop work here — e.g.
+        # re-pointing the market feed after a pair change.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Current market data
         self.spot_tick: Optional[MarketTick] = None
@@ -458,6 +462,8 @@ class TradingEngine:
 
     def update_config(self, config: TradingConfig) -> None:
         """Update trading configuration."""
+        old_spot = getattr(self.config, 'spot_symbol', None)
+        old_fut = getattr(self.config, 'futures_symbol', None)
         self.config = config
         self.signal_generator.update_config(config)
         self.state.paper_trading = config.paper_trading
@@ -478,9 +484,64 @@ class TradingEngine:
                 # No running loop - leverage will be applied on next trade or engine restart
                 logger.debug("Skipping leverage update (no event loop) - will apply on next trade")
 
+        # If the traded pair changed, the market-data socket is still streaming
+        # the OLD instrument(s): _on_websocket_tick routes strictly by instId,
+        # so post-change ticks match neither leg and the changed leg's price
+        # FREEZES at its last value (live: an ETH-USDT-SWAP label showing a
+        # frozen BTC-USD_UM price with a 10%-wide book). Drop the stale tick(s)
+        # NOW so signal eval can't run on a frozen price, then re-point the feed
+        # on the engine loop so a symbol change takes effect without a restart.
+        if old_spot != config.spot_symbol or old_fut != config.futures_symbol:
+            self.spot_tick = None
+            self.futures_tick = None
+            self._schedule_feed_retarget(old_spot, old_fut)
+
         logger.debug("Trading config updated: asset=%s, paper=%s, algo=%s, exec_mode=%s",
                      config.asset, config.paper_trading, config.algo_enabled,
                      config.order_execution_mode)
+
+    def _schedule_feed_retarget(self, old_spot: Optional[str],
+                                old_fut: Optional[str]) -> None:
+        """Run the async feed re-point on the engine loop, from any thread.
+
+        update_config() is normally called on the Flask thread (config save),
+        which has no running loop, so we hand the coroutine to the engine loop
+        captured in start(). In REST-polling mode there is nothing to re-point —
+        _get_spot_tick/_get_futures_tick already read by the current config
+        symbol every poll — so this is a no-op there.
+        """
+        if not (self._use_websocket and self.ws_manager):
+            return
+        coro = self._retarget_feed(old_spot, old_fut)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and running is self._loop:
+            asyncio.create_task(coro)
+        elif self._loop is not None:
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+        else:
+            coro.close()
+            logger.warning("Pair changed but engine loop not ready — the market "
+                           "feed will re-point on the next restart")
+
+    async def _retarget_feed(self, old_spot: Optional[str],
+                             old_fut: Optional[str]) -> None:
+        """Re-point the live ticker feed after a pair change (runs on the loop)."""
+        try:
+            logger.info("Pair changed (%s/%s -> %s/%s) — re-pointing market feed",
+                        old_spot, old_fut,
+                        self.config.spot_symbol, self.config.futures_symbol)
+            # Belt-and-suspenders: clear again on the loop thread so no tick that
+            # slipped in between the config swap and now leaves a stale price.
+            self.spot_tick = None
+            self.futures_tick = None
+            if self.ws_manager:
+                await self.ws_manager.resubscribe(self.config.spot_symbol,
+                                                  self.config.futures_symbol)
+        except Exception:
+            logger.exception("Failed to re-point market feed after pair change")
 
     async def _cleanup_orphan_orders(self) -> None:
         """
@@ -669,6 +730,8 @@ class TradingEngine:
         self._running = True
         self.state.is_running = True
         self.state.error = ""
+        # Capture the loop so cross-thread config saves can schedule work here.
+        self._loop = asyncio.get_running_loop()
 
         logger.info("Starting trading engine for %s (websocket=%s)",
                     self.config.asset, self._use_websocket)
