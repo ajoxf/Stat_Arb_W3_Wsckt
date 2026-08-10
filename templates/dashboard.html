@@ -2847,12 +2847,13 @@ function updateFilterStatus(elementId, passed, value) {
             .catch(err => console.error('Error checking orphaned spots:', err));
     }
 
-    function closeOrphanedSpot(event) {
-        if (!confirm('This will sell your orphaned spot holdings to USDT at market price. Continue?')) {
+    async function closeOrphanedSpot(event) {
+        const btn = event.target.closest('button');
+        if (!(await uiConfirm('This will sell your orphaned spot holdings to USDT at market price.',
+                {title: 'Sell orphaned holdings', confirmText: 'Sell to USDT', variant: 'danger'}))) {
             return;
         }
 
-        const btn = event.target.closest('button');
         btn.disabled = true;
         btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Selling...';
 
@@ -3023,12 +3024,13 @@ function updateFilterStatus(elementId, passed, value) {
         syncPosition('recover');
     }
 
-    function closeExchangePosition(symbol) {
-        if (!confirm(`This will close the position for ${symbol} on the exchange at market price. Continue?`)) {
+    async function closeExchangePosition(symbol) {
+        const btn = event.target.closest('button');
+        if (!(await uiConfirm(`This will close the position for ${symbol} on the exchange at market price.`,
+                {title: 'Close position', confirmText: 'Close on exchange', variant: 'danger'}))) {
             return;
         }
 
-        const btn = event.target.closest('button');
         btn.disabled = true;
         btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Closing...';
 
@@ -3061,9 +3063,10 @@ function updateFilterStatus(elementId, passed, value) {
     // Close spot margin position AND sell any orphaned wallet balance in sequence.
     // The short must be covered first (BUY to repay borrow) then the wallet BTC sold.
     async function closeAllSpotOrphans(symbol) {
-        if (!confirm(`This will:\n1. Close the spot margin SHORT (buy to cover borrow)\n2. Sell any remaining BTC wallet balance\n\nContinue?`)) return;
-
         const btn = event.target.closest('button');
+        if (!(await uiConfirm(`This will:\n1. Close the spot margin SHORT (buy to cover borrow)\n2. Sell any remaining BTC wallet balance`,
+                {title: 'Unwind spot legs', confirmText: 'Close & sell', variant: 'danger'}))) return;
+
         btn.disabled = true;
         btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Closing...';
 
@@ -3395,7 +3398,7 @@ function updateFilterStatus(elementId, passed, value) {
     updateActiveOrders();
     setInterval(updateActiveOrders, 1000);
 
-    function closePosition(mode) {
+    async function closePosition(mode) {
         // Two ways to close by hand, user picks by urgency:
         //   'market' — instant fill, pays the taker fee (use when it's urgent)
         //   'limit'  — maker order, saves the fee, may take longer / falls back
@@ -3404,7 +3407,7 @@ function updateFilterStatus(elementId, passed, value) {
         const prompt = (mode === 'limit')
             ? 'Close as a LIMIT (maker) order? Saves the taker fee but may take longer to fill.'
             : 'Close NOW at MARKET? Instant fill, but pays the taker fee.';
-        if (!confirm(prompt)) return;
+        if (!(await uiConfirm(prompt, {title: 'Close position', confirmText: 'Close position', variant: 'warning'}))) return;
         const mktBtn = document.getElementById('close-market-btn');
         const limBtn = document.getElementById('close-limit-btn');
         const clicked = (mode === 'limit') ? limBtn : mktBtn;
@@ -3437,8 +3440,8 @@ function updateFilterStatus(elementId, passed, value) {
         });
     }
 
-    function clearTrades() {
-        if (!confirm('Clear all trade history?')) return;
+    async function clearTrades() {
+        if (!(await uiConfirm('Clear all trade history?', {title: 'Clear trade history', confirmText: 'Clear history', variant: 'danger'}))) return;
         fetch('/api/trades/clear', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3457,8 +3460,8 @@ function updateFilterStatus(elementId, passed, value) {
         .catch(err => showToast('Error: ' + err, 'danger'));
     }
 
-    function deleteTrade(id, btn) {
-        if (!confirm('Delete this trade record? This cannot be undone.')) return;
+    async function deleteTrade(id, btn) {
+        if (!(await uiConfirm('Delete this trade record? This cannot be undone.', {title: 'Delete trade record', confirmText: 'Delete', variant: 'danger'}))) return;
         if (btn) btn.disabled = true;
         fetch(`/api/trades/${id}`, { method: 'DELETE' })
         .then(response => response.json())
@@ -3567,8 +3570,8 @@ function updateFilterStatus(elementId, passed, value) {
             });
     }
 
-    function clearSDTouches() {
-        if (!confirm('Reset SD touch history?')) return;
+    async function clearSDTouches() {
+        if (!(await uiConfirm('Reset SD touch history?', {title: 'Reset SD touches', confirmText: 'Reset', variant: 'warning'}))) return;
         fetch('/api/sd-touches/clear', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3582,8 +3585,8 @@ function updateFilterStatus(elementId, passed, value) {
         .catch(err => showToast('Error: ' + err, 'danger'));
     }
 
-    function resetSpreadHistory() {
-        if (!confirm('Reset spread data? System will need to recollect data.')) return;
+    async function resetSpreadHistory() {
+        if (!(await uiConfirm('Reset spread data? The system will need to recollect data.', {title: 'Reset spread data', confirmText: 'Reset', variant: 'warning'}))) return;
         fetch('/api/spread-history/clear', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3606,8 +3609,8 @@ function updateFilterStatus(elementId, passed, value) {
         .catch(err => showToast('Error: ' + err, 'danger'));
     }
 
-    function resetTradesOnly() {
-        if (!confirm('Reset trades and SD analysis? (Spread data will be preserved)')) return;
+    async function resetTradesOnly() {
+        if (!(await uiConfirm('Reset trades and SD analysis? Spread data will be preserved.', {title: 'Reset trades & SD', confirmText: 'Reset', variant: 'danger'}))) return;
         fetch('/api/reset-trades', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3628,8 +3631,8 @@ function updateFilterStatus(elementId, passed, value) {
         .catch(err => showToast('Error: ' + err, 'danger'));
     }
 
-    function resetAll() {
-        if (!confirm('Reset EVERYTHING - trades, SD touches, spread data?')) return;
+    async function resetAll() {
+        if (!(await uiConfirm('Reset EVERYTHING — trades, SD touches, and spread data? This cannot be undone.', {title: 'Reset everything', confirmText: 'Reset all', variant: 'danger'}))) return;
         fetch('/api/reset-all', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

@@ -219,8 +219,9 @@
             });
     }
 
-    function deleteExchange(id) {
-        if (!confirm('Are you sure you want to delete this exchange?')) {
+    async function deleteExchange(id) {
+        if (!(await uiConfirm('Are you sure you want to delete this exchange?',
+                {title: 'Delete exchange', confirmText: 'Delete', variant: 'danger'}))) {
             return;
         }
 

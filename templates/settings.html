@@ -2174,16 +2174,15 @@
         const desc = document.getElementById('demo-mode-desc');
         const spinner = document.getElementById('demo-mode-spinner');
 
-        toggle.addEventListener('change', function() {
+        toggle.addEventListener('change', async function() {
             const enableDemo = this.checked;
 
             if (!enableDemo) {
-                const ok = confirm(
-                    '⚠️  Switch to LIVE SERVER?\n\n' +
+                const ok = await uiConfirm(
                     'This reconnects the engine to the real OKX exchange.\n' +
-                    'Ensure your API key has Trade permission and Paper Trading\n' +
-                    'is still ON if you do not want real orders placed.\n\n' +
-                    'Continue?'
+                    'Ensure your API key has Trade permission, and that Paper Trading\n' +
+                    'is still ON if you do not want real orders placed.',
+                    {title: 'Switch to LIVE server', confirmText: 'Switch to live', cancelText: 'Stay on demo', variant: 'danger'}
                 );
                 if (!ok) {
                     this.checked = true;
