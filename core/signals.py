@@ -778,29 +778,32 @@ class SignalGenerator:
         last_spot = self.spot_prices[-1] if self.spot_prices else 0.0
         last_fut  = self.futures_prices[-1] if self.futures_prices else 0.0
 
-        # --- Edge check, in DOLLARS, at the current z & σ. Expressed per "lot"
-        # (a $1k slice of the position notional) then scaled by the lot count,
-        # mirroring the MT5 desk card. Capture = CAP_FRAC × |z| × σ (fraction of
-        # notional) — i.e. we expect to bank ~half the current z-deviation. Both
-        # legs and slippage are itemised. Uses the SAME cost model + required
-        # multiple the Edge filter applies, so this card and the badge can't
-        # disagree.
-        CAP_FRAC = 0.5           # expected capture as a fraction of the current z-move
-        LOT_USD = 1000.0         # the per-"lot" unit = $1k of position notional
+        # --- Edge check, in DOLLARS, per $1k "lot" then scaled. This MIRRORS
+        # _check_std_filter EXACTLY so the card explains the Edge badge instead of
+        # contradicting it: the capturable move is the filter's, NOT a flat
+        # 0.5×z. `edge_ratio`/`pass` are taken straight from the filter output
+        # (std_ratio / std_ok computed above), so card and badge are the same
+        # number. Capturable move:
+        #   f × |z| × σ         when a sigma-fraction profit target is set (f>0)
+        #   (|z| − exit_z) × σ  otherwise (pure-z / fixed-$ exit)
+        LOT_USD = 1000.0
+        cap_frac = getattr(self.config, 'profit_target_sigma_frac', 0.0) or 0.0
         notional = getattr(self.config, 'position_size_usd', 0.0) or 0.0
         exit_z = getattr(self.config, 'exit_threshold', 0.5) or 0.0
         z_abs = abs(self.current_zscore)
         bxs = (beta * last_spot) if last_spot else 0.0
         sigma_frac = (self.current_std / bxs) if bxs else 0.0   # σ as a fraction of notional
         lots = (notional / LOT_USD) if notional else 0.0
-        cap_per_lot = CAP_FRAC * z_abs * sigma_frac * LOT_USD
-        expected_capture_usd = cap_per_lot * lots
         rt_bps = cost['round_trip_bps']
         rt_per_lot = rt_bps / 10000.0 * LOT_USD
         rt_usd = rt_per_lot * lots
         req_mult = max(self.config.min_std_multiple,
                        getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0)
         required_usd = req_mult * rt_usd
+        # edge_ratio & pass come straight from the Edge filter -> card == badge.
+        edge_ratio = std_ratio if (std_ratio is not None and std_ratio != float('inf')) else None
+        expected_capture_usd = (edge_ratio * rt_usd) if edge_ratio is not None else 0.0
+        cap_per_lot = (edge_ratio * rt_per_lot) if edge_ratio is not None else 0.0
         leg_a_fee_bps = cost['entry_spot_bps'] + cost['exit_spot_bps']
         leg_b_fee_bps = cost['entry_fut_bps'] + cost['exit_fut_bps']
         slip_bps = cost['slippage_bps']
@@ -818,7 +821,8 @@ class SignalGenerator:
             'lots': round(lots, 2),
             'z': round(z_abs, 3),
             'exit_z': round(exit_z, 2),
-            'capture_frac': CAP_FRAC,
+            'sigma_frac_target': round(cap_frac, 3),          # 0 = uses (|z| − exit_z)
+            'uses_sigma_frac': bool(cap_frac > 0),
             'sigma_bps': round(sigma_frac * 10000.0, 2),
             'sigma_frac': round(sigma_frac, 6),
             'capture_per_lot_usd': round(cap_per_lot, 4),
@@ -829,7 +833,7 @@ class SignalGenerator:
             'req_mult': round(req_mult, 2),
             'required_usd': round(required_usd, 2),
             'shortfall_usd': round(expected_capture_usd - required_usd, 2),
-            'cover_ratio': round((expected_capture_usd / rt_usd) if rt_usd else 0.0, 2),
+            'cover_ratio': round(edge_ratio, 2) if edge_ratio is not None else None,
             'leg_a_symbol': self.config.spot_symbol,
             'leg_b_symbol': self.config.futures_symbol,
             'leg_a_fee_bps': round(leg_a_fee_bps, 2),
@@ -841,7 +845,9 @@ class SignalGenerator:
             'slippage_bps': round(slip_bps, 2),
             'slippage_per_lot_usd': _per_lot(slip_bps),
             'slippage_usd': _total(slip_bps),
-            'pass': bool(data_ready and notional > 0 and expected_capture_usd >= required_usd),
+            'entry_mode': cost['entry_mode'],
+            'fee_side_bps': round(cost['entry_cost_bps'], 2),
+            'pass': bool(std_ok),
         }
 
         return {

@@ -2178,8 +2178,10 @@
             setTxt('ec-sigma', ec.sigma_bps.toFixed(2));
 
             if (ec.ready) {
-                setTxt('ec-cap-formula',
-                    ec.capture_frac + ' × z' + ec.z.toFixed(2) + ' × σ' + ec.sigma_frac.toFixed(4) + ' × $1k');
+                const capFormula = ec.uses_sigma_frac
+                    ? (ec.sigma_frac_target + ' × z' + ec.z.toFixed(2) + ' × σ' + ec.sigma_frac.toFixed(4) + ' × $1k')
+                    : ('(z' + ec.z.toFixed(2) + ' − ' + ec.exit_z.toFixed(2) + ') × σ' + ec.sigma_frac.toFixed(4) + ' × $1k');
+                setTxt('ec-cap-formula', capFormula);
                 setTxt('ec-cap-perlot', money(ec.capture_per_lot_usd));
                 setTxt('ec-cap-lots', lotsTxt);
                 setTxt('ec-cap-total', money(ec.expected_capture_usd));
@@ -2188,7 +2190,10 @@
 
                 const surplus = ec.shortfall_usd >= 0;
                 setTxt('ec-verdict-label', surplus ? 'Surplus' : 'Shortfall');
-                setTxt('ec-cover', ec.cover_ratio.toFixed(2) + 'x of ' + ec.req_mult.toFixed(2) + 'x');
+                const coverTxt = (ec.cover_ratio === null || ec.cover_ratio === undefined)
+                    ? 'filter off'
+                    : (ec.cover_ratio.toFixed(2) + 'x of ' + ec.req_mult.toFixed(2) + 'x');
+                setTxt('ec-cover', coverTxt);
                 const shortEl = document.getElementById('ec-shortfall-usd');
                 if (shortEl) {
                     shortEl.textContent = money(ec.shortfall_usd);
@@ -2219,8 +2224,8 @@
 
             const feeNote = document.getElementById('ec-fee-note');
             if (feeNote) {
-                const mode = (data.order_mode === 'LIMIT') ? 'Maker' : 'Taker';
-                const side = (data.fee_bps_used !== undefined) ? (' ' + data.fee_bps_used + ' bps/side') : '';
+                const mode = (ec.entry_mode === 'LIMIT') ? 'Maker' : 'Taker';
+                const side = (ec.fee_side_bps !== undefined) ? (' ' + ec.fee_side_bps + ' bps/side') : '';
                 feeNote.innerHTML = mode + side + ' — ' + (!ec.ready
                     ? '<span class="text-secondary">collecting data…</span>'
                     : ec.pass ? '<span class="price-up">✓ edge clears the floor</span>'
