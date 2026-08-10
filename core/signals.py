@@ -778,6 +778,72 @@ class SignalGenerator:
         last_spot = self.spot_prices[-1] if self.spot_prices else 0.0
         last_fut  = self.futures_prices[-1] if self.futures_prices else 0.0
 
+        # --- Edge check, in DOLLARS, at the current z & σ. Expressed per "lot"
+        # (a $1k slice of the position notional) then scaled by the lot count,
+        # mirroring the MT5 desk card. Capture = CAP_FRAC × |z| × σ (fraction of
+        # notional) — i.e. we expect to bank ~half the current z-deviation. Both
+        # legs and slippage are itemised. Uses the SAME cost model + required
+        # multiple the Edge filter applies, so this card and the badge can't
+        # disagree.
+        CAP_FRAC = 0.5           # expected capture as a fraction of the current z-move
+        LOT_USD = 1000.0         # the per-"lot" unit = $1k of position notional
+        notional = getattr(self.config, 'position_size_usd', 0.0) or 0.0
+        exit_z = getattr(self.config, 'exit_threshold', 0.5) or 0.0
+        z_abs = abs(self.current_zscore)
+        bxs = (beta * last_spot) if last_spot else 0.0
+        sigma_frac = (self.current_std / bxs) if bxs else 0.0   # σ as a fraction of notional
+        lots = (notional / LOT_USD) if notional else 0.0
+        cap_per_lot = CAP_FRAC * z_abs * sigma_frac * LOT_USD
+        expected_capture_usd = cap_per_lot * lots
+        rt_bps = cost['round_trip_bps']
+        rt_per_lot = rt_bps / 10000.0 * LOT_USD
+        rt_usd = rt_per_lot * lots
+        req_mult = max(self.config.min_std_multiple,
+                       getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0)
+        required_usd = req_mult * rt_usd
+        leg_a_fee_bps = cost['entry_spot_bps'] + cost['exit_spot_bps']
+        leg_b_fee_bps = cost['entry_fut_bps'] + cost['exit_fut_bps']
+        slip_bps = cost['slippage_bps']
+
+        def _per_lot(bps):
+            return round(bps / 10000.0 * LOT_USD, 4)
+
+        def _total(bps):
+            return round(bps / 10000.0 * notional, 2)
+
+        edge_check = {
+            'ready': bool(data_ready),
+            'notional_usd': round(notional, 2),
+            'lot_usd': LOT_USD,
+            'lots': round(lots, 2),
+            'z': round(z_abs, 3),
+            'exit_z': round(exit_z, 2),
+            'capture_frac': CAP_FRAC,
+            'sigma_bps': round(sigma_frac * 10000.0, 2),
+            'sigma_frac': round(sigma_frac, 6),
+            'capture_per_lot_usd': round(cap_per_lot, 4),
+            'expected_capture_usd': round(expected_capture_usd, 2),
+            'round_trip_bps': round(rt_bps, 2),
+            'round_trip_per_lot_usd': round(rt_per_lot, 4),
+            'round_trip_usd': round(rt_usd, 2),
+            'req_mult': round(req_mult, 2),
+            'required_usd': round(required_usd, 2),
+            'shortfall_usd': round(expected_capture_usd - required_usd, 2),
+            'cover_ratio': round((expected_capture_usd / rt_usd) if rt_usd else 0.0, 2),
+            'leg_a_symbol': self.config.spot_symbol,
+            'leg_b_symbol': self.config.futures_symbol,
+            'leg_a_fee_bps': round(leg_a_fee_bps, 2),
+            'leg_a_fee_per_lot_usd': _per_lot(leg_a_fee_bps),
+            'leg_a_fee_usd': _total(leg_a_fee_bps),
+            'leg_b_fee_bps': round(leg_b_fee_bps, 2),
+            'leg_b_fee_per_lot_usd': _per_lot(leg_b_fee_bps),
+            'leg_b_fee_usd': _total(leg_b_fee_bps),
+            'slippage_bps': round(slip_bps, 2),
+            'slippage_per_lot_usd': _per_lot(slip_bps),
+            'slippage_usd': _total(slip_bps),
+            'pass': bool(data_ready and notional > 0 and expected_capture_usd >= required_usd),
+        }
+
         return {
             'zscore': round(self.current_zscore, 4),
             'spread': round(self.current_spread, 6),
@@ -804,6 +870,7 @@ class SignalGenerator:
             'round_trip_cost_bps': round(cost['round_trip_bps'], 2),
             'round_trip_fees_bps': round(cost['fees_bps'], 2),
             'round_trip_slippage_bps': round(cost['slippage_bps'], 2),
+            'edge_check': edge_check,
             'cost_breakdown': {
                 'entry_spot_bps': round(cost['entry_spot_bps'], 2),
                 'entry_fut_bps':  round(cost['entry_fut_bps'], 2),

@@ -834,6 +834,7 @@ def on_signal_callback(signal: Signal):
         signal_data['data_ready'] = sg_state.get('data_ready', False)
         signal_data['std_ratio'] = sg_state.get('std_ratio')
         signal_data['std_ratio_required'] = sg_state.get('std_ratio_required')
+        signal_data['edge_check'] = sg_state.get('edge_check')
         signal_data['last_blocked_signal'] = sg_state.get('last_blocked_signal')
         # β + converted prices ship on EVERY tick so the dashboard doesn't
         # flicker between the periodic status fetch (has these) and the tick

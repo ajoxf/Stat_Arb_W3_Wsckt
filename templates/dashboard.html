@@ -596,24 +596,62 @@
                         <div style="font-size: 0.6rem;" class="text-secondary">Ready</div>
                     </div>
                 </div>
-                <div class="p-2" style="background: var(--bg-tertiary); border-radius: 4px; font-size: 0.75rem;">
-                    <div class="d-flex justify-content-between" title="Net profit target of the next trade ÷ its round-trip cost (fees + slippage). The Edge Filter only enters when this is ≥ the required multiple.">
-                        <span class="text-secondary">Net P&L / Cost:</span>
-                        <span id="std-ratio-value" class="fw-bold">-</span>
-                        <span class="text-secondary">/ req:</span>
-                        <span id="std-ratio-required">-</span>
+                <div class="p-2" style="background: var(--bg-tertiary); border-radius: 4px; font-size: 0.72rem;" id="edge-check-card">
+                    <div class="text-secondary mb-1" style="font-size: 0.62rem; letter-spacing: .04em;">
+                        EDGE CHECK &mdash; at z <span id="ec-z">-</span> &amp; &sigma; <span id="ec-sigma">-</span>bp
                     </div>
-                    <div class="d-flex justify-content-between mt-1">
-                        <span class="text-secondary">Fee:</span>
-                        <span id="fee-type-used">-</span>
+                    <div class="d-flex justify-content-between align-items-baseline" title="Expected capture per $1k of notional: capture_frac × |z| × σ(fraction of notional) × $1000. We model banking ~half the current z-deviation.">
+                        <span class="text-secondary">Capture / $1k</span>
+                        <span id="ec-cap-formula" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-cap-perlot" class="fw-bold">-</span>
                     </div>
-                    <div class="d-flex justify-content-between mt-1">
-                        <span class="text-secondary">Round-trip:</span>
-                        <span id="round-trip-cost" title="Entry (spot+fut) + Exit (spot+fut) + slippage × 4 legs">-</span>
+                    <div class="d-flex justify-content-between align-items-baseline" title="Scaled to the full position notional.">
+                        <span class="text-secondary">&times; <span id="ec-cap-lots">-</span></span>
+                        <span class="flex-grow-1"></span>
+                        <span id="ec-cap-total" class="fw-bold">-</span>
                     </div>
-                    <div id="std-explanation" class="text-secondary mt-1" style="font-size: 0.65rem;">
-                        Spread must cover trading costs
+                    <div class="d-flex justify-content-between align-items-baseline" title="Cost floor the Edge filter demands: required multiple × total round-trip cost.">
+                        <span class="text-secondary">Required</span>
+                        <span id="ec-required-formula" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-required-usd">-</span>
                     </div>
+                    <hr class="my-1" style="opacity:.25;">
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="text-secondary" id="ec-verdict-label">Shortfall</span>
+                        <span id="ec-cover" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-shortfall-usd" class="fw-bold">-</span>
+                    </div>
+
+                    <div class="text-secondary mt-2 mb-1" style="font-size: 0.62rem; letter-spacing: .04em;">
+                        ROUND-TRIP COST &mdash; per $1k notional
+                    </div>
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="text-secondary text-truncate" id="ec-legA-label" style="max-width:42%;">Leg A</span>
+                        <span id="ec-legA-formula" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-legA-perlot">-</span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="text-secondary text-truncate" id="ec-legB-label" style="max-width:42%;">Leg B</span>
+                        <span id="ec-legB-formula" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-legB-perlot">-</span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="text-secondary">Slippage</span>
+                        <span id="ec-slip-formula" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-slip-perlot">-</span>
+                    </div>
+                    <hr class="my-1" style="opacity:.25;">
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="text-secondary">Per $1k</span>
+                        <span id="ec-perlot-bps" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-perlot-usd">-</span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="text-secondary">&times; <span id="ec-rt-lots">-</span></span>
+                        <span id="ec-rt-bps" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
+                        <span id="ec-rt-usd" class="fw-bold">-</span>
+                    </div>
+                    <div id="ec-fee-note" class="text-secondary mt-1" style="font-size: 0.6rem;">Spread must clear the cost floor to enter</div>
                 </div>
             </div>
         </div>
@@ -2126,62 +2164,67 @@
         updateFilterStatus('hurst-status', data.hurst_ok, data.hurst);
         updateFilterStatus('std-status', data.std_filter_ok);
 
-        const stdRatioValue = document.getElementById('std-ratio-value');
-        const stdRatioRequired = document.getElementById('std-ratio-required');
-        const stdExplanation = document.getElementById('std-explanation');
-        if (stdRatioValue && stdRatioRequired) {
-            const hasRatio = data.std_ratio !== null && data.std_ratio !== undefined;
-            const hasRequired = data.std_ratio_required !== null && data.std_ratio_required !== undefined;
+        // Edge check + round-trip cost at the current z & σ, per $1k of notional
+        // then scaled by lots. Pre-computed server-side (get_state -> edge_check)
+        // so this card and the Edge badge use identical cost math.
+        const ec = data.edge_check;
+        if (ec && document.getElementById('edge-check-card')) {
+            const money = (v) => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+            const setTxt = (id, t) => { const e = document.getElementById(id); if (e) e.textContent = t; };
+            const N = Math.round(ec.notional_usd).toLocaleString();
+            const lotsTxt = ec.lots.toFixed(2) + ' lots ($' + N + ')';
 
-            if (hasRatio) {
-                stdRatioValue.textContent = data.std_ratio.toFixed(2) + 'x';
-                const meetsRequirement = hasRequired && data.std_ratio >= data.std_ratio_required;
-                stdRatioValue.className = meetsRequirement ? 'price-up fw-bold' : 'price-down fw-bold';
+            setTxt('ec-z', ec.z.toFixed(2));
+            setTxt('ec-sigma', ec.sigma_bps.toFixed(2));
+
+            if (ec.ready) {
+                setTxt('ec-cap-formula',
+                    ec.capture_frac + ' × z' + ec.z.toFixed(2) + ' × σ' + ec.sigma_frac.toFixed(4) + ' × $1k');
+                setTxt('ec-cap-perlot', money(ec.capture_per_lot_usd));
+                setTxt('ec-cap-lots', lotsTxt);
+                setTxt('ec-cap-total', money(ec.expected_capture_usd));
+                setTxt('ec-required-formula', ec.req_mult.toFixed(2) + '× round-trip ' + money(ec.round_trip_usd));
+                setTxt('ec-required-usd', money(ec.required_usd));
+
+                const surplus = ec.shortfall_usd >= 0;
+                setTxt('ec-verdict-label', surplus ? 'Surplus' : 'Shortfall');
+                setTxt('ec-cover', ec.cover_ratio.toFixed(2) + 'x of ' + ec.req_mult.toFixed(2) + 'x');
+                const shortEl = document.getElementById('ec-shortfall-usd');
+                if (shortEl) {
+                    shortEl.textContent = money(ec.shortfall_usd);
+                    shortEl.className = 'fw-bold ' + (surplus ? 'price-up' : 'price-down');
+                }
             } else {
-                stdRatioValue.textContent = '-';
-                stdRatioValue.className = 'fw-bold';
+                ['ec-cap-perlot', 'ec-cap-total', 'ec-required-usd', 'ec-shortfall-usd'].forEach((id) => setTxt(id, '—'));
+                setTxt('ec-cap-formula', 'collecting…');
+                setTxt('ec-cap-lots', lotsTxt);
+                setTxt('ec-required-formula', '');
+                setTxt('ec-cover', '');
             }
 
-            if (hasRequired) {
-                stdRatioRequired.textContent = data.std_ratio_required.toFixed(1) + 'x';
-            } else {
-                stdRatioRequired.textContent = '-';
-            }
+            // Round-trip cost, per $1k, both legs + slippage → per-$1k total → scaled.
+            setTxt('ec-legA-label', 'Leg A ' + (ec.leg_a_symbol || ''));
+            setTxt('ec-legA-formula', ec.leg_a_fee_bps.toFixed(2) + 'bp × $1k');
+            setTxt('ec-legA-perlot', money(ec.leg_a_fee_per_lot_usd));
+            setTxt('ec-legB-label', 'Leg B ' + (ec.leg_b_symbol || ''));
+            setTxt('ec-legB-formula', ec.leg_b_fee_bps.toFixed(2) + 'bp × $1k');
+            setTxt('ec-legB-perlot', money(ec.leg_b_fee_per_lot_usd));
+            setTxt('ec-slip-formula', ec.slippage_bps.toFixed(2) + 'bp × $1k');
+            setTxt('ec-slip-perlot', money(ec.slippage_per_lot_usd));
+            setTxt('ec-perlot-bps', ec.round_trip_bps.toFixed(2) + 'bp');
+            setTxt('ec-perlot-usd', money(ec.round_trip_per_lot_usd));
+            setTxt('ec-rt-lots', lotsTxt);
+            setTxt('ec-rt-bps', ec.round_trip_bps.toFixed(1) + ' bps');
+            setTxt('ec-rt-usd', money(ec.round_trip_usd));
 
-            if (stdExplanation) {
-                if (!hasRatio || !hasRequired) {
-                    stdExplanation.innerHTML = '<span class="text-secondary">Collecting data...</span>';
-                } else if (data.std_ratio >= data.std_ratio_required) {
-                    const coverage = (data.std_ratio * 100 / data.std_ratio_required).toFixed(0);
-                    stdExplanation.innerHTML = '<span class="price-up">&#10003; OK (' + coverage + '%)</span>';
-                } else {
-                    const coverage = (data.std_ratio * 100 / data.std_ratio_required).toFixed(0);
-                    stdExplanation.innerHTML = '<span class="price-down">&#10007; Low (' + coverage + '%)</span>';
-                }
-            }
-
-            const feeTypeEl = document.getElementById('fee-type-used');
-            if (feeTypeEl && data.order_mode && data.fee_bps_used !== undefined) {
-                const feeType = data.order_mode === 'LIMIT' ? 'Maker' : 'Taker';
-                feeTypeEl.textContent = feeType + ' (' + data.fee_bps_used + ' bps/side)';
-                const cb = data.cost_breakdown;
-                if (cb) {
-                    feeTypeEl.title =
-                        'Entry: spot ' + cb.entry_spot_bps + ' + fut ' + cb.entry_fut_bps + ' bps (' + cb.entry_mode + ')\n' +
-                        'Exit:  spot ' + cb.exit_spot_bps  + ' + fut ' + cb.exit_fut_bps  + ' bps (' + cb.exit_mode  + ')';
-                }
-            }
-
-            const rtEl = document.getElementById('round-trip-cost');
-            if (rtEl && data.round_trip_cost_bps !== undefined) {
-                const fees = data.round_trip_fees_bps;
-                const slip = data.round_trip_slippage_bps;
-                let txt = data.round_trip_cost_bps.toFixed(1) + ' bps';
-                if (slip !== undefined && slip > 0) {
-                    txt += ' (' + fees.toFixed(1) + ' fees + ' + slip.toFixed(1) + ' slip)';
-                }
-                rtEl.textContent = txt;
-                rtEl.className = 'fw-bold';
+            const feeNote = document.getElementById('ec-fee-note');
+            if (feeNote) {
+                const mode = (data.order_mode === 'LIMIT') ? 'Maker' : 'Taker';
+                const side = (data.fee_bps_used !== undefined) ? (' ' + data.fee_bps_used + ' bps/side') : '';
+                feeNote.innerHTML = mode + side + ' — ' + (!ec.ready
+                    ? '<span class="text-secondary">collecting data…</span>'
+                    : ec.pass ? '<span class="price-up">✓ edge clears the floor</span>'
+                              : '<span class="price-down">✗ below cost floor at this z</span>');
             }
         }
 
