@@ -831,6 +831,8 @@ class SignalGenerator:
             'round_trip_per_lot_usd': round(rt_per_lot, 4),
             'round_trip_usd': round(rt_usd, 2),
             'req_mult': round(req_mult, 2),
+            'edge_mult': round(self.config.min_std_multiple, 2),
+            'floor_mult': round(getattr(self.config, 'profit_target_min_cost_mult', 0.0) or 0.0, 2),
             'required_usd': round(required_usd, 2),
             'shortfall_usd': round(expected_capture_usd - required_usd, 2),
             'cover_ratio': round(edge_ratio, 2) if edge_ratio is not None else None,

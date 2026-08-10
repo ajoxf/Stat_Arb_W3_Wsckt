@@ -615,6 +615,10 @@
                         <span id="ec-required-formula" class="text-secondary text-end flex-grow-1 mx-2" style="font-size:0.58rem;">-</span>
                         <span id="ec-required-usd">-</span>
                     </div>
+                    <div id="ec-req-breakdown-row" class="text-end" style="display:none; font-size:0.56rem; margin-top:-3px;"
+                         title="The required multiple is the HIGHER of two settings: Min Net P&L/Cost Ratio (entry gate) and Profit Cost Floor (exit gate). The bold one is binding.">
+                        <span id="ec-req-breakdown" class="text-secondary"></span>
+                    </div>
                     <hr class="my-1" style="opacity:.25;">
                     <div class="d-flex justify-content-between align-items-baseline">
                         <span class="text-secondary" id="ec-verdict-label">Shortfall</span>
@@ -2188,6 +2192,22 @@
                 setTxt('ec-required-formula', ec.req_mult.toFixed(2) + '× round-trip ' + money(ec.round_trip_usd));
                 setTxt('ec-required-usd', money(ec.required_usd));
 
+                // required = max(edge, floor). Show the breakdown only when the
+                // two differ — exactly when the multiple looks surprising — and
+                // bold whichever one is binding.
+                const brRow = document.getElementById('ec-req-breakdown-row');
+                const brEl = document.getElementById('ec-req-breakdown');
+                if (brRow && brEl) {
+                    if (Math.abs(ec.edge_mult - ec.floor_mult) > 0.005) {
+                        const edgeWins = ec.edge_mult >= ec.floor_mult;
+                        const term = (label, v, on) => '<span style="' + (on ? 'color:var(--text-primary);font-weight:700' : '') + '">' + label + ' ' + v.toFixed(2) + '</span>';
+                        brEl.innerHTML = 'req = max(' + term('edge', ec.edge_mult, edgeWins) + ', ' + term('floor', ec.floor_mult, !edgeWins) + ')';
+                        brRow.style.display = '';
+                    } else {
+                        brRow.style.display = 'none';
+                    }
+                }
+
                 const surplus = ec.shortfall_usd >= 0;
                 setTxt('ec-verdict-label', surplus ? 'Surplus' : 'Shortfall');
                 const coverTxt = (ec.cover_ratio === null || ec.cover_ratio === undefined)
@@ -2205,6 +2225,8 @@
                 setTxt('ec-cap-lots', lotsTxt);
                 setTxt('ec-required-formula', '');
                 setTxt('ec-cover', '');
+                const brRow0 = document.getElementById('ec-req-breakdown-row');
+                if (brRow0) brRow0.style.display = 'none';
             }
 
             // Round-trip cost, per $1k, both legs + slippage → per-$1k total → scaled.
